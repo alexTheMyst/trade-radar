@@ -1,0 +1,11 @@
+.env
+state/
+*.db
+thesis.yaml
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+dist/
+*.egg-info/
+.DS_Store

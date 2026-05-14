@@ -1,0 +1,23 @@
+[project]
+name = "signal-system"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic",
+    "finnhub-python",
+    "python-dotenv",
+    "pyyaml",
+    "httpx",
+    "pydantic",
+    "tzdata",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/signal_system"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
