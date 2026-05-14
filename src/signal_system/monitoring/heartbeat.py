@@ -26,7 +26,8 @@ def _ping(path: str) -> None:
     """
     url = f"{BASE_URL}/{config.HEALTHCHECKS_UUID}{path}"
     try:
-        httpx.post(url, timeout=10)
+        response = httpx.post(url, timeout=10)
+        response.raise_for_status()
     except Exception as exc:
         logger.warning("Heartbeat ping failed: %s", exc)
 
