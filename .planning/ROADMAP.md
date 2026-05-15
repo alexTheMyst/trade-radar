@@ -32,7 +32,8 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. The ticker universe loads ~1,500 tickers; running `universe.py` for the same ticker on the same day always places it in the same rotation partition (deterministic `hashlib.md5`); core holdings appear in every daily subset regardless of partition
   4. K-1 ETFs (USO, UNG, DBC, GSG) are not present in any scanned subset — exclusion happens at universe-builder level, not downstream
   5. `sqlite3 state/signals.db ".schema"` shows `routing_status`, `signal_price_snapshot`, `model_version`, `wash_sale` table with `account` column, `llm_calls` table, and `repository.py` exposes `count_delivered_today()`
-**Plans**: TBD
+**Plans**: 1 plan
+  - [ ] 01-01-PLAN.md — Foundation: Signal dataclass, schema migration, thesis loader, universe partitioning
 
 ### Phase 2: Data Layer
 **Goal**: Extend the Finnhub client with bulk quote fetch, news headline fetch, rate-limit token bucket, retry logic, and graceful paid-tier endpoint detection.
@@ -103,7 +104,7 @@ Phases execute in numeric order. Phase 3 and Phase 4 can be built in parallel (b
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation | 0/TBD | Not started | - |
+| 1. Foundation | 0/1 | Not started | - |
 | 2. Data Layer | 0/TBD | Not started | - |
 | 3. News Classifier | 0/TBD | Not started | - |
 | 4. Discovery Agent | 0/TBD | Not started | - |
