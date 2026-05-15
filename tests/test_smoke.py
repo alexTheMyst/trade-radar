@@ -9,6 +9,7 @@ Three tests:
 All external I/O (Finnhub, SMTP, healthchecks.io) is mocked.
 """
 
+import smtplib
 import sqlite3
 import uuid
 from unittest.mock import MagicMock, patch
@@ -94,9 +95,6 @@ def test_daily_close_smoke(tmp_path, monkeypatch):
 
 def test_daily_close_finnhub_failure(tmp_path, monkeypatch):
     """When fetch_spy_close raises, /fail ping must fire and run marked 'failed'."""
-    import sqlite3
-    from unittest.mock import patch, MagicMock
-
     monkeypatch.setattr(repository, "DB_PATH", tmp_path / "test.db")
     repository.init_db()
 
@@ -121,10 +119,6 @@ def test_daily_close_finnhub_failure(tmp_path, monkeypatch):
 
 def test_daily_close_email_failure(tmp_path, monkeypatch):
     """When email fails after signal insert, run is marked failed and signal row is retained."""
-    import sqlite3
-    import smtplib
-    from unittest.mock import patch, MagicMock
-
     monkeypatch.setattr(repository, "DB_PATH", tmp_path / "test.db")
     repository.init_db()
 

@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-DB_PATH = Path("state/signals.db")
+DB_PATH = Path(__file__).parents[3] / "state" / "signals.db"
 
 
 def init_db() -> None:

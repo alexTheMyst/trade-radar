@@ -15,10 +15,3 @@ os.environ.setdefault("GMAIL_APP_PASSWORD", "test_password")
 os.environ.setdefault("ALERT_RECIPIENT_EMAIL", "recipient@example.com")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test_anthropic_key")
 
-import pytest  # noqa: E402
-
-
-@pytest.fixture(autouse=True, scope="session")
-def _set_dummy_env():
-    """Explicit session fixture for documentation clarity; env is already set above."""
-    pass
