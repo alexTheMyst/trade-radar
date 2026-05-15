@@ -14,44 +14,46 @@ def init_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+    try:
+        cursor = conn.cursor()
 
-    # Enable WAL mode
-    cursor.execute("PRAGMA journal_mode=WAL;")
+        # Enable WAL mode
+        cursor.execute("PRAGMA journal_mode=WAL;")
 
-    # Create signals table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS signals (
-            alert_id TEXT PRIMARY KEY,
-            timestamp TEXT NOT NULL,
-            agent TEXT NOT NULL,
-            severity TEXT NOT NULL,
-            ticker TEXT,
-            title TEXT NOT NULL,
-            body TEXT,
-            suggested_action TEXT,
-            score REAL,
-            acted INTEGER,
-            acted_at TEXT,
-            user_note TEXT,
-            outcome_price_30d REAL,
-            outcome_price_90d REAL
-        )
-    """)
+        # Create signals table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS signals (
+                alert_id TEXT PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                agent TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                ticker TEXT,
+                title TEXT NOT NULL,
+                body TEXT,
+                suggested_action TEXT,
+                score REAL,
+                acted INTEGER,
+                acted_at TEXT,
+                user_note TEXT,
+                outcome_price_30d REAL,
+                outcome_price_90d REAL
+            )
+        """)
 
-    # Create runs table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS runs (
-            run_id TEXT PRIMARY KEY,
-            job TEXT NOT NULL,
-            started_at TEXT NOT NULL,
-            ended_at TEXT,
-            status TEXT NOT NULL
-        )
-    """)
+        # Create runs table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS runs (
+                run_id TEXT PRIMARY KEY,
+                job TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                ended_at TEXT,
+                status TEXT NOT NULL
+            )
+        """)
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def insert_signal(
@@ -72,22 +74,24 @@ def insert_signal(
     timestamp = datetime.now(ZoneInfo("America/New_York")).isoformat()
 
     conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+    try:
+        cursor = conn.cursor()
 
-    cursor.execute("""
-        INSERT INTO signals (
+        cursor.execute("""
+            INSERT INTO signals (
+                alert_id, timestamp, agent, severity, ticker, title, body,
+                suggested_action, score, acted, acted_at, user_note,
+                outcome_price_30d, outcome_price_90d
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
             alert_id, timestamp, agent, severity, ticker, title, body,
-            suggested_action, score, acted, acted_at, user_note,
-            outcome_price_30d, outcome_price_90d
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        alert_id, timestamp, agent, severity, ticker, title, body,
-        suggested_action, score, None, None, None, None, None
-    ))
+            suggested_action, score, None, None, None, None, None
+        ))
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+    finally:
+        conn.close()
 
     return alert_id
 
@@ -103,15 +107,17 @@ def insert_run(job: str) -> str:
     status = "running"
 
     conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+    try:
+        cursor = conn.cursor()
 
-    cursor.execute("""
-        INSERT INTO runs (run_id, job, started_at, ended_at, status)
-        VALUES (?, ?, ?, ?, ?)
-    """, (run_id, job, started_at, None, status))
+        cursor.execute("""
+            INSERT INTO runs (run_id, job, started_at, ended_at, status)
+            VALUES (?, ?, ?, ?, ?)
+        """, (run_id, job, started_at, None, status))
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+    finally:
+        conn.close()
 
     return run_id
 
@@ -121,13 +127,15 @@ def update_run(run_id: str, status: str) -> None:
     ended_at = datetime.now(ZoneInfo("America/New_York")).isoformat()
 
     conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+    try:
+        cursor = conn.cursor()
 
-    cursor.execute("""
-        UPDATE runs
-        SET status = ?, ended_at = ?
-        WHERE run_id = ?
-    """, (status, ended_at, run_id))
+        cursor.execute("""
+            UPDATE runs
+            SET status = ?, ended_at = ?
+            WHERE run_id = ?
+        """, (status, ended_at, run_id))
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+    finally:
+        conn.close()
