@@ -149,60 +149,58 @@ Deferred to future. Not in current roadmap.
 
 ## Traceability
 
-*Populated during roadmap creation.*
-
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| TYPE-01 | — | Pending |
-| TYPE-02 | — | Pending |
-| TAX-01 | — | Pending |
-| TAX-02 | — | Pending |
-| TAX-03 | — | Pending |
-| TAX-04 | — | Pending |
-| UNIV-01 | — | Pending |
-| UNIV-02 | — | Pending |
-| UNIV-03 | — | Pending |
-| UNIV-04 | — | Pending |
-| DATA-01 | — | Pending |
-| DATA-02 | — | Pending |
-| DATA-03 | — | Pending |
-| DATA-04 | — | Pending |
-| SCHEMA-01 | — | Pending |
-| SCHEMA-02 | — | Pending |
-| SCHEMA-03 | — | Pending |
-| SCHEMA-04 | — | Pending |
-| SCHEMA-05 | — | Pending |
-| SCHEMA-06 | — | Pending |
-| CLFY-01 | — | Pending |
-| CLFY-02 | — | Pending |
-| CLFY-03 | — | Pending |
-| CLFY-04 | — | Pending |
-| CLFY-05 | — | Pending |
-| CLFY-06 | — | Pending |
-| DISC-01 | — | Pending |
-| DISC-02 | — | Pending |
-| DISC-03 | — | Pending |
-| DISC-04 | — | Pending |
-| DISC-05 | — | Pending |
-| ROUT-01 | — | Pending |
-| ROUT-02 | — | Pending |
-| ROUT-03 | — | Pending |
-| ROUT-04 | — | Pending |
-| ROUT-05 | — | Pending |
-| JOBS-01 | — | Pending |
-| JOBS-02 | — | Pending |
-| JOBS-03 | — | Pending |
-| JOBS-04 | — | Pending |
-| MEAS-01 | — | Pending |
-| MEAS-02 | — | Pending |
-| OPS-01 | — | Pending |
-| OPS-02 | — | Pending |
+| TYPE-01 | Phase 1 | Pending |
+| TYPE-02 | Phase 1 | Pending |
+| TAX-01 | Phase 1 | Pending |
+| TAX-02 | Phase 1 | Pending |
+| TAX-03 | Phase 1 | Pending |
+| TAX-04 | Phase 1 | Pending |
+| UNIV-01 | Phase 1 | Pending |
+| UNIV-02 | Phase 1 | Pending |
+| UNIV-03 | Phase 1 | Pending |
+| UNIV-04 | Phase 1 | Pending |
+| SCHEMA-01 | Phase 1 | Pending |
+| SCHEMA-02 | Phase 1 | Pending |
+| SCHEMA-03 | Phase 1 | Pending |
+| SCHEMA-04 | Phase 1 | Pending |
+| SCHEMA-05 | Phase 1 | Pending |
+| SCHEMA-06 | Phase 1 | Pending |
+| DATA-01 | Phase 2 | Pending |
+| DATA-02 | Phase 2 | Pending |
+| DATA-03 | Phase 2 | Pending |
+| DATA-04 | Phase 2 | Pending |
+| CLFY-01 | Phase 3 | Pending |
+| CLFY-02 | Phase 3 | Pending |
+| CLFY-03 | Phase 3 | Pending |
+| CLFY-04 | Phase 3 | Pending |
+| CLFY-05 | Phase 3 | Pending |
+| CLFY-06 | Phase 3 | Pending |
+| DISC-01 | Phase 4 | Pending |
+| DISC-02 | Phase 4 | Pending |
+| DISC-03 | Phase 4 | Pending |
+| DISC-04 | Phase 4 | Pending |
+| DISC-05 | Phase 4 | Pending |
+| ROUT-01 | Phase 5 | Pending |
+| ROUT-02 | Phase 5 | Pending |
+| ROUT-03 | Phase 5 | Pending |
+| ROUT-04 | Phase 5 | Pending |
+| ROUT-05 | Phase 5 | Pending |
+| JOBS-01 | Phase 6 | Pending |
+| JOBS-02 | Phase 6 | Pending |
+| JOBS-03 | Phase 6 | Pending |
+| JOBS-04 | Phase 6 | Pending |
+| MEAS-01 | Phase 6 | Pending |
+| MEAS-02 | Phase 6 | Pending |
+| OPS-01 | Phase 6 | Pending |
+| OPS-02 | Phase 6 | Pending |
 
 **Coverage:**
 - v1 requirements: 44 total
-- Mapped to phases: 0
-- Unmapped: 44 ⚠️ *(roadmap creation will populate this)*
+- Mapped to phases: 44
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-05-14*
-*Last updated: 2026-05-14 after initial definition*
+*Last updated: 2026-05-15 after roadmap creation*
