@@ -374,3 +374,34 @@ def test_get_todays_universe_includes_core_excludes_off_partition(tmp_path, monk
         f"{off_partition_ticker} (bucket {_md5_bucket(off_partition_ticker)}) "
         f"must be excluded when today's bucket is {today_bucket}"
     )
+
+
+def test_phase1_integration_imports(tmp_path, monkeypatch):
+    """Phase 1 integration check: all public surfaces importable + init_db + get_todays_universe."""
+    from signal_system.models import Signal, compute_alert_id
+    from signal_system.data.thesis_loader import load_thesis, ThesisStaleError
+    from signal_system.data.universe import get_todays_universe
+    from signal_system.state.repository import count_delivered_today, init_db
+    from signal_system import config
+
+    # DB operations work against a tmp_path DB
+    from signal_system.state import repository
+    monkeypatch.setattr(repository, "DB_PATH", tmp_path / "signals.db")
+    init_db()
+
+    # get_todays_universe uses the committed universe.csv (not monkeypatched here)
+    tickers = get_todays_universe()
+    assert isinstance(tickers, list)
+    assert len(tickers) > 0, "Expected at least core holdings in universe"
+    k1_etfs = {"USO", "UNG", "DBC", "GSG"}
+    for k1 in k1_etfs:
+        assert k1 not in tickers, f"{k1} (K-1 ETF) must not appear in universe"
+
+    # count_delivered_today returns a dict (may be empty if no signals)
+    result = count_delivered_today()
+    assert isinstance(result, dict)
+
+    # config exports all three new Phase 1 vars
+    assert config.ANTHROPIC_MODEL
+    assert config.THESIS_PATH
+    assert config.DISCOVERY_PHASE in ("A", "B")
