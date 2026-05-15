@@ -259,3 +259,56 @@ def test_count_delivered_today_filters_by_routing_status(tmp_path, monkeypatch):
     result = repository.count_delivered_today()
     assert result.get("INFORMATIONAL", 0) == 1, f"Expected 1 INFORMATIONAL delivered today, got {result}"
     assert result.get("ACTION_REQUIRED", 0) == 0, f"Expected 0 ACTION_REQUIRED today, got {result}"
+
+
+def test_load_thesis_happy_path(tmp_path):
+    """load_thesis() on a future-dated YAML returns (Thesis, version_hash)."""
+    from datetime import date
+    from signal_system.data.thesis_loader import load_thesis
+
+    thesis_yaml = tmp_path / "thesis.yaml"
+    thesis_yaml.write_text(
+        "review_due: 2027-01-01\n"
+        "pillars:\n"
+        "  - name: monetary_policy\n"
+        "    description: Fed policy\n"
+        "    keywords: [rate cut, FOMC]\n"
+        "  - name: ai_capex\n"
+        "    description: AI infrastructure spend\n"
+        "    keywords: [GPU, data center]\n"
+    )
+
+    thesis, version_hash = load_thesis(thesis_yaml)
+    assert thesis.review_due > date.today()
+    assert len(thesis.pillars) >= 2
+    assert len(version_hash) == 64 and all(c in "0123456789abcdef" for c in version_hash)
+
+
+def test_load_thesis_stale_raises(tmp_path):
+    """load_thesis() on a past-dated YAML raises ThesisStaleError (RuntimeError subclass)."""
+    from signal_system.data.thesis_loader import load_thesis, ThesisStaleError
+
+    thesis_yaml = tmp_path / "thesis.yaml"
+    thesis_yaml.write_text(
+        "review_due: 2020-01-01\n"
+        "pillars:\n"
+        "  - name: old_pillar\n"
+        "    description: Outdated\n"
+        "    keywords: [old]\n"
+    )
+
+    assert issubclass(ThesisStaleError, RuntimeError)
+    with pytest.raises(ThesisStaleError):
+        load_thesis(thesis_yaml)
+
+
+def test_load_thesis_invalid_schema_raises_validation_error(tmp_path):
+    """load_thesis() on YAML missing required 'pillars' raises pydantic.ValidationError."""
+    from pydantic import ValidationError
+    from signal_system.data.thesis_loader import load_thesis
+
+    thesis_yaml = tmp_path / "thesis.yaml"
+    thesis_yaml.write_text("review_due: 2027-01-01\n")  # missing pillars field
+
+    with pytest.raises(ValidationError):
+        load_thesis(thesis_yaml)
