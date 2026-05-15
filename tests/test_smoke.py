@@ -64,6 +64,47 @@ def test_insert_signal_returns_uuid(tmp_path, monkeypatch):
     assert row[1] == "SPY"
 
 
+def test_signal_is_frozen(tmp_path, monkeypatch):
+    """Signal must be immutable — assigning to any field raises FrozenInstanceError."""
+    import dataclasses
+    from datetime import datetime, timezone
+    from signal_system.models import Signal, compute_alert_id
+
+    now = datetime.now(timezone.utc)
+    alert_id = compute_alert_id("AAPL", "2026-05-15", "r", "news")
+    signal = Signal(
+        ticker="AAPL",
+        score=0.85,
+        severity="INFORMATIONAL",
+        agent="news",
+        timestamp=now,
+        alert_id=alert_id,
+        title="Test signal",
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        signal.score = 0.5  # type: ignore[misc]
+
+
+def test_compute_alert_id_deterministic():
+    """compute_alert_id must be deterministic and SHA-256 based."""
+    from signal_system.models import compute_alert_id
+
+    expected = "7c35b5226a16a95fc5004a595e16e853bdbe762cbe0e16a7aaacf6af1a249be9"
+    result = compute_alert_id("AAPL", "2026-05-15", "r", "news")
+    assert result == expected, f"Got {result}"
+    assert result == compute_alert_id("AAPL", "2026-05-15", "r", "news"), "Not deterministic"
+
+    # Changing any arg must change the digest
+    assert compute_alert_id("MSFT", "2026-05-15", "r", "news") != result
+    assert compute_alert_id("AAPL", "2026-05-16", "r", "news") != result
+    assert compute_alert_id("AAPL", "2026-05-15", "r2", "news") != result
+    assert compute_alert_id("AAPL", "2026-05-15", "r", "disc") != result
+
+    # None ticker must normalize to '_' without raising
+    none_result = compute_alert_id(None, "2026-05-15", "r", "news")
+    assert isinstance(none_result, str) and len(none_result) == 64
+
+
 def test_daily_close_smoke(tmp_path, monkeypatch):
     """daily_close.run() must write a DAILY_CLOSE signal row with score == SPY close price."""
     monkeypatch.setattr(repository, "DB_PATH", tmp_path / "test.db")
