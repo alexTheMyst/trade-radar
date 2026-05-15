@@ -1,0 +1,35 @@
+# thesis.example.yaml — operator-maintained investment thesis TEMPLATE
+#
+# Copy this file to thesis.yaml (gitignored) and customize before running news-morning.
+# IMPORTANT: Update review_due before each quarterly review — the classifier refuses to
+# run when this date is in the past (ThesisStaleError trips the /fail heartbeat ping).
+#
+# Schema: review_due (ISO date), pillars (list of name/description/keywords)
+
+review_due: 2026-11-01
+
+pillars:
+  - name: monetary_policy
+    description: Federal Reserve policy and macro liquidity conditions
+    keywords:
+      - rate cut
+      - rate hike
+      - FOMC
+      - quantitative easing
+      - quantitative tightening
+      - liquidity
+      - federal funds rate
+      - pivot
+
+  - name: ai_capex
+    description: Capital expenditure cycle in AI infrastructure — chips, data centers, hyperscalers
+    keywords:
+      - GPU
+      - data center
+      - capex
+      - hyperscaler
+      - inference
+      - training cluster
+      - NVIDIA
+      - semiconductor
+      - AI spending
