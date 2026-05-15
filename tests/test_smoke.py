@@ -312,3 +312,65 @@ def test_load_thesis_invalid_schema_raises_validation_error(tmp_path):
 
     with pytest.raises(ValidationError):
         load_thesis(thesis_yaml)
+
+
+def test_md5_bucket_deterministic():
+    """_md5_bucket must return the same value across two calls and match direct hashlib computation."""
+    import hashlib
+    from signal_system.data.universe import _md5_bucket
+
+    result1 = _md5_bucket("AAPL")
+    result2 = _md5_bucket("AAPL")
+    assert result1 == result2, "Not deterministic across two calls"
+
+    expected = int(hashlib.md5("AAPL".encode()).hexdigest(), 16) % 3
+    assert result1 == expected, f"Bucket mismatch: got {result1}, expected {expected}"
+    assert result1 in (0, 1, 2), f"Bucket out of range: {result1}"
+
+
+def test_get_todays_universe_excludes_k1(tmp_path, monkeypatch):
+    """K-1 ETFs (k1_etf=1) must never appear in get_todays_universe() output."""
+    from pathlib import Path
+    import signal_system.data.universe as universe_mod
+
+    csv_content = "ticker,core_holding,k1_etf\nAAPL,1,0\nUSO,0,1\nUNG,0,1\n"
+    csv_path = tmp_path / "universe.csv"
+    csv_path.write_text(csv_content)
+    monkeypatch.setattr(universe_mod, "UNIVERSE_PATH", csv_path)
+
+    result = universe_mod.get_todays_universe()
+    assert "USO" not in result, "USO (K-1 ETF) must be excluded"
+    assert "UNG" not in result, "UNG (K-1 ETF) must be excluded"
+    assert "AAPL" in result, "AAPL (core holding) must always be included"
+
+
+def test_get_todays_universe_includes_core_excludes_off_partition(tmp_path, monkeypatch):
+    """Core holdings always appear; non-core tickers in wrong partition are excluded."""
+    import signal_system.data.universe as universe_mod
+    from signal_system.data.universe import _md5_bucket, _today_bucket
+
+    today_bucket = _today_bucket()
+
+    # Find a ticker from probe set that is NOT in today's bucket
+    off_partition_ticker = None
+    for probe in ["FOO", "BAR", "BAZ", "QUX", "ZZZ", "AAA"]:
+        if _md5_bucket(probe) != today_bucket:
+            off_partition_ticker = probe
+            break
+    assert off_partition_ticker is not None, "Could not find a ticker off today's partition"
+
+    csv_content = (
+        "ticker,core_holding,k1_etf\n"
+        f"AAPL,1,0\n"
+        f"{off_partition_ticker},0,0\n"
+    )
+    csv_path = tmp_path / "universe.csv"
+    csv_path.write_text(csv_content)
+    monkeypatch.setattr(universe_mod, "UNIVERSE_PATH", csv_path)
+
+    result = universe_mod.get_todays_universe()
+    assert "AAPL" in result, "Core holding AAPL must always be included"
+    assert off_partition_ticker not in result, (
+        f"{off_partition_ticker} (bucket {_md5_bucket(off_partition_ticker)}) "
+        f"must be excluded when today's bucket is {today_bucket}"
+    )
