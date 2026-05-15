@@ -22,7 +22,7 @@ def run() -> None:
                 subject=f"Daily Close — SPY {spy_close:.2f}",
                 body=f"SPY closed at {spy_close:.2f}\nAlert ID: {alert_id}",
             )
-        repository.update_run(run_id, "success")
+            repository.update_run(run_id, "success")  # inside heartbeat: DB failure trips /fail ping
     except Exception:
         repository.update_run(run_id, "failed")
         raise
