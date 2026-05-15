@@ -198,3 +198,95 @@ def test_config_optional_fallback_and_phase_validation(monkeypatch):
     monkeypatch.delenv("THESIS_PATH", raising=False)
     importlib.reload(config_module)
     assert config_module.THESIS_PATH == "thesis.yaml"
+
+
+def test_init_db_idempotent_and_new_schema(tmp_path, monkeypatch):
+    """init_db() must be idempotent and add new columns + tables to the schema."""
+    monkeypatch.setattr(repository, "DB_PATH", tmp_path / "test.db")
+
+    # Call twice — must not raise on second call
+    repository.init_db()
+    repository.init_db()
+
+    conn = sqlite3.connect(tmp_path / "test.db")
+    # New columns on signals table
+    col_names = {row[1] for row in conn.execute("PRAGMA table_info(signals)").fetchall()}
+    for col in ("routing_status", "signal_price_snapshot", "model_version", "thesis_version_hash"):
+        assert col in col_names, f"Column {col!r} missing from signals"
+
+    # New tables
+    table_names = {
+        row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    assert "wash_sale" in table_names, "wash_sale table not found"
+    assert "llm_calls" in table_names, "llm_calls table not found"
+    conn.close()
+
+
+def test_insert_signal_idempotent(tmp_path, monkeypatch):
+    """insert_signal(Signal) must return True on first insert, False on duplicate."""
+    from datetime import datetime, timezone
+    from signal_system.models import Signal, compute_alert_id
+
+    monkeypatch.setattr(repository, "DB_PATH", tmp_path / "test.db")
+    repository.init_db()
+
+    alert_id = compute_alert_id("SPY", "2026-05-15", "idempotent_test", "TEST")
+    signal = Signal(
+        ticker="SPY",
+        score=100.0,
+        severity="INFORMATIONAL",
+        agent="TEST",
+        timestamp=datetime.now(timezone.utc),
+        alert_id=alert_id,
+        title="Idempotency test signal",
+    )
+
+    first = repository.insert_signal(signal)
+    second = repository.insert_signal(signal)
+
+    assert first is True, "First insert must return True"
+    assert second is False, "Duplicate insert must return False"
+
+    conn = sqlite3.connect(tmp_path / "test.db")
+    count = conn.execute("SELECT COUNT(*) FROM signals WHERE alert_id=?", (alert_id,)).fetchone()[0]
+    conn.close()
+    assert count == 1, f"Expected exactly 1 row, got {count}"
+
+
+def test_count_delivered_today_filters_by_routing_status(tmp_path, monkeypatch):
+    """count_delivered_today() must only count DELIVERED signals from today's ET date."""
+    from datetime import datetime, date, timedelta
+    from zoneinfo import ZoneInfo
+
+    monkeypatch.setattr(repository, "DB_PATH", tmp_path / "test.db")
+    repository.init_db()
+
+    et = ZoneInfo("America/New_York")
+    today_iso = datetime.now(et).date().isoformat()
+    yesterday_iso = (datetime.now(et).date() - timedelta(days=1)).isoformat()
+
+    conn = sqlite3.connect(tmp_path / "test.db")
+    # DELIVERED signal today
+    conn.execute("""
+        INSERT INTO signals (alert_id, timestamp, agent, severity, ticker, title, routing_status)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, ("aid-1", today_iso + "T12:00:00", "TEST", "INFORMATIONAL", "SPY", "signal 1", "DELIVERED"))
+    # NULL routing_status today (should be excluded)
+    conn.execute("""
+        INSERT INTO signals (alert_id, timestamp, agent, severity, ticker, title, routing_status)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, ("aid-2", today_iso + "T12:01:00", "TEST", "INFORMATIONAL", "AAPL", "signal 2", None))
+    # DELIVERED yesterday (should be excluded)
+    conn.execute("""
+        INSERT INTO signals (alert_id, timestamp, agent, severity, ticker, title, routing_status)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, ("aid-3", yesterday_iso + "T12:00:00", "TEST", "ACTION_REQUIRED", "MSFT", "signal 3", "DELIVERED"))
+    conn.commit()
+    conn.close()
+
+    result = repository.count_delivered_today()
+    assert result.get("INFORMATIONAL", 0) == 1, f"Expected 1 INFORMATIONAL delivered today, got {result}"
+    assert result.get("ACTION_REQUIRED", 0) == 0, f"Expected 0 ACTION_REQUIRED today, got {result}"
