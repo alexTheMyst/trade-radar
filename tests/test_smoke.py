@@ -178,3 +178,23 @@ def test_daily_close_email_failure(tmp_path, monkeypatch):
     conn.close()
     assert signal_row is not None, "Signal should be persisted even if email fails"
     assert run_row[0] == "failed"
+
+
+def test_config_optional_fallback_and_phase_validation(monkeypatch):
+    """DISCOVERY_PHASE=invalid must raise RuntimeError; THESIS_PATH defaults to 'thesis.yaml'."""
+    import importlib
+    import signal_system.config as config_module
+
+    # Test invalid DISCOVERY_PHASE raises RuntimeError on reload
+    monkeypatch.setenv("DISCOVERY_PHASE", "invalid")
+    with pytest.raises(RuntimeError, match="DISCOVERY_PHASE"):
+        importlib.reload(config_module)
+
+    # Restore valid state
+    monkeypatch.setenv("DISCOVERY_PHASE", "A")
+    importlib.reload(config_module)
+
+    # THESIS_PATH defaults to 'thesis.yaml' when env is unset
+    monkeypatch.delenv("THESIS_PATH", raising=False)
+    importlib.reload(config_module)
+    assert config_module.THESIS_PATH == "thesis.yaml"
