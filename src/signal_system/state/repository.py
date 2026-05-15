@@ -1,4 +1,9 @@
-"""SQLite repository for signals and runs state management."""
+"""SQLite repository for signals and runs state management.
+
+All SQLite access in signal-system goes through this module — no raw SQL elsewhere.
+Every connection is opened via _connect() which applies PRAGMA busy_timeout = 30000
+to prevent "database is locked" errors under concurrent Task Scheduler runs.
+"""
 
 import sqlite3
 import uuid
@@ -6,21 +11,45 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from signal_system.models import Signal
+
 DB_PATH = Path(__file__).parents[3] / "state" / "signals.db"
 
 
+def _connect() -> sqlite3.Connection:
+    """Open a SQLite connection with busy_timeout to handle concurrent writes."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA busy_timeout = 30000")  # 30-second wait if DB is locked
+    return conn
+
+
+def _ensure_column(cursor: sqlite3.Cursor, table: str, column: str, type_def: str) -> None:
+    """Idempotent ALTER TABLE — only adds the column if it does not already exist.
+
+    SQLite does NOT support 'ALTER TABLE ADD COLUMN IF NOT EXISTS'; this helper
+    uses PRAGMA table_info() to check existence first.
+    """
+    cursor.execute(f"PRAGMA table_info({table})")
+    existing = {row[1] for row in cursor.fetchall()}
+    if column not in existing:
+        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {type_def}")
+
+
 def init_db() -> None:
-    """Initialize the database: create state/ directory, enable WAL mode, and create tables."""
+    """Initialize the database: create state/ directory, enable WAL mode, and create/migrate tables.
+
+    Safe to call multiple times on an existing database — idempotent.
+    """
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     try:
         cursor = conn.cursor()
 
-        # Enable WAL mode
+        # Enable WAL mode for concurrent read/write safety
         cursor.execute("PRAGMA journal_mode=WAL;")
 
-        # Create signals table
+        # Core tables — CREATE IF NOT EXISTS preserves existing rows on upgrade
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS signals (
                 alert_id TEXT PRIMARY KEY,
@@ -40,7 +69,6 @@ def init_db() -> None:
             )
         """)
 
-        # Create runs table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS runs (
                 run_id TEXT PRIMARY KEY,
@@ -51,70 +79,94 @@ def init_db() -> None:
             )
         """)
 
-        conn.commit()
-    finally:
-        conn.close()
+        # Idempotent column additions to signals (Phase 1 schema extensions)
+        _ensure_column(cursor, "signals", "routing_status", "TEXT")
+        _ensure_column(cursor, "signals", "signal_price_snapshot", "REAL")
+        _ensure_column(cursor, "signals", "model_version", "TEXT")
+        _ensure_column(cursor, "signals", "thesis_version_hash", "TEXT")
 
-
-def insert_signal(
-    agent: str,
-    ticker: str | None,
-    title: str,
-    body: str | None = None,
-    score: float | None = None,
-    severity: str = "INFORMATIONAL",
-    suggested_action: str | None = None,
-) -> str:
-    """
-    Insert a signal into the database.
-
-    Returns the generated alert_id (UUID v4).
-    """
-    alert_id = str(uuid.uuid4())
-    timestamp = datetime.now(ZoneInfo("America/New_York")).isoformat()
-
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        cursor = conn.cursor()
+        # New tables (Phase 1)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS wash_sale (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                account TEXT NOT NULL CHECK (account IN
+                    ('schwab_main', 'schwab_secondary', 'roth_ira', 'hsa')),
+                trade_date TEXT NOT NULL,
+                quantity REAL,
+                cost_basis REAL,
+                notes TEXT,
+                created_at TEXT NOT NULL
+            )
+        """)
 
         cursor.execute("""
-            INSERT INTO signals (
-                alert_id, timestamp, agent, severity, ticker, title, body,
-                suggested_action, score, acted, acted_at, user_note,
-                outcome_price_30d, outcome_price_90d
+            CREATE TABLE IF NOT EXISTS llm_calls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job TEXT NOT NULL,
+                model_version TEXT NOT NULL,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                cache_read_input_tokens INTEGER,
+                cache_creation_input_tokens INTEGER,
+                timestamp TEXT NOT NULL
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            alert_id, timestamp, agent, severity, ticker, title, body,
-            suggested_action, score, None, None, None, None, None
-        ))
+        """)
 
         conn.commit()
     finally:
         conn.close()
 
-    return alert_id
+
+def insert_signal(signal: Signal) -> bool:
+    """Insert a Signal into the database using INSERT OR IGNORE semantics.
+
+    Returns:
+        True if the signal was newly inserted.
+        False if a signal with the same alert_id already existed (idempotent rerun).
+    """
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR IGNORE INTO signals (
+                alert_id, timestamp, agent, severity, ticker, title, body,
+                score, routing_status, signal_price_snapshot, model_version,
+                thesis_version_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            signal.alert_id,
+            signal.timestamp.isoformat(),
+            signal.agent,
+            signal.severity,
+            signal.ticker,
+            signal.title,
+            signal.body,
+            signal.score,
+            None,   # routing_status — set by the router, not the agent
+            None,   # signal_price_snapshot — set by discovery agent at generation time
+            None,   # model_version — set by the news classifier
+            None,   # thesis_version_hash — set by the news classifier
+        ))
+        conn.commit()
+        return cursor.rowcount == 1
+    finally:
+        conn.close()
 
 
 def insert_run(job: str) -> str:
-    """
-    Insert a run record.
-
-    Returns the generated run_id (UUID v4).
-    """
+    """Insert a run record. Returns the generated run_id (UUID v4)."""
     run_id = str(uuid.uuid4())
     started_at = datetime.now(ZoneInfo("America/New_York")).isoformat()
     status = "running"
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     try:
         cursor = conn.cursor()
-
         cursor.execute("""
             INSERT INTO runs (run_id, job, started_at, ended_at, status)
             VALUES (?, ?, ?, ?, ?)
         """, (run_id, job, started_at, None, status))
-
         conn.commit()
     finally:
         conn.close()
@@ -126,16 +178,41 @@ def update_run(run_id: str, status: str) -> None:
     """Update a run record with ended_at timestamp and status."""
     ended_at = datetime.now(ZoneInfo("America/New_York")).isoformat()
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     try:
         cursor = conn.cursor()
-
         cursor.execute("""
             UPDATE runs
             SET status = ?, ended_at = ?
             WHERE run_id = ?
         """, (status, ended_at, run_id))
-
         conn.commit()
+    finally:
+        conn.close()
+
+
+def count_delivered_today() -> dict[str, int]:
+    """Return today's DELIVERED signal counts keyed by severity (ET timezone).
+
+    Uses ISO date-prefix matching on the timestamp column — all timestamps are
+    stored as ET ISO strings by convention, so LIKE 'YYYY-MM-DD%' is correct.
+
+    Returns:
+        Dict mapping severity string to count of DELIVERED signals today.
+        Missing severities are absent from the dict (treat as 0).
+        Example: {"INFORMATIONAL": 2, "ACTION_REQUIRED": 1}
+    """
+    today_iso = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT severity, COUNT(*) FROM signals
+            WHERE routing_status = 'DELIVERED'
+              AND timestamp LIKE ? || '%'
+            GROUP BY severity
+        """, (today_iso,))
+        return {row[0]: row[1] for row in cursor.fetchall()}
     finally:
         conn.close()
