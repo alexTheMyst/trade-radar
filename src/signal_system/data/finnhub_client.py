@@ -102,3 +102,44 @@ def fetch_spy_close() -> float:
     if close is None or close <= 0:
         raise ValueError(f"Invalid SPY quote response from Finnhub: {response!r}")
     return float(close)
+
+
+@_RETRY_DECORATOR
+def _fetch_company_news_raw(ticker: str, from_str: str, to_str: str) -> list[dict]:
+    """Rate-limited, retried news fetch. Returns [] on paid-tier 403/404 or missing data."""
+    _acquire_slot()
+    try:
+        result = _get_client().company_news(ticker, from_str, to_str)
+    except FinnhubAPIException as exc:
+        if exc.status_code in PAID_TIER_STATUS_CODES:
+            logger.warning(
+                "News unavailable for %r (HTTP %s) — paid tier or unknown, returning []",
+                ticker,
+                exc.status_code,
+            )
+            return []
+        raise
+    return result if isinstance(result, list) else []
+
+
+def fetch_company_news(ticker: str, from_date: date, to_date: date) -> list[dict]:
+    """Fetch company news headlines for ticker within date range.
+
+    Args:
+        ticker: Stock symbol (e.g. "AAPL").
+        from_date: Start date (inclusive).
+        to_date: End date (inclusive).
+
+    Returns:
+        List of news item dicts. Each item includes at minimum 'headline' and 'source'.
+        Returns [] if no news, paid-tier error, or exhausted retries.
+    """
+    try:
+        return _fetch_company_news_raw(
+            ticker,
+            from_date.isoformat(),  # YYYY-MM-DD
+            to_date.isoformat(),
+        )
+    except Exception as exc:
+        logger.error("Giving up on news for %r after exhausted retries: %s", ticker, exc)
+        return []
