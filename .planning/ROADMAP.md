@@ -16,7 +16,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 2: Data Layer** - Finnhub client extensions with rate limiting and news fetch
 - [ ] **Phase 3: News Classifier** - Claude API agent, thesis-driven classification, prompt caching
 - [x] **Phase 4: Discovery Agent** - Ticker scoring, Phase A logs-only mode, per-factor sub-scores (completed 2026-05-16)
-- [ ] **Phase 5: Alert Router** - Daily budget enforcement, slot competition, deterministic tiebreak
+- [x] **Phase 5: Alert Router** - Daily budget enforcement, slot competition, deterministic tiebreak (completed 2026-05-16)
 - [ ] **Phase 6: Job Orchestration** - news-morning + discovery jobs, digest email, Windows Task Scheduler docs
 
 ## Phase Details
@@ -83,9 +83,8 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. Running the router a second time on the same day (simulating news-morning + discovery both running) reads the current DELIVERED count from the DB and correctly refuses to exceed the budget cap
   3. Two equal-scored ACTION_REQUIRED signals always resolve to the same winner across reruns — alphabetical ticker order is the tiebreak; the loser is SUPPRESSED, not dropped
   4. The daily budget counter resets at `America/New_York` midnight — a signal submitted at 11:59 PM ET is constrained by today's budget; a signal submitted at 12:01 AM ET sees a fresh zero count
-**Plans**: TBD
-
-### Phase 6: Job Orchestration
+**Plans**: 2 plans
+  - [x] 05-01-PLAN.md — Alert Router: pure route_signals(), demoted_from reason codes, cross-run budget read, ET midnight reset
 **Goal**: Wire the agents, router, and delivery layer into runnable `news-morning` and `discovery` jobs, guarantee zero-alert-day digests, document Windows Task Scheduler setup, and schedule the deferred outcome backfill.
 **Mode:** mvp
 **Depends on**: Phase 3, Phase 4, Phase 5
@@ -109,5 +108,5 @@ Phases execute in numeric order. Phase 3 and Phase 4 can be built in parallel (b
 | 2. Data Layer | 1/1 | Complete | 2026-05-15 |
 | 3. News Classifier | 0/TBD | Not started | - |
 | 4. Discovery Agent | 1/1 | Complete   | 2026-05-16 |
-| 5. Alert Router | 0/TBD | Not started | - |
+| 5. Alert Router | 2/2 | Complete | 2026-05-16 |
 | 6. Job Orchestration | 0/TBD | Not started | - |
