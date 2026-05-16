@@ -610,3 +610,27 @@ def test_company_news_date_format(monkeypatch):
 
     assert captured["from_str"] == "2026-05-01", f"Bad from_str: {captured['from_str']!r}"
     assert captured["to_str"] == "2026-05-15", f"Bad to_str: {captured['to_str']!r}"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: T6 — Integration smoke test
+# ---------------------------------------------------------------------------
+
+def test_phase2_public_api_importable():
+    """All Phase 2 public surfaces are importable and have correct signatures."""
+    import inspect
+    from signal_system.data.finnhub_client import (
+        fetch_spy_close,
+        fetch_quotes,
+        fetch_company_news,
+        PAID_TIER_STATUS_CODES,
+    )
+
+    sig = inspect.signature(fetch_quotes)
+    assert "tickers" in sig.parameters
+
+    sig2 = inspect.signature(fetch_company_news)
+    assert set(sig2.parameters.keys()) == {"ticker", "from_date", "to_date"}
+
+    assert 403 in PAID_TIER_STATUS_CODES
+    assert 404 in PAID_TIER_STATUS_CODES
