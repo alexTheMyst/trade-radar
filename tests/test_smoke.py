@@ -6,12 +6,25 @@ All external I/O (Finnhub, SMTP, healthchecks.io) is mocked.
 
 import smtplib
 import sqlite3
+from datetime import date
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from signal_system.state import repository
 from signal_system.jobs import daily_close
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 helpers
+# ---------------------------------------------------------------------------
+
+def _make_finnhub_exc(status_code: int):
+    r = MagicMock()
+    r.status_code = status_code
+    r.json.return_value = {"error": f"http {status_code}"}
+    from finnhub.exceptions import FinnhubAPIException
+    return FinnhubAPIException(r)
 
 
 def test_init_db_creates_tables(tmp_path, monkeypatch):
@@ -405,3 +418,99 @@ def test_phase1_integration_imports(tmp_path, monkeypatch):
     assert config.ANTHROPIC_MODEL
     assert config.THESIS_PATH
     assert config.DISCOVERY_PHASE in ("A", "B")
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: T2 (RED) — token bucket, fetch_quotes, 429 retry
+# ---------------------------------------------------------------------------
+
+def test_token_bucket_calls_sleep(monkeypatch):
+    """_acquire_slot() must call time.sleep with a positive value on the second call."""
+    import signal_system.data.finnhub_client as fc
+
+    counter = [0]
+    time_seq = [0.0, 0.0, 1.2]
+
+    def mono():
+        val = time_seq[min(counter[0], len(time_seq) - 1)]
+        counter[0] += 1
+        return val
+
+    sleep_calls = []
+
+    monkeypatch.setattr(fc.time, "monotonic", mono)
+    monkeypatch.setattr(fc.time, "sleep", lambda s: sleep_calls.append(s))
+    fc._next_call_at = 0.0
+
+    fc._acquire_slot()  # first call: now=0.0, _next_call_at=0.0 → wait=0 → no positive sleep
+    fc._acquire_slot()  # second call: now=0.0, _next_call_at=_MIN_INTERVAL → wait=_MIN_INTERVAL
+
+    positive_sleeps = [s for s in sleep_calls if s > 0]
+    assert len(positive_sleeps) >= 1, f"Expected sleep with positive value, got: {sleep_calls}"
+
+
+def test_fetch_quotes_returns_dict(monkeypatch):
+    """fetch_quotes returns a dict mapping each ticker to its quote dict."""
+    import signal_system.data.finnhub_client as fc
+
+    fake_quote = {"c": 150.0, "h": 151.0, "l": 149.0, "o": 149.5, "pc": 148.0, "t": 1700000000}
+    monkeypatch.setattr(fc, "_acquire_slot", lambda: None)
+    mock_client = MagicMock()
+    mock_client.quote.return_value = fake_quote
+    monkeypatch.setattr(fc, "_get_client", lambda: mock_client)
+
+    result = fc.fetch_quotes(["AAPL", "MSFT"])
+
+    assert isinstance(result, dict)
+    assert "AAPL" in result and "MSFT" in result
+    assert result["AAPL"]["c"] > 0
+    assert result["MSFT"]["c"] > 0
+
+
+def test_fetch_quotes_none_on_zero_price(monkeypatch):
+    """fetch_quotes returns None for a ticker whose close price is 0."""
+    import signal_system.data.finnhub_client as fc
+
+    monkeypatch.setattr(fc, "_acquire_slot", lambda: None)
+    mock_client = MagicMock()
+    mock_client.quote.return_value = {"c": 0, "h": 0, "l": 0, "o": 0, "pc": 0, "t": 0}
+    monkeypatch.setattr(fc, "_get_client", lambda: mock_client)
+
+    result = fc.fetch_quotes(["UNKNOWN"])
+    assert result["UNKNOWN"] is None
+
+
+def test_retry_on_429(monkeypatch):
+    """_fetch_single_quote retries up to 5 times on 429 then raises FinnhubAPIException."""
+    import signal_system.data.finnhub_client as fc
+    from finnhub.exceptions import FinnhubAPIException
+
+    exc = _make_finnhub_exc(429)
+    monkeypatch.setattr(fc, "_acquire_slot", lambda: None)
+    mock_client = MagicMock()
+    mock_client.quote.side_effect = exc
+    monkeypatch.setattr(fc, "_get_client", lambda: mock_client)
+
+    with pytest.raises(FinnhubAPIException):
+        fc._fetch_single_quote("AAPL")
+
+    assert mock_client.quote.call_count == 5, (
+        f"Expected 5 retry attempts, got {mock_client.quote.call_count}"
+    )
+
+
+def test_no_retry_on_403(monkeypatch):
+    """_fetch_single_quote returns None on 403 without retrying (exactly 1 call)."""
+    import signal_system.data.finnhub_client as fc
+
+    exc = _make_finnhub_exc(403)
+    monkeypatch.setattr(fc, "_acquire_slot", lambda: None)
+    mock_client = MagicMock()
+    mock_client.quote.side_effect = exc
+    monkeypatch.setattr(fc, "_get_client", lambda: mock_client)
+
+    result = fc._fetch_single_quote("AAPL")
+    assert result is None
+    assert mock_client.quote.call_count == 1, (
+        f"Expected exactly 1 call (no retry), got {mock_client.quote.call_count}"
+    )
