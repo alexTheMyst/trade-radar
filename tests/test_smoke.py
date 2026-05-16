@@ -1261,3 +1261,120 @@ def test_classify_headlines_alert_id_stable_across_runs(monkeypatch):
     assert len(signals1) == 1
     assert len(signals2) == 1
     assert signals1[0].alert_id == signals2[0].alert_id
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: T13 — Integration smoke tests
+# ---------------------------------------------------------------------------
+
+def test_phase3_public_api_importable():
+    """All Phase 3 public surfaces are importable and have correct signatures."""
+    import inspect
+    from signal_system.classifier import classify_headlines, ClassificationResult
+    from signal_system.state.repository import insert_llm_call
+    from signal_system.models import Signal
+
+    # classify_headlines signature
+    sig = inspect.signature(classify_headlines)
+    assert "ticker" in sig.parameters
+    assert "headlines" in sig.parameters
+    assert "thesis" in sig.parameters
+    assert "thesis_version_hash" in sig.parameters
+    assert "dedup_seen" in sig.parameters
+    assert sig.parameters["dedup_seen"].kind == inspect.Parameter.KEYWORD_ONLY
+
+    # insert_llm_call signature is keyword-only
+    sig2 = inspect.signature(insert_llm_call)
+    for p in sig2.parameters.values():
+        assert p.kind == inspect.Parameter.KEYWORD_ONLY, f"{p.name} must be keyword-only"
+
+    # Signal has new fields
+    sig3 = inspect.signature(Signal)
+    assert "model_version" in sig3.parameters
+    assert "thesis_version_hash" in sig3.parameters
+
+    # ClassificationResult schema fields
+    assert set(ClassificationResult.model_fields.keys()) == {"pillar_name", "confidence", "direction", "rationale"}
+
+
+def test_phase3_end_to_end_mocked(tmp_path, monkeypatch):
+    """End-to-end mocked happy path through classify_headlines AND DB persistence."""
+    from signal_system.classifier import classify_headlines
+    from signal_system.classifier.news_classifier import ClassificationResult
+    from signal_system.state import repository
+    from signal_system import config
+
+    monkeypatch.setattr(repository, "DB_PATH", tmp_path / "test.db")
+    repository.init_db()
+
+    mock_client = _make_mock_anthropic(
+        parsed_output=ClassificationResult(pillar_name="growth", confidence=0.92, direction="positive", rationale="r"),
+        usage_kwargs={"input_tokens": 1000, "output_tokens": 50, "cache_read_input_tokens": 800, "cache_creation_input_tokens": 200},
+    )
+    monkeypatch.setattr("signal_system.classifier.news_classifier._get_client", lambda: mock_client)
+
+    thesis = _make_test_thesis()
+    signals = classify_headlines(
+        "AAPL",
+        [{"headline": "Apple beats earnings"}, {"headline": "Apple beats earnings"}],  # dedup
+        thesis,
+        "thesis_v1_hash",
+    )
+
+    # Dedup: 1 signal returned, 1 API call made
+    assert len(signals) == 1
+    assert mock_client.messages.parse.call_count == 1
+    s = signals[0]
+    assert s.ticker == "AAPL"
+    assert s.severity == "ACTION_REQUIRED"  # 0.92 >= 0.85
+    assert s.model_version == config.ANTHROPIC_MODEL
+    assert s.thesis_version_hash == "thesis_v1_hash"
+
+    # Persist + read back
+    assert repository.insert_signal(s) is True
+    assert repository.insert_signal(s) is False  # idempotent INSERT OR IGNORE
+
+    # Verify llm_calls has one row with cache hit
+    conn = sqlite3.connect(tmp_path / "test.db")
+    rows = conn.execute("SELECT input_tokens, cache_read_input_tokens FROM llm_calls").fetchall()
+    conn.close()
+    assert len(rows) == 1
+    assert rows[0][0] == 1000
+    assert rows[0][1] == 800
+
+
+def test_phase3_end_to_end_parse_failure_persists(tmp_path, monkeypatch):
+    """End-to-end mocked parse-failure path: MONITORING signal lands in DB."""
+    from signal_system.classifier import classify_headlines
+    from signal_system.state import repository
+
+    monkeypatch.setattr(repository, "DB_PATH", tmp_path / "test.db")
+    repository.init_db()
+
+    mock_client = MagicMock()
+    mock_client.messages.parse.side_effect = _make_validation_error()
+    mock_client.messages.create.return_value = MagicMock(
+        content=[MagicMock(text="{unparseable")],
+        usage=MagicMock(input_tokens=100, output_tokens=5, cache_read_input_tokens=0, cache_creation_input_tokens=0),
+    )
+    monkeypatch.setattr("signal_system.classifier.news_classifier._get_client", lambda: mock_client)
+
+    signals = classify_headlines("AAPL", [{"headline": "Bad"}], _make_test_thesis(), "h")
+    assert len(signals) == 1
+    assert signals[0].severity == "MONITORING"
+    assert signals[0].title.startswith("[parse_failure]")
+    assert "{unparseable" in (signals[0].body or "")
+    assert mock_client.messages.parse.call_count == 2   # original + 1 retry
+
+    repository.insert_signal(signals[0])
+    conn = sqlite3.connect(tmp_path / "test.db")
+    row = conn.execute(
+        "SELECT severity, title, body, model_version, thesis_version_hash FROM signals WHERE alert_id=?",
+        (signals[0].alert_id,)
+    ).fetchone()
+    conn.close()
+    assert row[0] == "MONITORING"
+    assert row[1].startswith("[parse_failure]")
+    assert "{unparseable" in row[2]
+    assert row[3] is not None    # model_version stamped
+    assert row[4] == "h"          # thesis_version_hash stamped
