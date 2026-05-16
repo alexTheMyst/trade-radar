@@ -1137,3 +1137,127 @@ def test_parse_failure_signal_unique_alert_ids(monkeypatch):
     mock_client.messages.parse.side_effect = _make_validation_error()
     s2 = classify_headline("AAPL", {"headline": "Headline Two"}, thesis, "h", "SYS")
     assert s1.alert_id != s2.alert_id
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: T11 — classify_headlines batch + dedup + idempotency (RED)
+# ---------------------------------------------------------------------------
+
+def test_classify_headlines_returns_list(monkeypatch):
+    from signal_system.classifier.news_classifier import classify_headlines, ClassificationResult
+    parsed = ClassificationResult(pillar_name="growth", confidence=0.9, direction="positive", rationale="x")
+    mock_client = _make_mock_anthropic(parsed)
+    monkeypatch.setattr("signal_system.classifier.news_classifier._get_client", lambda: mock_client)
+    monkeypatch.setattr("signal_system.classifier.news_classifier.repository.insert_llm_call", MagicMock())
+    thesis = _make_test_thesis()
+    signals = classify_headlines("AAPL", [{"headline": "a"}, {"headline": "b"}, {"headline": "c"}], thesis, "abc")
+    assert isinstance(signals, list)
+    assert len(signals) == 3
+    from signal_system.models import Signal
+    for s in signals:
+        assert isinstance(s, Signal)
+
+
+def test_classify_headlines_dedup_skips_duplicate(monkeypatch):
+    from signal_system.classifier.news_classifier import classify_headlines, ClassificationResult
+    parsed = ClassificationResult(pillar_name="growth", confidence=0.9, direction="positive", rationale="x")
+    mock_client = _make_mock_anthropic(parsed)
+    monkeypatch.setattr("signal_system.classifier.news_classifier._get_client", lambda: mock_client)
+    monkeypatch.setattr("signal_system.classifier.news_classifier.repository.insert_llm_call", MagicMock())
+    thesis = _make_test_thesis()
+    signals = classify_headlines("AAPL", [{"headline": "Apple beats earnings"}, {"headline": "Apple beats earnings"}], thesis, "abc")
+    assert mock_client.messages.parse.call_count == 1
+    assert len(signals) == 1
+
+
+def test_classify_headlines_dedup_normalizes_whitespace(monkeypatch):
+    from signal_system.classifier.news_classifier import classify_headlines, ClassificationResult
+    parsed = ClassificationResult(pillar_name="growth", confidence=0.9, direction="positive", rationale="x")
+    mock_client = _make_mock_anthropic(parsed)
+    monkeypatch.setattr("signal_system.classifier.news_classifier._get_client", lambda: mock_client)
+    monkeypatch.setattr("signal_system.classifier.news_classifier.repository.insert_llm_call", MagicMock())
+    thesis = _make_test_thesis()
+    signals = classify_headlines("AAPL", [{"headline": "Apple beats earnings."}, {"headline": "  apple  BEATS  earnings  "}], thesis, "abc")
+    assert mock_client.messages.parse.call_count == 1
+
+
+def test_classify_headlines_dedup_set_shared_across_calls(monkeypatch):
+    from signal_system.classifier.news_classifier import classify_headlines, ClassificationResult
+    parsed = ClassificationResult(pillar_name="growth", confidence=0.9, direction="positive", rationale="x")
+    mock_client = _make_mock_anthropic(parsed)
+    monkeypatch.setattr("signal_system.classifier.news_classifier._get_client", lambda: mock_client)
+    monkeypatch.setattr("signal_system.classifier.news_classifier.repository.insert_llm_call", MagicMock())
+    thesis = _make_test_thesis()
+    shared_set = set()
+    classify_headlines("AAPL", [{"headline": "x"}], thesis, "abc", dedup_seen=shared_set)
+    classify_headlines("MSFT", [{"headline": "x"}], thesis, "abc", dedup_seen=shared_set)
+    assert mock_client.messages.parse.call_count == 2  # different tickers, both classified
+    classify_headlines("AAPL", [{"headline": "x"}], thesis, "abc", dedup_seen=shared_set)
+    assert mock_client.messages.parse.call_count == 2  # AAPL+x already in shared set
+
+
+def test_classify_headlines_dedup_default_set_is_fresh(monkeypatch):
+    from signal_system.classifier.news_classifier import classify_headlines, ClassificationResult
+    parsed = ClassificationResult(pillar_name="growth", confidence=0.9, direction="positive", rationale="x")
+    mock_client = _make_mock_anthropic(parsed)
+    monkeypatch.setattr("signal_system.classifier.news_classifier._get_client", lambda: mock_client)
+    monkeypatch.setattr("signal_system.classifier.news_classifier.repository.insert_llm_call", MagicMock())
+    thesis = _make_test_thesis()
+    classify_headlines("AAPL", [{"headline": "same headline"}], thesis, "abc")
+    classify_headlines("AAPL", [{"headline": "same headline"}], thesis, "abc")
+    assert mock_client.messages.parse.call_count == 2  # fresh set each call
+
+
+def test_classify_headlines_skips_empty_headline(monkeypatch):
+    from signal_system.classifier.news_classifier import classify_headlines
+    mock_client = MagicMock()
+    monkeypatch.setattr("signal_system.classifier.news_classifier._get_client", lambda: mock_client)
+    monkeypatch.setattr("signal_system.classifier.news_classifier.repository.insert_llm_call", MagicMock())
+    thesis = _make_test_thesis()
+    signals = classify_headlines("AAPL", [{"headline": ""}, {"source": "Reuters"}], thesis, "abc")
+    assert mock_client.messages.parse.call_count == 0
+    assert signals == []
+
+
+def test_classify_headlines_continues_on_parse_failure(monkeypatch):
+    from signal_system.classifier.news_classifier import classify_headlines, ClassificationResult
+    call_count = [0]
+    def side_effect(*args, **kwargs):
+        call_count[0] += 1
+        if call_count[0] <= 2:  # first headline: 2 parse attempts
+            raise _make_validation_error()
+        # second headline: success
+        mock_response = MagicMock()
+        mock_response.parsed_output = ClassificationResult(pillar_name="growth", confidence=0.9, direction="positive", rationale="r")
+        mock_response.usage = MagicMock(input_tokens=100, output_tokens=10, cache_read_input_tokens=0, cache_creation_input_tokens=0)
+        return mock_response
+    mock_client = MagicMock()
+    mock_client.messages.parse.side_effect = side_effect
+    mock_client.messages.create.return_value = MagicMock(
+        content=[MagicMock(text="raw")],
+        usage=MagicMock(input_tokens=50, output_tokens=5, cache_read_input_tokens=0, cache_creation_input_tokens=0),
+    )
+    monkeypatch.setattr("signal_system.classifier.news_classifier._get_client", lambda: mock_client)
+    monkeypatch.setattr("signal_system.classifier.news_classifier.repository.insert_llm_call", MagicMock())
+    thesis = _make_test_thesis()
+    signals = classify_headlines("AAPL", [{"headline": "first"}, {"headline": "second"}], thesis, "h")
+    assert len(signals) == 2
+    severities = {s.severity for s in signals}
+    assert "MONITORING" in severities
+    assert "ACTION_REQUIRED" in severities
+
+
+def test_classify_headlines_alert_id_stable_across_runs(monkeypatch):
+    from signal_system.classifier.news_classifier import classify_headlines, ClassificationResult
+    parsed = ClassificationResult(pillar_name="growth", confidence=0.9, direction="positive", rationale="x")
+    mock_client = _make_mock_anthropic(parsed)
+    monkeypatch.setattr("signal_system.classifier.news_classifier._get_client", lambda: mock_client)
+    monkeypatch.setattr("signal_system.classifier.news_classifier.repository.insert_llm_call", MagicMock())
+    thesis = _make_test_thesis()
+    signals1 = classify_headlines("AAPL", [{"headline": "Apple beats earnings"}], thesis, "abc")
+    mock_client2 = _make_mock_anthropic(parsed)
+    monkeypatch.setattr("signal_system.classifier.news_classifier._get_client", lambda: mock_client2)
+    signals2 = classify_headlines("AAPL", [{"headline": "Apple beats earnings"}], thesis, "abc")
+    assert len(signals1) == 1
+    assert len(signals2) == 1
+    assert signals1[0].alert_id == signals2[0].alert_id
