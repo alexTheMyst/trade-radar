@@ -634,3 +634,139 @@ def test_phase2_public_api_importable():
 
     assert 403 in PAID_TIER_STATUS_CODES
     assert 404 in PAID_TIER_STATUS_CODES
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 helpers (module-scope)
+# ---------------------------------------------------------------------------
+
+def _make_mock_anthropic(parsed_output, usage_kwargs=None):
+    """Create a mocked Anthropic client for classifier tests."""
+    if usage_kwargs is None:
+        usage_kwargs = {}
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_response.parsed_output = parsed_output
+    mock_usage = MagicMock()
+    mock_usage.input_tokens = usage_kwargs.get("input_tokens", 100)
+    mock_usage.output_tokens = usage_kwargs.get("output_tokens", 10)
+    mock_usage.cache_read_input_tokens = usage_kwargs.get("cache_read_input_tokens", 0)
+    mock_usage.cache_creation_input_tokens = usage_kwargs.get("cache_creation_input_tokens", 0)
+    mock_response.usage = mock_usage
+    mock_client.messages.parse.return_value = mock_response
+    return mock_client
+
+
+def _make_test_thesis():
+    """Create a minimal Thesis for testing."""
+    from signal_system.data.thesis_loader import Thesis, Pillar
+    from datetime import date
+    return Thesis(
+        review_due=date(2099, 1, 1),
+        pillars=[
+            Pillar(name="growth", description="GDP-sensitive", keywords=["consumer", "spending"]),
+        ]
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: T1 — Signal dataclass extensions (RED)
+# ---------------------------------------------------------------------------
+
+def test_signal_has_model_version_field():
+    from signal_system.models import Signal, compute_alert_id
+    from zoneinfo import ZoneInfo
+    from datetime import datetime
+    alert_id = compute_alert_id("AAPL", "2026-05-15", "test", "test_agent")
+    signal = Signal(
+        ticker="AAPL", score=0.9, severity="ACTION_REQUIRED", agent="test_agent",
+        timestamp=datetime.now(ZoneInfo("America/New_York")), alert_id=alert_id,
+        title="Test", model_version="claude-sonnet-4-6", thesis_version_hash="abc123",
+    )
+    assert signal.model_version == "claude-sonnet-4-6"
+    assert signal.thesis_version_hash == "abc123"
+
+
+def test_signal_model_version_defaults_to_none():
+    from signal_system.models import Signal, compute_alert_id
+    from zoneinfo import ZoneInfo
+    from datetime import datetime
+    alert_id = compute_alert_id("AAPL", "2026-05-15", "test", "test_agent")
+    signal = Signal(
+        ticker="AAPL", score=0.9, severity="ACTION_REQUIRED", agent="test_agent",
+        timestamp=datetime.now(ZoneInfo("America/New_York")), alert_id=alert_id,
+        title="Test",
+    )
+    assert signal.model_version is None
+    assert signal.thesis_version_hash is None
+
+
+def test_signal_still_frozen_with_new_fields():
+    import dataclasses
+    from signal_system.models import Signal, compute_alert_id
+    from zoneinfo import ZoneInfo
+    from datetime import datetime
+    alert_id = compute_alert_id("AAPL", "2026-05-15", "test", "test_agent")
+    signal = Signal(
+        ticker="AAPL", score=0.9, severity="ACTION_REQUIRED", agent="test_agent",
+        timestamp=datetime.now(ZoneInfo("America/New_York")), alert_id=alert_id,
+        title="Test", model_version="claude-sonnet-4-6",
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        signal.model_version = "x"
+
+
+def test_insert_signal_persists_model_version(tmp_path, monkeypatch):
+    from signal_system.models import Signal, compute_alert_id
+    from signal_system.state import repository
+    from zoneinfo import ZoneInfo
+    from datetime import datetime
+    monkeypatch.setattr(repository, "DB_PATH", tmp_path / "test.db")
+    repository.init_db()
+    alert_id = compute_alert_id("AAPL", "2026-05-15", "test", "test_agent")
+    signal = Signal(
+        ticker="AAPL", score=0.9, severity="ACTION_REQUIRED", agent="test_agent",
+        timestamp=datetime.now(ZoneInfo("America/New_York")), alert_id=alert_id,
+        title="Test", model_version="claude-sonnet-4-6", thesis_version_hash="abc123",
+    )
+    repository.insert_signal(signal)
+    conn = sqlite3.connect(tmp_path / "test.db")
+    row = conn.execute(
+        "SELECT model_version, thesis_version_hash FROM signals WHERE alert_id=?",
+        (alert_id,)
+    ).fetchone()
+    conn.close()
+    assert row[0] == "claude-sonnet-4-6"
+    assert row[1] == "abc123"
+
+
+def test_insert_signal_legacy_signal_persists_null(tmp_path, monkeypatch):
+    from signal_system.models import Signal, compute_alert_id
+    from signal_system.state import repository
+    from zoneinfo import ZoneInfo
+    from datetime import datetime
+    monkeypatch.setattr(repository, "DB_PATH", tmp_path / "test.db")
+    repository.init_db()
+    alert_id = compute_alert_id("AAPL", "2026-05-15", "legacy", "test_agent")
+    signal = Signal(
+        ticker="AAPL", score=0.5, severity="INFORMATIONAL", agent="test_agent",
+        timestamp=datetime.now(ZoneInfo("America/New_York")), alert_id=alert_id,
+        title="Legacy",
+    )
+    repository.insert_signal(signal)
+    conn = sqlite3.connect(tmp_path / "test.db")
+    row = conn.execute(
+        "SELECT model_version, thesis_version_hash FROM signals WHERE alert_id=?",
+        (alert_id,)
+    ).fetchone()
+    conn.close()
+    assert row[0] is None
+    assert row[1] is None
+
+
+def test_alert_id_stable_after_new_fields():
+    from signal_system.models import compute_alert_id
+    alert_id1 = compute_alert_id("AAPL", "2026-05-15", "test", "test_agent")
+    alert_id2 = compute_alert_id("AAPL", "2026-05-15", "test", "test_agent")
+    assert alert_id1 == alert_id2
+    assert len(alert_id1) == 64
