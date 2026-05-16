@@ -94,6 +94,25 @@ def fetch_quotes(tickers: list[str]) -> dict[str, dict | None]:
     return results
 
 
+def fetch_quote(ticker: str) -> dict | None:
+    """Fetch and validate a single quote for Discovery Agent scoring.
+
+    Returns the full quote dict (c, dp, v, h, l) if all required score-floor
+    fields are present and valid, else None.
+    """
+    quote = _fetch_single_quote(ticker)
+    if quote is None:
+        return None
+    dp = quote.get("dp")
+    v = quote.get("v")
+    h = quote.get("h", 0)
+    l = quote.get("l", 0)
+    if dp is None or v is None or h < l or l <= 0:
+        logger.debug("Incomplete quote for %r — skipping", ticker)
+        return None
+    return quote
+
+
 def fetch_spy_close() -> float:
     """Return SPY close price; raises ValueError on missing or non-positive data."""
     _acquire_slot()

@@ -33,6 +33,7 @@ class Signal:
     sub_scores: dict[str, float] = field(default_factory=dict)
     model_version: str | None = None
     thesis_version_hash: str | None = None
+    signal_price_snapshot: float | None = None
 
 
 def compute_alert_id(ticker: str | None, date_iso: str, rule: str, agent: str) -> str:

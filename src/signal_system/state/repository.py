@@ -85,6 +85,10 @@ def init_db() -> None:
         _ensure_column(cursor, "signals", "model_version", "TEXT")
         _ensure_column(cursor, "signals", "thesis_version_hash", "TEXT")
 
+        # Idempotent column additions to runs (Phase 4 schema extensions)
+        _ensure_column(cursor, "runs", "tickers_scanned", "INTEGER")
+        _ensure_column(cursor, "runs", "tickers_signaled", "INTEGER")
+
         # New tables (Phase 1)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS wash_sale (
@@ -118,7 +122,7 @@ def init_db() -> None:
         conn.close()
 
 
-def insert_signal(signal: Signal) -> bool:
+def insert_signal(signal: Signal, routing_status: str | None = None) -> bool:
     """Insert a Signal into the database using INSERT OR IGNORE semantics.
 
     Returns:
@@ -143,8 +147,8 @@ def insert_signal(signal: Signal) -> bool:
             signal.title,
             signal.body,
             signal.score,
-            None,   # routing_status — set by the router, not the agent
-            None,   # signal_price_snapshot — set by discovery agent at generation time
+            routing_status,                 # routing_status — caller passes "MONITORING" in Phase A
+            signal.signal_price_snapshot,   # set by discovery agent at generation time
             signal.model_version,    # stamped by the classifier (CLFY-02/TAX-04)
             signal.thesis_version_hash,  # stamped by the classifier (CLFY-02/TAX-04)
         ))
@@ -186,6 +190,23 @@ def update_run(run_id: str, status: str) -> None:
             SET status = ?, ended_at = ?
             WHERE run_id = ?
         """, (status, ended_at, run_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def update_run_counts(run_id: str, tickers_scanned: int, tickers_signaled: int) -> None:
+    """Write tickers_scanned and tickers_signaled counts to the runs row.
+
+    Call once per score_universe() invocation, before returning.
+    """
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE runs SET tickers_scanned = ?, tickers_signaled = ? WHERE run_id = ?",
+            (tickers_scanned, tickers_signaled, run_id),
+        )
         conn.commit()
     finally:
         conn.close()
