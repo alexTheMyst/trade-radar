@@ -227,7 +227,7 @@ _RETRY_DECORATOR = retry(
 - `min=2` — first wait is 2 seconds (not 4 as in tenacity default example), appropriate for a 429 that may resolve quickly
 - `max=60` — caps at 60s; beyond this, a paid-tier error or sustained outage should surface, not hide in retries
 - `stop_after_attempt(5)` — 5 total attempts (1 original + 4 retries)
-- `reraise=True` — final failure raises the original `FinnhubAPIException`, not a `RetryError`, so caller can inspect `status_code`
+- `reraise=True` — final failure raises the original `FinnhubAPIException`, not a `RetryError`, so caller can inspect `status_code`. **Alternative:** `retry_error_callback=lambda rs: None` makes exhaustion return `None` instead of raising — useful if you want the decorator itself to absorb the error. Chosen here: `reraise=True` because the `fetch_quotes` loop catches exhausted retries explicitly (see §5), keeping error handling visible at the call site rather than hidden in the decorator.
 - `before_sleep_log` — logs attempt number and wait time at WARNING level before each sleep [VERIFIED: tenacity 9.1.4 docs, github.com/jd/tenacity]
 
 ### Usage
@@ -380,11 +380,16 @@ def fetch_quotes(tickers: list[str]) -> dict[str, dict | None]:
     """Fetch quotes for a list of tickers with rate limiting and retry.
 
     Returns a mapping of ticker -> quote dict (or None if data unavailable).
-    Never raises on individual ticker failures — logs and returns None.
+    Persistent failures (429 exhausted after 5 attempts) are caught per-ticker:
+    that ticker gets None and the batch continues. Does not raise.
     """
     results: dict[str, dict | None] = {}
     for ticker in tickers:
-        results[ticker] = _fetch_single_quote(ticker)
+        try:
+            results[ticker] = _fetch_single_quote(ticker)
+        except Exception as exc:
+            logger.error("Giving up on %r after exhausted retries: %s", ticker, exc)
+            results[ticker] = None
     return results
 
 
@@ -396,7 +401,7 @@ def _fetch_single_quote(ticker: str) -> dict | None:
         response = _get_client().quote(ticker)
     except FinnhubAPIException as exc:
         if exc.status_code in PAID_TIER_STATUS_CODES:
-            logger.warning("Paid-tier/unavailable quote for %r (HTTP %s) — skipping", ticker, exc.status_code)
+            logger.warning("Quote unavailable for %r (HTTP %s) — paid endpoint or unknown ticker, skipping", ticker, exc.status_code)
             return None
         raise  # 429 and transient errors re-raised → tenacity retries
 
@@ -490,7 +495,7 @@ def _fetch_company_news_raw(ticker: str, from_str: str, to_str: str) -> list[dic
         result = _get_client().company_news(ticker, from_str, to_str)
     except FinnhubAPIException as exc:
         if exc.status_code in PAID_TIER_STATUS_CODES:
-            logger.warning("Paid-tier/unavailable news for %r (HTTP %s) — returning []", ticker, exc.status_code)
+            logger.warning("News unavailable for %r (HTTP %s) — paid endpoint or unknown ticker, returning []", ticker, exc.status_code)
             return []
         raise
     return result if isinstance(result, list) else []
