@@ -518,7 +518,7 @@ requires-dist = [
     { name = "anthropic" },
     { name = "finnhub-python" },
     { name = "httpx" },
-    { name = "pydantic" },
+    { name = "pydantic", specifier = ">=2.0" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
     { name = "tzdata" },

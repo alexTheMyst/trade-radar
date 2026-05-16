@@ -8,7 +8,7 @@ dependencies = [
     "python-dotenv",
     "pyyaml",
     "httpx",
-    "pydantic",
+    "pydantic>=2.0",
     "tzdata",
 ]
 

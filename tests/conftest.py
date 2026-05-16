@@ -14,4 +14,5 @@ os.environ.setdefault("GMAIL_USERNAME", "test@example.com")
 os.environ.setdefault("GMAIL_APP_PASSWORD", "test_password")
 os.environ.setdefault("ALERT_RECIPIENT_EMAIL", "recipient@example.com")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test_anthropic_key")
+os.environ.setdefault("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 
