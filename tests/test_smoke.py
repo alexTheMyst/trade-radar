@@ -1048,3 +1048,92 @@ def test_classify_coerces_none_cache_counts_to_zero(monkeypatch):
     call_kwargs = mock_insert.call_args.kwargs
     assert call_kwargs["cache_read_input_tokens"] == 0
     assert call_kwargs["cache_creation_input_tokens"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: T9 — parse-failure retry + MONITORING signal (RED)
+# ---------------------------------------------------------------------------
+
+def _make_validation_error():
+    """Helper: produce a real pydantic.ValidationError instance."""
+    from pydantic import BaseModel, ValidationError
+    class Probe(BaseModel):
+        x: int
+    try:
+        Probe.model_validate({"x": "not-an-int"})
+    except ValidationError as e:
+        return e
+    raise RuntimeError("unreachable")
+
+
+def test_parse_failure_retries_once_then_monitoring(monkeypatch):
+    from signal_system.classifier.news_classifier import classify_headline
+    from signal_system import config
+    mock_client = MagicMock()
+    mock_client.messages.parse.side_effect = _make_validation_error()
+    mock_client.messages.create.return_value = MagicMock(
+        content=[MagicMock(text="{not valid json")],
+        usage=MagicMock(input_tokens=120, output_tokens=20, cache_read_input_tokens=0, cache_creation_input_tokens=0),
+    )
+    monkeypatch.setattr("signal_system.classifier.news_classifier._get_client", lambda: mock_client)
+    monkeypatch.setattr("signal_system.classifier.news_classifier.repository.insert_llm_call", MagicMock())
+    thesis = _make_test_thesis()
+    result = classify_headline("AAPL", {"headline": "Some news"}, thesis, "hash1", "SYS")
+    assert mock_client.messages.parse.call_count == 2
+    assert result is not None
+    assert result.severity == "MONITORING"
+    assert result.title.startswith("[parse_failure]")
+    assert "{not valid json" in (result.body or "")
+    assert result.model_version == config.ANTHROPIC_MODEL
+    assert result.thesis_version_hash == "hash1"
+
+
+def test_parse_failure_logs_llm_call(monkeypatch):
+    from signal_system.classifier.news_classifier import classify_headline
+    mock_client = MagicMock()
+    mock_client.messages.parse.side_effect = _make_validation_error()
+    mock_client.messages.create.return_value = MagicMock(
+        content=[MagicMock(text="raw text")],
+        usage=MagicMock(input_tokens=100, output_tokens=5, cache_read_input_tokens=0, cache_creation_input_tokens=0),
+    )
+    monkeypatch.setattr("signal_system.classifier.news_classifier._get_client", lambda: mock_client)
+    mock_insert = MagicMock()
+    monkeypatch.setattr("signal_system.classifier.news_classifier.repository.insert_llm_call", mock_insert)
+    thesis = _make_test_thesis()
+    classify_headline("AAPL", {"headline": "Some news"}, thesis, "h", "SYS")
+    assert mock_insert.call_count >= 1
+
+
+def test_empty_parsed_output_emits_monitoring(monkeypatch):
+    from signal_system.classifier.news_classifier import classify_headline
+    mock_response = MagicMock()
+    mock_response.parsed_output = None
+    mock_response.usage = MagicMock(input_tokens=100, output_tokens=10, cache_read_input_tokens=0, cache_creation_input_tokens=0)
+    mock_client = MagicMock()
+    mock_client.messages.parse.return_value = mock_response
+    monkeypatch.setattr("signal_system.classifier.news_classifier._get_client", lambda: mock_client)
+    monkeypatch.setattr("signal_system.classifier.news_classifier.repository.insert_llm_call", MagicMock())
+    thesis = _make_test_thesis()
+    result = classify_headline("AAPL", {"headline": "Test"}, thesis, "h", "SYS")
+    assert mock_client.messages.parse.call_count == 1  # no retry
+    assert result is not None
+    assert result.severity == "MONITORING"
+    assert result.title.startswith("[parse_failure]")
+    assert "no parseable text block" in (result.body or "")
+
+
+def test_parse_failure_signal_unique_alert_ids(monkeypatch):
+    from signal_system.classifier.news_classifier import classify_headline
+    mock_client = MagicMock()
+    mock_client.messages.parse.side_effect = _make_validation_error()
+    mock_client.messages.create.return_value = MagicMock(
+        content=[MagicMock(text="raw")],
+        usage=MagicMock(input_tokens=50, output_tokens=5, cache_read_input_tokens=0, cache_creation_input_tokens=0),
+    )
+    monkeypatch.setattr("signal_system.classifier.news_classifier._get_client", lambda: mock_client)
+    monkeypatch.setattr("signal_system.classifier.news_classifier.repository.insert_llm_call", MagicMock())
+    thesis = _make_test_thesis()
+    s1 = classify_headline("AAPL", {"headline": "Headline One"}, thesis, "h", "SYS")
+    mock_client.messages.parse.side_effect = _make_validation_error()
+    s2 = classify_headline("AAPL", {"headline": "Headline Two"}, thesis, "h", "SYS")
+    assert s1.alert_id != s2.alert_id
