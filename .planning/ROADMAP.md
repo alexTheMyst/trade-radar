@@ -58,7 +58,8 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Injecting a malformed headline (control characters, 800-char string) results in a sanitized, `<headline>`-delimited string reaching the API — the raw content never appears in the prompt
   4. When the API returns unparseable JSON, a MONITORING-severity signal row is inserted with `raw_response` captured — no classification attempt is silently dropped
   5. Running the classifier twice on the same ticker and trading day produces the same set of `alert_id` values; duplicate headlines are not re-classified
-**Plans**: TBD
+**Plans**: 1 plan
+  - [ ] 03-PLAN.md — News Classifier: sanitization, messages.parse() with cached thesis, tenacity-retried parse-failure recovery, two-layer dedup, Signal extended with model_version + thesis_version_hash, insert_llm_call helper
 
 ### Phase 4: Discovery Agent
 **Goal**: Deliver a working Discovery Agent that scores tickers from the rotation universe across 4 weighted factors, enforces a score-floor guard for missing data, and operates in Phase A logs-only mode controlled entirely by config.
