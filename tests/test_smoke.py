@@ -929,3 +929,122 @@ def test_build_system_prompt_is_deterministic():
         pillars=[Pillar(name="growth", description="GDP-sensitive", keywords=["consumer"])]
     )
     assert _build_system_prompt(thesis) == _build_system_prompt(thesis)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: T7 — classify_headline API kwargs + llm_calls logging (RED)
+# ---------------------------------------------------------------------------
+
+def test_classify_uses_temperature_zero(monkeypatch):
+    from signal_system.classifier.news_classifier import classify_headline, ClassificationResult
+    from signal_system import config
+    parsed = ClassificationResult(pillar_name="growth", confidence=0.9, direction="positive", rationale="x")
+    mock_client = _make_mock_anthropic(parsed)
+    monkeypatch.setattr("signal_system.classifier.news_classifier._get_client", lambda: mock_client)
+    monkeypatch.setattr("signal_system.classifier.news_classifier.repository.insert_llm_call", MagicMock())
+    thesis = _make_test_thesis()
+    classify_headline("AAPL", {"headline": "Apple beats earnings"}, thesis, "abc", "SYS")
+    assert mock_client.messages.parse.call_args.kwargs["temperature"] == 0.0
+    assert mock_client.messages.parse.call_args.kwargs["model"] == config.ANTHROPIC_MODEL
+
+
+def test_classify_passes_output_format(monkeypatch):
+    from signal_system.classifier.news_classifier import classify_headline, ClassificationResult
+    parsed = ClassificationResult(pillar_name="growth", confidence=0.9, direction="positive", rationale="x")
+    mock_client = _make_mock_anthropic(parsed)
+    monkeypatch.setattr("signal_system.classifier.news_classifier._get_client", lambda: mock_client)
+    monkeypatch.setattr("signal_system.classifier.news_classifier.repository.insert_llm_call", MagicMock())
+    thesis = _make_test_thesis()
+    classify_headline("AAPL", {"headline": "Apple beats earnings"}, thesis, "abc", "SYS")
+    assert mock_client.messages.parse.call_args.kwargs["output_format"] is ClassificationResult
+
+
+def test_system_includes_cache_control(monkeypatch):
+    from signal_system.classifier.news_classifier import classify_headline, ClassificationResult
+    parsed = ClassificationResult(pillar_name="growth", confidence=0.9, direction="positive", rationale="x")
+    mock_client = _make_mock_anthropic(parsed)
+    monkeypatch.setattr("signal_system.classifier.news_classifier._get_client", lambda: mock_client)
+    monkeypatch.setattr("signal_system.classifier.news_classifier.repository.insert_llm_call", MagicMock())
+    thesis = _make_test_thesis()
+    classify_headline("AAPL", {"headline": "Apple beats earnings"}, thesis, "abc", "SYS")
+    system = mock_client.messages.parse.call_args.kwargs["system"]
+    assert isinstance(system, list) and len(system) == 1
+    block = system[0]
+    assert block["type"] == "text"
+    assert block["text"] == "SYS"
+    assert block["cache_control"] == {"type": "ephemeral"}
+
+
+def test_classify_user_message_has_sanitized_headline(monkeypatch):
+    from signal_system.classifier.news_classifier import classify_headline, ClassificationResult
+    parsed = ClassificationResult(pillar_name="growth", confidence=0.9, direction="positive", rationale="x")
+    mock_client = _make_mock_anthropic(parsed)
+    monkeypatch.setattr("signal_system.classifier.news_classifier._get_client", lambda: mock_client)
+    monkeypatch.setattr("signal_system.classifier.news_classifier.repository.insert_llm_call", MagicMock())
+    thesis = _make_test_thesis()
+    classify_headline("AAPL", {"headline": "Apple beats earnings"}, thesis, "abc", "SYS")
+    messages = mock_client.messages.parse.call_args.kwargs["messages"]
+    assert messages == [{"role": "user", "content": "<headline>Apple beats earnings</headline>"}]
+
+
+def test_classify_logs_llm_call_with_four_token_counts(monkeypatch):
+    from signal_system.classifier.news_classifier import classify_headline, ClassificationResult
+    from signal_system import config
+    parsed = ClassificationResult(pillar_name="growth", confidence=0.9, direction="positive", rationale="x")
+    mock_client = _make_mock_anthropic(parsed, {"input_tokens": 100, "output_tokens": 10, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0})
+    monkeypatch.setattr("signal_system.classifier.news_classifier._get_client", lambda: mock_client)
+    mock_insert = MagicMock()
+    monkeypatch.setattr("signal_system.classifier.news_classifier.repository.insert_llm_call", mock_insert)
+    thesis = _make_test_thesis()
+    classify_headline("AAPL", {"headline": "Apple beats earnings"}, thesis, "abc", "SYS")
+    mock_insert.assert_called_once_with(
+        job="news_classifier",
+        model_version=config.ANTHROPIC_MODEL,
+        input_tokens=100,
+        output_tokens=10,
+        cache_read_input_tokens=0,
+        cache_creation_input_tokens=0,
+    )
+
+
+def test_classify_returns_signal_with_stamped_fields(monkeypatch):
+    from signal_system.classifier.news_classifier import classify_headline, ClassificationResult
+    from signal_system import config
+    parsed = ClassificationResult(pillar_name="growth", confidence=0.9, direction="positive", rationale="x")
+    mock_client = _make_mock_anthropic(parsed)
+    monkeypatch.setattr("signal_system.classifier.news_classifier._get_client", lambda: mock_client)
+    monkeypatch.setattr("signal_system.classifier.news_classifier.repository.insert_llm_call", MagicMock())
+    thesis = _make_test_thesis()
+    signal = classify_headline("AAPL", {"headline": "Apple beats earnings"}, thesis, "abc", "SYS")
+    assert signal is not None
+    assert signal.agent == "news_classifier"
+    assert signal.ticker == "AAPL"
+    assert signal.model_version == config.ANTHROPIC_MODEL
+    assert signal.thesis_version_hash == "abc"
+    assert signal.severity == "ACTION_REQUIRED"  # 0.9 >= 0.85
+
+
+def test_classify_returns_none_when_pillar_name_none(monkeypatch):
+    from signal_system.classifier.news_classifier import classify_headline, ClassificationResult
+    parsed = ClassificationResult(pillar_name=None, confidence=0.3, direction="neutral", rationale="off-thesis")
+    mock_client = _make_mock_anthropic(parsed)
+    monkeypatch.setattr("signal_system.classifier.news_classifier._get_client", lambda: mock_client)
+    monkeypatch.setattr("signal_system.classifier.news_classifier.repository.insert_llm_call", MagicMock())
+    thesis = _make_test_thesis()
+    result = classify_headline("AAPL", {"headline": "Weather report"}, thesis, "abc", "SYS")
+    assert result is None
+
+
+def test_classify_coerces_none_cache_counts_to_zero(monkeypatch):
+    from signal_system.classifier.news_classifier import classify_headline, ClassificationResult
+    from signal_system import config
+    parsed = ClassificationResult(pillar_name="growth", confidence=0.9, direction="positive", rationale="x")
+    mock_client = _make_mock_anthropic(parsed, {"cache_read_input_tokens": None, "cache_creation_input_tokens": None})
+    monkeypatch.setattr("signal_system.classifier.news_classifier._get_client", lambda: mock_client)
+    mock_insert = MagicMock()
+    monkeypatch.setattr("signal_system.classifier.news_classifier.repository.insert_llm_call", mock_insert)
+    thesis = _make_test_thesis()
+    classify_headline("AAPL", {"headline": "Apple beats earnings"}, thesis, "abc", "SYS")
+    call_kwargs = mock_insert.call_args.kwargs
+    assert call_kwargs["cache_read_input_tokens"] == 0
+    assert call_kwargs["cache_creation_input_tokens"] == 0
