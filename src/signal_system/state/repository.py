@@ -145,8 +145,8 @@ def insert_signal(signal: Signal) -> bool:
             signal.score,
             None,   # routing_status — set by the router, not the agent
             None,   # signal_price_snapshot — set by discovery agent at generation time
-            None,   # model_version — set by the news classifier
-            None,   # thesis_version_hash — set by the news classifier
+            signal.model_version,    # stamped by the classifier (CLFY-02/TAX-04)
+            signal.thesis_version_hash,  # stamped by the classifier (CLFY-02/TAX-04)
         ))
         conn.commit()
         return cursor.rowcount == 1
