@@ -89,6 +89,9 @@ def init_db() -> None:
         _ensure_column(cursor, "runs", "tickers_scanned", "INTEGER")
         _ensure_column(cursor, "runs", "tickers_signaled", "INTEGER")
 
+        # Idempotent column additions to signals (Phase 5 schema extensions)
+        _ensure_column(cursor, "signals", "demoted_from", "TEXT")
+
         # New tables (Phase 1)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS wash_sale (
@@ -122,7 +125,11 @@ def init_db() -> None:
         conn.close()
 
 
-def insert_signal(signal: Signal, routing_status: str | None = None) -> bool:
+def insert_signal(
+    signal: Signal,
+    routing_status: str | None = None,
+    demoted_from: str | None = None,
+) -> bool:
     """Insert a Signal into the database using INSERT OR IGNORE semantics.
 
     Returns:
@@ -136,8 +143,8 @@ def insert_signal(signal: Signal, routing_status: str | None = None) -> bool:
             INSERT OR IGNORE INTO signals (
                 alert_id, timestamp, agent, severity, ticker, title, body,
                 score, routing_status, signal_price_snapshot, model_version,
-                thesis_version_hash
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                thesis_version_hash, demoted_from
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             signal.alert_id,
             signal.timestamp.isoformat(),
@@ -147,10 +154,11 @@ def insert_signal(signal: Signal, routing_status: str | None = None) -> bool:
             signal.title,
             signal.body,
             signal.score,
-            routing_status,                 # routing_status — caller passes "MONITORING" in Phase A
-            signal.signal_price_snapshot,   # set by discovery agent at generation time
-            signal.model_version,    # stamped by the classifier (CLFY-02/TAX-04)
-            signal.thesis_version_hash,  # stamped by the classifier (CLFY-02/TAX-04)
+            routing_status,
+            signal.signal_price_snapshot,
+            signal.model_version,
+            signal.thesis_version_hash,
+            demoted_from,               # Phase 5 addition (D-11)
         ))
         conn.commit()
         return cursor.rowcount == 1
