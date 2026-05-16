@@ -191,6 +191,43 @@ def update_run(run_id: str, status: str) -> None:
         conn.close()
 
 
+def insert_llm_call(
+    *,
+    job: str,
+    model_version: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_input_tokens: int,
+    cache_creation_input_tokens: int,
+) -> None:
+    """Log one LLM API call's token telemetry to the llm_calls table.
+
+    All parameters are keyword-only to prevent positional-arg drift if columns change.
+    Callers must coerce None cache counts to 0 before calling (use 'or 0' pattern).
+    """
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """INSERT INTO llm_calls
+               (job, model_version, input_tokens, output_tokens,
+                cache_read_input_tokens, cache_creation_input_tokens, timestamp)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                job,
+                model_version,
+                input_tokens,
+                output_tokens,
+                cache_read_input_tokens,
+                cache_creation_input_tokens,
+                datetime.now(ZoneInfo("America/New_York")).isoformat(),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def count_delivered_today() -> dict[str, int]:
     """Return today's DELIVERED signal counts keyed by severity (ET timezone).
 
