@@ -35,7 +35,6 @@ result: pass
 ## Summary
 
 total: 5
-passed: 4
 passed: 5
 issues: 0
 pending: 0
