@@ -69,11 +69,11 @@ Requirements for the current milestone. Each maps to roadmap phases.
 
 ### Discovery Agent
 
-- [ ] **DISC-01**: Discovery Agent scores tickers across 4 factors (configurable weights defaulting to 35/30/25/10) using available Finnhub free-tier endpoints
-- [ ] **DISC-02**: Tickers with missing required data fields receive no score (score-floor guard) — not an artificially low score
-- [ ] **DISC-03**: Discovery Agent operates in Phase A (logs-only) mode when `DISCOVERY_PHASE=A` is set in config; Phase B (live routing) is activated by changing the config value — no code change required
-- [ ] **DISC-04**: Discovery Agent emits `Signal` objects with per-factor sub-scores retained; it never sends email directly
-- [ ] **DISC-05**: Discovery Agent logs the set of tickers scanned in each run to the `runs` table for auditability
+- [x] **DISC-01**: Discovery Agent scores tickers across 4 factors (configurable weights defaulting to 35/30/25/10) using available Finnhub free-tier endpoints
+- [x] **DISC-02**: Tickers with missing required data fields receive no score (score-floor guard) — not an artificially low score
+- [x] **DISC-03**: Discovery Agent operates in Phase A (logs-only) mode when `DISCOVERY_PHASE=A` is set in config; Phase B (live routing) is activated by changing the config value — no code change required
+- [x] **DISC-04**: Discovery Agent emits `Signal` objects with per-factor sub-scores retained; it never sends email directly
+- [x] **DISC-05**: Discovery Agent logs the set of tickers scanned in each run to the `runs` table for auditability
 
 ### Alert Router
 
@@ -177,11 +177,11 @@ Deferred to future. Not in current roadmap.
 | CLFY-04 | Phase 3 | Pending |
 | CLFY-05 | Phase 3 | Pending |
 | CLFY-06 | Phase 3 | Pending |
-| DISC-01 | Phase 4 | Pending |
-| DISC-02 | Phase 4 | Pending |
-| DISC-03 | Phase 4 | Pending |
-| DISC-04 | Phase 4 | Pending |
-| DISC-05 | Phase 4 | Pending |
+| DISC-01 | Phase 4 | Complete |
+| DISC-02 | Phase 4 | Complete |
+| DISC-03 | Phase 4 | Complete |
+| DISC-04 | Phase 4 | Complete |
+| DISC-05 | Phase 4 | Complete |
 | ROUT-01 | Phase 5 | Pending |
 | ROUT-02 | Phase 5 | Pending |
 | ROUT-03 | Phase 5 | Pending |

@@ -15,7 +15,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 1: Foundation** - Shared Signal type, thesis taxonomy, ticker universe, and schema extensions
 - [ ] **Phase 2: Data Layer** - Finnhub client extensions with rate limiting and news fetch
 - [ ] **Phase 3: News Classifier** - Claude API agent, thesis-driven classification, prompt caching
-- [ ] **Phase 4: Discovery Agent** - Ticker scoring, Phase A logs-only mode, per-factor sub-scores
+- [x] **Phase 4: Discovery Agent** - Ticker scoring, Phase A logs-only mode, per-factor sub-scores (completed 2026-05-16)
 - [ ] **Phase 5: Alert Router** - Daily budget enforcement, slot competition, deterministic tiebreak
 - [ ] **Phase 6: Job Orchestration** - news-morning + discovery jobs, digest email, Windows Task Scheduler docs
 
@@ -108,6 +108,6 @@ Phases execute in numeric order. Phase 3 and Phase 4 can be built in parallel (b
 | 1. Foundation | 1/1 | Complete | 2026-05-15 |
 | 2. Data Layer | 1/1 | Complete | 2026-05-15 |
 | 3. News Classifier | 0/TBD | Not started | - |
-| 4. Discovery Agent | 0/TBD | Not started | - |
+| 4. Discovery Agent | 1/1 | Complete   | 2026-05-16 |
 | 5. Alert Router | 0/TBD | Not started | - |
 | 6. Job Orchestration | 0/TBD | Not started | - |
