@@ -15,10 +15,12 @@ Build the Discovery Agent that scores today's rotation universe tickers across 4
 
 ### Scoring Factors (DISC-01)
 
+**NOTE:** `/stock/candle` and `/stock/metric` are confirmed paid-tier on Finnhub free plan (GitHub issue, April 2025). Factor design uses only confirmed free-tier endpoints: `/quote` and `/company-news`.
+
 - **D-01:** Four scoring factors and weights (configurable, defaulting to):
-  - `price_momentum` (35%): 20-day return from `/stock/candle` (OHLCV, daily resolution, 20 bars)
-  - `volume_surge` (30%): today's volume ÷ 20-day average volume from the same 20-bar candle response
-  - `range_position` (25%): `(current - 52w_low) / (52w_high - 52w_low)` from `/stock/metric` basicFinancials (`52WeekHigh`, `52WeekLow`); current price taken from the last candle's close
+  - `price_momentum` (35%): daily % change `dp` from `/quote`
+  - `volume_rank` (30%): raw volume `v` from `/quote`, cross-sectionally ranked across today's valid tickers — relative to the scanned universe, not vs own history (no candle baseline available)
+  - `range_position` (25%): `(c - l) / (h - l)` — where current price closed within today's intraday high/low range, using `c`/`h`/`l` from `/quote`; treated as 0.0 if `h == l` (flat day, illiquid)
   - `news_activity` (10%): count of news items in the last 7 days from `/company-news` (already available via `fetch_company_news()`)
 
 - **D-02:** Sub-score mapping is **cross-sectional rank normalization** — after fetching raw values for all valid tickers, rank each ticker's raw value per factor against all other valid tickers today. Top = 1.0, bottom = 0.0, linear between. Tickers with equal raw values are ranked alphabetically by ticker symbol (consistent tiebreak).
@@ -26,18 +28,17 @@ Build the Discovery Agent that scores today's rotation universe tickers across 4
 - **D-03:** Composite score formula: `(35 * momentum_rank + 30 * volume_rank + 25 * range_rank + 10 * news_rank)`. Result is in `[0.0, 100.0]`. Stored as `Signal.score`.
 
 - **D-04:** Per-factor sub-scores are stored in `Signal.sub_scores` as a dict of ranks (not raw values):
-  `{"price_momentum": 0.87, "volume_surge": 0.72, "range_position": 0.54, "news_activity": 0.30}`
+  `{"price_momentum": 0.87, "volume_rank": 0.72, "range_position": 0.54, "news_activity": 0.30}`
 
 ### Score-Floor Guard (DISC-02)
 
-- **D-05:** **Candle history is the only required factor.** If `/stock/candle` returns 403/404 or insufficient bars (< 20) for a ticker, skip that ticker entirely — no Signal, no MONITORING row.
+- **D-05:** **Quote is the only required factor.** If `/quote` returns 403/404 or an invalid response (null `c`, `dp`, `v`, `h`, `l`), skip that ticker entirely — no Signal, no MONITORING row. The quote provides 3 of 4 factors.
 
-- **D-06:** `/stock/metric` (range_position) and `/company-news` (news_activity) are **optional**. If unavailable or empty:
-  - `range_position_rank = 0.0` (worst rank — conservative, not artificially boosting)
-  - `news_activity_rank = 0.0`
-  - Composite score still computed from all 4 factors; the missing factor contributes its worst-case 0.0 rank.
+- **D-06:** `/company-news` (news_activity) is **optional**. If unavailable or fetch fails:
+  - `news_activity_rank = 0.0` (worst rank — conservative, not artificially boosting)
+  - Composite score still computed from all 4 factors; the missing factor contributes 0.0 rank.
 
-- **D-07:** Candle fetch must return at least 20 valid OHLCV bars with `v > 0`. A 403/404, empty response, or fewer than 20 valid bars drops the ticker.
+- **D-07:** A valid quote requires: `c > 0`, `h >= l > 0`, `v >= 0`. If `h == l` (flat/illiquid day), `range_position = 0.0` (treat as worst rank, do not divide by zero). If `dp` is missing or null, skip the ticker entirely (dp drives the 35% factor).
 
 ### Score-to-Severity Thresholds (DISC-03, DISC-04)
 
@@ -89,22 +90,23 @@ Build the Discovery Agent that scores today's rotation universe tickers across 4
 
 - **D-17:** `Signal.title` format: `f"{ticker}: Discovery score {composite:.0f}"`. `Signal.body` format: per-factor sub-score breakdown, e.g. `"momentum=0.87 volume=0.72 range=0.54 news=0.30"`.
 
-- **D-18:** `signal_price_snapshot` = last candle's close price (already fetched — no extra API call).
+- **D-18:** `signal_price_snapshot` = current price `c` from `/quote` (already fetched — no extra API call).
 
 ### Data Fetching Strategy
 
-- **D-19:** Fetching order per ticker (3 calls when all succeed):
-  1. `/stock/candle` — 20 daily bars, `resolution=D`, `count=20` (or date range). Required.
-  2. `/stock/metric` — `metric=all`, extract `52WeekHigh` and `52WeekLow`. Optional.
-  3. `/company-news` — last 7 days. Optional. Use existing `fetch_company_news()`.
+**NOTE:** `/stock/candle` and `/stock/metric` are confirmed paid-tier (April 2025 Finnhub GitHub issue). Factor design uses only `/quote` and `/company-news`.
 
-- **D-20:** At 55 calls/min and ~3 calls/ticker × ~500 tickers: ~27 minutes per run. This is longer than the "9–18 minutes" estimate in CLAUDE.md (which assumed 1-2 calls/ticker). Acceptable for a nightly/daily job but researcher should flag this and evaluate whether to combine metric into candle call or reduce calls.
+- **D-19:** Fetching order per ticker (max 2 API calls):
+  1. `/quote` — `c`, `dp`, `v`, `h`, `l`. Required. Provides 3 of 4 factors.
+  2. `/company-news` — last 7 days. Optional. Provides news_activity factor.
 
-- **D-21:** The `/stock/candle` endpoint availability on Finnhub free-tier is a known risk (STATE.md, R-02-A1 through R-02-A5). Researcher must verify free-tier candle endpoint behavior. If candles are paid-tier, factor design must fall back to `/quote`-only (daily `dp` + `v` for volume, no 52w range).
+- **D-20:** At 55 calls/min and ~2 calls/ticker × ~500 tickers: ~18 minutes per run. Acceptable for a nightly/daily job.
+
+- **D-21:** Do NOT add `/stock/candle` or `/stock/metric` to `finnhub_client.py` — confirmed paid-tier. No fallback paths for these endpoints.
 
 ### No New Dependencies
 
-- **D-22:** No new Python dependencies. All calls go through the existing `finnhub_client.py` rate-limited wrapper. Add new `_fetch_candles()` and `_fetch_metric()` functions to `finnhub_client.py` following the existing `_fetch_single_quote` / `_fetch_company_news_raw` patterns.
+- **D-22:** No new Python dependencies. Add one new function to `finnhub_client.py`: `fetch_quote(ticker: str) -> dict | None` that returns the full quote dict (`c`, `dp`, `v`, `h`, `l`, `o`, `pc`). The existing `fetch_quotes()` only extracts `c` — verify whether to extend it or add a new function. Reuse existing `fetch_company_news()` for news_activity.
 
 </decisions>
 
@@ -120,13 +122,13 @@ Build the Discovery Agent that scores today's rotation universe tickers across 4
 
 ### Existing Code (integration points)
 - `src/signal_system/data/universe.py` — `get_todays_universe()` → list of tickers for today
-- `src/signal_system/data/finnhub_client.py` — existing rate-limit + retry wrapper; extend with `_fetch_candles()` and `_fetch_metric()`
+- `src/signal_system/data/finnhub_client.py` — existing rate-limit + retry wrapper; extend with `fetch_quote()` returning full quote dict; reuse `fetch_company_news()`
 - `src/signal_system/models.py` — frozen `Signal` dataclass; `compute_alert_id()`; `sub_scores: dict[str, float]`
 - `src/signal_system/state/repository.py` — `insert_signal()`, `insert_run()`, `update_run()`; extend with `update_run_counts()`
 - `src/signal_system/config.py` — `config.DISCOVERY_PHASE` (already wired, D-12)
 
-### Key Risk
-- STATE.md blocker: Finnhub free-tier endpoint availability for `/stock/candle` and `/stock/metric` is LOW confidence. Researcher must validate before planner designs scoring code. If candles are unavailable, the entire factor design must pivot to `/quote`-only.
+### Key Risk Resolved
+- `/stock/candle` and `/stock/metric` are confirmed paid-tier (April 2025 Finnhub GitHub issue). Factor design was pivoted to `/quote` + `/company-news` only. No further validation needed.
 
 </canonical_refs>
 
@@ -134,8 +136,8 @@ Build the Discovery Agent that scores today's rotation universe tickers across 4
 ## Existing Code Insights
 
 ### Reusable Patterns
-- `finnhub_client._fetch_single_quote` → template for `_fetch_candles()` and `_fetch_metric()`: `_acquire_slot()` → try/except `FinnhubAPIException` → check `PAID_TIER_STATUS_CODES` → return `None` on 403/404 → `raise` on 429 → retry via `_RETRY_DECORATOR`
-- `news_classifier.py` → template for agent module structure: lazy `_get_client()` singleton, module-level constants for thresholds, single public function with typed signature
+- `finnhub_client._fetch_single_quote` → template for a new `fetch_quote()` returning full dict: `_acquire_slot()` → try/except `FinnhubAPIException` → check `PAID_TIER_STATUS_CODES` → return `None` on 403/404 → `raise` on 429 → retry via `_RETRY_DECORATOR`
+- `news_classifier.py` → template for agent module structure: module-level constants for thresholds, single public function with typed signature
 - `repository.insert_signal()` → accepts `Signal` + `routing_status` kwarg; all DB inserts use `INSERT OR IGNORE` on `alert_id`
 - `repository.update_run()` → pattern to follow for `update_run_counts(run_id, tickers_scanned, tickers_signaled)`
 
@@ -152,6 +154,7 @@ Build the Discovery Agent that scores today's rotation universe tickers across 4
 - **Cross-sectional ranking edge case:** If only 1 valid ticker survives the candle fetch, all ranks = 0.5 (middle — no meaningful ranking with one data point). If 0 tickers survive, `score_universe()` returns `[]` immediately.
 - **Volume surge denominator:** If the 20-day avg volume is 0 (very illiquid ticker), treat `volume_surge` factor as optional-missing (rank = 0.0). Do not divide by zero.
 - **Phase A direct insert:** In Phase A, `insert_signal()` is called with `routing_status="MONITORING"` regardless of the Signal's `severity` value. The `severity` field on the DB row preserves the computed severity for calibration queries.
+- **Existing `fetch_quotes()` returns only `c`** — it extracts just the close price. A new `fetch_quote(ticker)` function must return the full response dict including `dp`, `v`, `h`, `l` fields needed by the discovery agent.
 - **No weight_version column yet:** STACK.md mentions a `weight_version` stamp for IC interpretability. This is out of scope for Phase 4 — defer to Phase 6 or V2.
 - **Signal.body should capture the weights used**, e.g. `"weights=35/30/25/10 momentum=0.87 volume=0.72 range=0.54 news=0.30"` — makes the Phase A rows self-documenting after weight changes.
 
