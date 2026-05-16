@@ -770,3 +770,80 @@ def test_alert_id_stable_after_new_fields():
     alert_id2 = compute_alert_id("AAPL", "2026-05-15", "test", "test_agent")
     assert alert_id1 == alert_id2
     assert len(alert_id1) == 64
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: T3 — repository.insert_llm_call (RED)
+# ---------------------------------------------------------------------------
+
+def test_insert_llm_call_persists_all_columns(tmp_path, monkeypatch):
+    from signal_system.state import repository
+    monkeypatch.setattr(repository, "DB_PATH", tmp_path / "test.db")
+    repository.init_db()
+    repository.insert_llm_call(
+        job="news_classifier",
+        model_version="claude-sonnet-4-6",
+        input_tokens=1234,
+        output_tokens=56,
+        cache_read_input_tokens=1000,
+        cache_creation_input_tokens=200,
+    )
+    conn = sqlite3.connect(tmp_path / "test.db")
+    row = conn.execute(
+        "SELECT job, model_version, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, timestamp FROM llm_calls"
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert row[0] == "news_classifier"
+    assert row[1] == "claude-sonnet-4-6"
+    assert row[2] == 1234
+    assert row[3] == 56
+    assert row[4] == 1000
+    assert row[5] == 200
+    # timestamp parseable as ISO 8601
+    from datetime import datetime
+    datetime.fromisoformat(row[6])
+
+
+def test_insert_llm_call_zero_counts_allowed(tmp_path, monkeypatch):
+    from signal_system.state import repository
+    monkeypatch.setattr(repository, "DB_PATH", tmp_path / "test.db")
+    repository.init_db()
+    repository.insert_llm_call(
+        job="news_classifier",
+        model_version="claude-sonnet-4-6",
+        input_tokens=100,
+        output_tokens=10,
+        cache_read_input_tokens=0,
+        cache_creation_input_tokens=0,
+    )
+    conn = sqlite3.connect(tmp_path / "test.db")
+    row = conn.execute("SELECT cache_read_input_tokens, cache_creation_input_tokens FROM llm_calls").fetchone()
+    conn.close()
+    assert row[0] == 0
+    assert row[1] == 0
+
+
+def test_insert_llm_call_keyword_only():
+    from signal_system.state import repository
+    with pytest.raises(TypeError):
+        repository.insert_llm_call("news_classifier", "claude-sonnet-4-6", 1, 2, 3, 4)
+
+
+def test_insert_llm_call_multiple_calls_independent(tmp_path, monkeypatch):
+    from signal_system.state import repository
+    monkeypatch.setattr(repository, "DB_PATH", tmp_path / "test.db")
+    repository.init_db()
+    for tokens in [100, 200, 300]:
+        repository.insert_llm_call(
+            job="news_classifier",
+            model_version="claude-sonnet-4-6",
+            input_tokens=tokens,
+            output_tokens=10,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        )
+    conn = sqlite3.connect(tmp_path / "test.db")
+    count = conn.execute("SELECT COUNT(*) FROM llm_calls").fetchone()[0]
+    conn.close()
+    assert count == 3
