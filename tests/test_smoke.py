@@ -514,3 +514,99 @@ def test_no_retry_on_403(monkeypatch):
     assert mock_client.quote.call_count == 1, (
         f"Expected exactly 1 call (no retry), got {mock_client.quote.call_count}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: T4 (RED) — 404 paid-tier, fetch_company_news behaviors
+# ---------------------------------------------------------------------------
+
+def test_paid_tier_404_returns_none(monkeypatch):
+    """_fetch_single_quote returns None on 404 without retrying (exactly 1 call)."""
+    import signal_system.data.finnhub_client as fc
+
+    exc = _make_finnhub_exc(404)
+    monkeypatch.setattr(fc, "_acquire_slot", lambda: None)
+    mock_client = MagicMock()
+    mock_client.quote.side_effect = exc
+    monkeypatch.setattr(fc, "_get_client", lambda: mock_client)
+
+    result = fc._fetch_single_quote("UNKNOWN")
+    assert result is None
+    assert mock_client.quote.call_count == 1, (
+        f"Expected exactly 1 call (no retry on 404), got {mock_client.quote.call_count}"
+    )
+
+
+def test_company_news_returns_list(monkeypatch):
+    """fetch_company_news returns a list with headline and source keys."""
+    import signal_system.data.finnhub_client as fc
+
+    fake_news = [
+        {
+            "headline": "Test headline",
+            "source": "Reuters",
+            "datetime": 1700000000,
+            "url": "",
+            "summary": "",
+            "id": 1,
+            "image": "",
+            "category": "",
+            "related": "AAPL",
+        }
+    ]
+    monkeypatch.setattr(fc, "_acquire_slot", lambda: None)
+    mock_client = MagicMock()
+    mock_client.company_news.return_value = fake_news
+    monkeypatch.setattr(fc, "_get_client", lambda: mock_client)
+
+    result = fc.fetch_company_news("AAPL", date(2026, 5, 1), date(2026, 5, 15))
+    assert isinstance(result, list)
+    assert len(result) == 1
+    assert result[0]["headline"] == "Test headline"
+    assert result[0]["source"] == "Reuters"
+
+
+def test_company_news_empty_on_no_results(monkeypatch):
+    """fetch_company_news returns [] when company_news returns empty list."""
+    import signal_system.data.finnhub_client as fc
+
+    monkeypatch.setattr(fc, "_acquire_slot", lambda: None)
+    mock_client = MagicMock()
+    mock_client.company_news.return_value = []
+    monkeypatch.setattr(fc, "_get_client", lambda: mock_client)
+
+    result = fc.fetch_company_news("TICKER", date(2026, 5, 1), date(2026, 5, 15))
+    assert result == []
+
+
+def test_company_news_returns_empty_on_paid_tier(monkeypatch):
+    """fetch_company_news returns [] on 403 paid-tier error (no exception propagates)."""
+    import signal_system.data.finnhub_client as fc
+
+    exc = _make_finnhub_exc(403)
+    monkeypatch.setattr(fc, "_acquire_slot", lambda: None)
+    mock_client = MagicMock()
+    mock_client.company_news.side_effect = exc
+    monkeypatch.setattr(fc, "_get_client", lambda: mock_client)
+
+    result = fc.fetch_company_news("TICKER", date(2026, 5, 1), date(2026, 5, 15))
+    assert result == []
+
+
+def test_company_news_date_format(monkeypatch):
+    """fetch_company_news passes from_date and to_date as YYYY-MM-DD strings."""
+    import signal_system.data.finnhub_client as fc
+
+    captured = {}
+
+    def fake_raw(ticker, from_str, to_str):
+        captured["from_str"] = from_str
+        captured["to_str"] = to_str
+        return []
+
+    monkeypatch.setattr(fc, "_fetch_company_news_raw", fake_raw)
+
+    fc.fetch_company_news("AAPL", date(2026, 5, 1), date(2026, 5, 15))
+
+    assert captured["from_str"] == "2026-05-01", f"Bad from_str: {captured['from_str']!r}"
+    assert captured["to_str"] == "2026-05-15", f"Bad to_str: {captured['to_str']!r}"
