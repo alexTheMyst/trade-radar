@@ -1,6 +1,6 @@
 """Tests for the Alert Router — route_signals() covering ROUT-01..ROUT-05.
 
-Tests T-AR-01 through T-AR-09 per D-19 test scenarios.
+Tests T-AR-01 through T-AR-10 per D-19 test scenarios and purity guard.
 """
 from datetime import datetime, timedelta, timezone
 
@@ -72,6 +72,25 @@ def test_delivered_demoted_from_is_none(monkeypatch):
     _, rs, dmf = results[0]
     assert rs == "DELIVERED"
     assert dmf is None
+
+
+# ---------------------------------------------------------------------------
+# T-AR-10: route_signals is pure and does not write to the DB
+# ---------------------------------------------------------------------------
+
+def test_route_signals_is_pure_no_db_writes(monkeypatch):
+    """route_signals() must not call insert_signal or perform any DB writes."""
+    monkeypatch.setattr(repository, "count_delivered_today", lambda: {})
+
+    def fail_insert(*args, **kwargs):
+        raise AssertionError("route_signals() must not call insert_signal()")
+
+    monkeypatch.setattr(repository, "insert_signal", fail_insert)
+
+    sig = _sig(ticker="AAPL", score=80.0, severity="INFORMATIONAL")
+    results = route_signals([sig])
+
+    assert results == [(sig, "DELIVERED", None)]
 
 
 # ---------------------------------------------------------------------------

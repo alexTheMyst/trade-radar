@@ -193,7 +193,13 @@ def test_init_db_idempotent_and_new_schema(tmp_path, monkeypatch):
     conn = sqlite3.connect(tmp_path / "test.db")
     # New columns on signals table
     col_names = {row[1] for row in conn.execute("PRAGMA table_info(signals)").fetchall()}
-    for col in ("routing_status", "signal_price_snapshot", "model_version", "thesis_version_hash"):
+    for col in (
+        "routing_status",
+        "signal_price_snapshot",
+        "model_version",
+        "thesis_version_hash",
+        "demoted_from",
+    ):
         assert col in col_names, f"Column {col!r} missing from signals"
 
     # New tables
@@ -205,6 +211,42 @@ def test_init_db_idempotent_and_new_schema(tmp_path, monkeypatch):
     assert "wash_sale" in table_names, "wash_sale table not found"
     assert "llm_calls" in table_names, "llm_calls table not found"
     conn.close()
+
+
+def test_insert_signal_persists_demoted_from(tmp_path, monkeypatch):
+    """insert_signal() persists demoted_from when the caller provides it."""
+    from datetime import datetime, timezone
+    from signal_system.models import Signal, compute_alert_id
+
+    monkeypatch.setattr(repository, "DB_PATH", tmp_path / "test.db")
+    repository.init_db()
+
+    alert_id = compute_alert_id("SPY", "2026-05-15", "router_test", "TEST")
+    signal = Signal(
+        ticker="SPY",
+        score=100.0,
+        severity="INFORMATIONAL",
+        agent="TEST",
+        timestamp=datetime.now(timezone.utc),
+        alert_id=alert_id,
+        title="Router persistence test",
+    )
+
+    inserted = repository.insert_signal(
+        signal,
+        routing_status="SUPPRESSED",
+        demoted_from="budget_cap_ar",
+    )
+
+    assert inserted is True
+    conn = sqlite3.connect(tmp_path / "test.db")
+    row = conn.execute(
+        "SELECT routing_status, demoted_from FROM signals WHERE alert_id=?",
+        (alert_id,),
+    ).fetchone()
+    conn.close()
+
+    assert row == ("SUPPRESSED", "budget_cap_ar")
 
 
 def test_insert_signal_idempotent(tmp_path, monkeypatch):
