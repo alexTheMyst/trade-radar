@@ -1,9 +1,13 @@
 """Tests for the Discovery Agent — score_universe() and supporting helpers.
 
-Tests T-01 through T-18 covering DISC-01..DISC-05 requirements.
+Tests T-01 through T-21 covering DISC-01..DISC-05 requirements and UAT smoke.
 """
+import os
 import sqlite3
+import subprocess
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import patch, MagicMock, call
 
 import pytest
@@ -510,3 +514,126 @@ def test_sub_scores_dict(db, monkeypatch):
     }
     for v in signal.sub_scores.values():
         assert 0.0 <= v <= 1.0
+
+
+# ---------------------------------------------------------------------------
+# T-19: test_signal_body_prefix
+# ---------------------------------------------------------------------------
+
+def test_signal_body_prefix(db, monkeypatch):
+    """Discovery signals include the documented factor-weight prefix in body."""
+    monkeypatch.setattr(config, "DISCOVERY_PHASE", "B")
+
+    quotes = {
+        "HIGH": _q(dp=10.0, v=200, c=55.0, h=60.0, l=40.0),
+        "LOW": _q(dp=1.0, v=100, c=41.0, h=50.0, l=40.0),
+    }
+    news_counts = {"HIGH": 2, "LOW": 0}
+
+    def fq_side(ticker):
+        return quotes[ticker]
+
+    def fcn_side(ticker, from_date, to_date):
+        return _news(news_counts[ticker])
+
+    run_id = repository.insert_run("discovery")
+
+    with patch("signal_system.discovery.discovery_agent.fetch_quote", side_effect=fq_side), \
+         patch("signal_system.discovery.discovery_agent.fetch_company_news", side_effect=fcn_side):
+        result = score_universe(["HIGH", "LOW"], run_id, DATE_ISO)
+
+    assert len(result) == 1
+    assert result[0].body is not None
+    assert result[0].body.startswith("weights=35/30/25/10")
+
+
+# ---------------------------------------------------------------------------
+# T-20: test_public_surface_smoke
+# ---------------------------------------------------------------------------
+
+def test_public_surface_smoke():
+    """Package export, thresholds, and rank helper match the phase contract."""
+    from signal_system.discovery import score_universe as exported_score_universe
+    from signal_system.discovery.discovery_agent import (
+        SCORE_THRESHOLD_ACTION,
+        SCORE_THRESHOLD_INFORM,
+        _rank_values,
+    )
+
+    assert exported_score_universe.__module__ == "signal_system.discovery.discovery_agent"
+    assert SCORE_THRESHOLD_ACTION == 80.0
+    assert SCORE_THRESHOLD_INFORM == 60.0
+    assert _rank_values({}) == {}
+    assert _rank_values({"AAPL": 5.0}) == {"AAPL": 0.5}
+    assert _rank_values({"AAPL": 5.0, "MSFT": 3.0}) == {"AAPL": 1.0, "MSFT": 0.0}
+    assert _rank_values({"BIDU": 5.0, "AAPL": 5.0}) == {"AAPL": 1.0, "BIDU": 0.0}
+
+
+# ---------------------------------------------------------------------------
+# T-21: test_discovery_agent_isolated_from_delivery_and_router
+# ---------------------------------------------------------------------------
+
+def test_discovery_agent_isolated_from_delivery_and_router():
+    """Discovery agent import/execution must not load delivery or router modules."""
+    repo_root = Path(__file__).resolve().parents[1]
+    env = dict(os.environ)
+    src_path = str(repo_root / "src")
+    env["PYTHONPATH"] = (
+        src_path
+        if "PYTHONPATH" not in env
+        else src_path + os.pathsep + env["PYTHONPATH"]
+    )
+
+    script = """
+import builtins
+
+blocked = {
+    "signal_system.delivery.email_sender",
+    "signal_system.router",
+    "signal_system.router.alert_router",
+}
+orig_import = builtins.__import__
+
+def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if name in blocked:
+        raise AssertionError(f"blocked import: {name}")
+    if name == "signal_system.delivery" and fromlist and "email_sender" in fromlist:
+        raise AssertionError("blocked import: signal_system.delivery.email_sender")
+    if name == "signal_system" and fromlist and "router" in fromlist:
+        raise AssertionError("blocked import: signal_system.router")
+    return orig_import(name, globals, locals, fromlist, level)
+
+builtins.__import__ = guarded_import
+
+from signal_system import config
+import signal_system.discovery.discovery_agent as da
+
+config.DISCOVERY_PHASE = "B"
+da.repository.update_run_counts = lambda *args, **kwargs: None
+da.fetch_quote = lambda ticker: {
+    "c": 55.0 if ticker == "HIGH" else 41.0,
+    "dp": 10.0 if ticker == "HIGH" else 1.0,
+    "v": 200 if ticker == "HIGH" else 100,
+    "h": 60.0 if ticker == "HIGH" else 50.0,
+    "l": 40.0,
+}
+da.fetch_company_news = lambda ticker, from_date, to_date: (
+    [{"headline": "News 1"}, {"headline": "News 2"}] if ticker == "HIGH" else []
+)
+
+signals = da.score_universe(["HIGH", "LOW"], "run-1", "2026-05-16")
+assert len(signals) == 1
+assert signals[0].ticker == "HIGH"
+print("OK")
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
