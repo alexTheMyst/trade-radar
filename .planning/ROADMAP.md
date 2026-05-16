@@ -33,7 +33,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. K-1 ETFs (USO, UNG, DBC, GSG) are not present in any scanned subset — exclusion happens at universe-builder level, not downstream
   5. `sqlite3 state/signals.db ".schema"` shows `routing_status`, `signal_price_snapshot`, `model_version`, `wash_sale` table with `account` column, `llm_calls` table, and `repository.py` exposes `count_delivered_today()`
 **Plans**: 1 plan
-  - [ ] 01-01-PLAN.md — Foundation: Signal dataclass, schema migration, thesis loader, universe partitioning
+  - [x] 01-01-PLAN.md — Foundation: Signal dataclass, schema migration, thesis loader, universe partitioning
 
 ### Phase 2: Data Layer
 **Goal**: Extend the Finnhub client with bulk quote fetch, news headline fetch, rate-limit token bucket, retry logic, and graceful paid-tier endpoint detection.
@@ -45,7 +45,8 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. When Finnhub returns a 429, the client retries up to 5 times with exponential backoff (via `tenacity`) and succeeds on recovery; the retry count is logged
   3. When a paid-tier endpoint returns 403 or 404, the client logs a warning and returns `None` — the calling code skips scoring that ticker rather than raising an exception or producing a zero score
   4. The client fetches company news headlines for a given ticker and date range; returned items include at minimum the headline text and source
-**Plans**: TBD
+**Plans**: 1 plan
+  - [ ] 02-PLAN.md — Data Layer: token bucket, tenacity retry, fetch_quotes, fetch_company_news
 
 ### Phase 3: News Classifier
 **Goal**: Deliver a working News Classifier agent that fetches, sanitizes, and classifies headlines against thesis pillars via the Anthropic tool-use API, emitting typed Signal objects with deduplication and parse-failure safety.
@@ -105,7 +106,7 @@ Phases execute in numeric order. Phase 3 and Phase 4 can be built in parallel (b
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation | 0/1 | Not started | - |
-| 2. Data Layer | 0/TBD | Not started | - |
+| 2. Data Layer | 0/1 | Not started | - |
 | 3. News Classifier | 0/TBD | Not started | - |
 | 4. Discovery Agent | 0/TBD | Not started | - |
 | 5. Alert Router | 0/TBD | Not started | - |
