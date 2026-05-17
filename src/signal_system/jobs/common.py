@@ -86,3 +86,34 @@ def render_digest(
             "MONITORING": monitoring_count,
         },
     )
+
+
+def validate_digest_payload(
+    payload: DigestPayload,
+    *,
+    scanned_tickers: int,
+    expected_counts: dict[str, int],
+    delivered_signals: list[Signal],
+) -> None:
+    """Fail closed if digest content diverges from the persisted run outcomes."""
+    normalized_expected = {
+        "DELIVERED": expected_counts.get("DELIVERED", 0),
+        "SUPPRESSED": expected_counts.get("SUPPRESSED", 0),
+        "MONITORING": expected_counts.get("MONITORING", 0),
+    }
+    if payload.status_counts != normalized_expected:
+        raise RuntimeError(
+            "Digest counts do not match persisted routing outcomes: "
+            f"expected={normalized_expected} got={payload.status_counts}"
+        )
+
+    if not payload.subject.strip() or not payload.body.strip():
+        raise RuntimeError("Digest subject/body must not be empty")
+
+    zero_alert_line = f"Scanned {scanned_tickers} tickers, 0 alerts"
+    if normalized_expected["DELIVERED"] == 0 and zero_alert_line not in payload.body:
+        raise RuntimeError("Digest missing zero-alert confirmation")
+
+    for signal in delivered_signals:
+        if signal.title not in payload.body:
+            raise RuntimeError(f"Digest missing delivered alert detail for {signal.alert_id}")

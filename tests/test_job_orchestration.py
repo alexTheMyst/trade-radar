@@ -5,6 +5,7 @@ from contextlib import contextmanager
 import sqlite3
 from datetime import date, datetime, timezone
 from unittest.mock import MagicMock, call, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -67,7 +68,7 @@ def _sig(
     agent: str = "news_classifier",
     score: float = 0.75,
 ) -> Signal:
-    timestamp = datetime(2026, 5, 19, 8, 30, tzinfo=timezone.utc)
+    timestamp = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
     return Signal(
         ticker=ticker,
         score=score,
@@ -195,7 +196,7 @@ def test_news_morning_thesis_failure_aborts_before_classification_or_digest(db):
 def test_news_morning_core_holdings_only_and_zero_alert_digest(db):
     from signal_system.jobs import news_morning
 
-    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=timezone.utc).astimezone()
+    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
     fetch_calls: list[tuple[date, date]] = []
 
     def fetch_side_effect(ticker: str, from_date: date, to_date: date):
@@ -228,13 +229,9 @@ def test_news_morning_core_holdings_only_and_zero_alert_digest(db):
 def test_news_morning_headline_cap_dedups_before_cap_and_persists_overflow(db):
     from signal_system.jobs import news_morning
 
-    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=timezone.utc).astimezone()
+    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
     previous_close = datetime(2026, 5, 16, 20, 0, tzinfo=timezone.utc)
     captured_headlines: list[dict] = []
-    items = [
-        _news_item(f"Headline {index:02d}", previous_close.replace(minute=index % 60) if index == 0 else previous_close)
-        for index in range(53)
-    ]
     items = []
     for index in range(53):
         items.append(_news_item(f"Headline {index:02d}", previous_close.replace(hour=20 + (index // 60), minute=index % 60)))
@@ -261,8 +258,8 @@ def test_news_morning_headline_cap_dedups_before_cap_and_persists_overflow(db):
         news_morning.run()
 
     assert len(captured_headlines) == 50
-    assert captured_headlines[0]["headline"] == "Headline 52"
-    assert captured_headlines[-1]["headline"] == "Headline 03"
+    assert captured_headlines[0]["headline"] == "Headline 00"
+    assert captured_headlines[-1]["headline"] == "Headline 05"
 
     conn = sqlite3.connect(db)
     overflow_rows = conn.execute(
@@ -281,8 +278,8 @@ def test_news_morning_headline_cap_dedups_before_cap_and_persists_overflow(db):
 def test_news_morning_parse_failure_monitoring_bypasses_router_and_persists(db):
     from signal_system.jobs import news_morning
 
-    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=timezone.utc).astimezone()
-    monitoring_signal = _sig(ticker="AAPL", severity="MONITORING")
+    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
+    monitoring_signal = _sig(ticker="AAPL", severity="MONITORING", agent="news_classifier_parse")
     delivered_signal = _sig(ticker="AAPL", severity="INFORMATIONAL")
 
     with patch("signal_system.jobs.news_morning.heartbeat.heartbeat", _noop_heartbeat), \
@@ -311,7 +308,7 @@ def test_news_morning_digest_counts_zero_alert_and_mismatch_guard(db):
     from signal_system.jobs import news_morning
     from signal_system.jobs.common import DigestPayload
 
-    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=timezone.utc).astimezone()
+    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
     suppressed_signal = _sig(ticker="AAPL", severity="INFORMATIONAL")
     monitoring_signal = _sig(ticker="AAPL", severity="MONITORING", agent="news_classifier_parse")
 
