@@ -152,7 +152,7 @@ def test_shared_digest_zero_alert_confirmation():
     assert "Monitoring: 3" in payload.body
 
 
-def test_news_morning_requires_previous_daily_close_before_fetch_or_email(db):
+def test_news_morning_requires_previous_daily_close_before_fetch_or_delivery(db):
     from signal_system.jobs import news_morning
 
     with patch("signal_system.jobs.news_morning.heartbeat.heartbeat", _noop_heartbeat), \
@@ -350,7 +350,7 @@ def test_news_morning_digest_counts_zero_alert_and_mismatch_guard(db):
     mismatch_send.assert_not_called()
 
 
-def test_discovery_phase_a_branches_on_config_and_skips_router_and_email():
+def test_discovery_phase_a_branches_on_config_and_skips_router_and_delivery():
     from signal_system.jobs import discovery
 
     fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))

@@ -140,8 +140,8 @@ def test_daily_close_finnhub_failure(tmp_path, monkeypatch):
     assert row[0] == "failed"
 
 
-def test_daily_close_email_failure(tmp_path, monkeypatch):
-    """When email fails after signal insert, run is marked failed and signal row is retained."""
+def test_daily_close_delivery_failure(tmp_path, monkeypatch):
+    """When Telegram delivery fails after signal insert, run is marked failed and signal row is retained."""
     monkeypatch.setattr(repository, "DB_PATH", tmp_path / "test.db")
     repository.init_db()
 
@@ -154,12 +154,12 @@ def test_daily_close_email_failure(tmp_path, monkeypatch):
         with pytest.raises(urllib.error.HTTPError):
             daily_close.run()
 
-    # Signal was inserted before email failed — row should exist
+    # Signal was inserted before delivery failed — row should exist
     conn = sqlite3.connect(tmp_path / "test.db")
     signal_row = conn.execute("SELECT ticker FROM signals WHERE agent='DAILY_CLOSE'").fetchone()
     run_row = conn.execute("SELECT status FROM runs").fetchone()
     conn.close()
-    assert signal_row is not None, "Signal should be persisted even if email fails"
+    assert signal_row is not None, "Signal should be persisted even if delivery fails"
     assert run_row[0] == "failed"
 
 
@@ -181,15 +181,16 @@ def test_telegram_sender_happy_path(monkeypatch):
             pass
 
     def fake_urlopen(req, timeout):
-        captured.append(req)
+        captured.append((req, timeout))
         return FakeResponse()
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     ts.send_message("hello world")
 
     assert len(captured) == 1
-    req = captured[0]
+    req, timeout = captured[0]
     assert req.full_url == "https://api.telegram.org/bot123:tok/sendMessage"
+    assert timeout == 10
     assert json.loads(req.data) == {"chat_id": "-1001", "text": "hello world"}
 
 
