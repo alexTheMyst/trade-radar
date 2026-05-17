@@ -7,7 +7,7 @@ to prevent "database is locked" errors under concurrent Task Scheduler runs.
 
 import sqlite3
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -216,6 +216,29 @@ def update_run_counts(run_id: str, tickers_scanned: int, tickers_signaled: int) 
             (tickers_scanned, tickers_signaled, run_id),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def get_latest_successful_run_date(job: str) -> date | None:
+    """Return the newest ET calendar date for a successful run of *job*, or None."""
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT started_at
+            FROM runs
+            WHERE job = ? AND status = 'success'
+            ORDER BY started_at DESC
+            LIMIT 1
+            """,
+            (job,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return datetime.fromisoformat(row[0]).astimezone(ZoneInfo("America/New_York")).date()
     finally:
         conn.close()
 

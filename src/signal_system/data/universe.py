@@ -37,6 +37,22 @@ def _today_bucket() -> int:
     return datetime.now(ZoneInfo("America/New_York")).timetuple().tm_yday % 3
 
 
+def get_core_holdings() -> list[str]:
+    """Return core-holding tickers only, preserving CSV order and K-1 filtering."""
+    tickers: list[str] = []
+
+    with UNIVERSE_PATH.open(newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if int(row["k1_etf"]):
+                continue
+            if not int(row["core_holding"]):
+                continue
+            tickers.append(row["ticker"].strip().upper())
+
+    return tickers
+
+
 def get_todays_universe() -> list[str]:
     """Return the list of tickers to scan today.
 
