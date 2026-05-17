@@ -85,10 +85,10 @@ Requirements for the current milestone. Each maps to roadmap phases.
 
 ### Job Orchestration
 
-- [ ] **JOBS-01**: Operator can run `python -m signal_system news-morning` to execute: fetch headlines → classify → route → send digest email — all wrapped in heartbeat context manager
+- [x] **JOBS-01**: Operator can run `python -m signal_system news-morning` to execute: fetch headlines → classify → route → send digest email — all wrapped in heartbeat context manager
 - [ ] **JOBS-02**: Operator can run `python -m signal_system discovery` to execute: load universe → score rotation partition → route (Phase A: skip router) → log — all wrapped in heartbeat context manager
-- [ ] **JOBS-03**: Daily digest email is always sent, even on zero-alert days — "Scanned N tickers, 0 alerts" with explicit confirmation, never silence
-- [ ] **JOBS-04**: Job run hard-caps: news-morning processes maximum 50 headlines per run; excess headlines are written as MONITORING rows with "volume cap reached" note
+- [x] **JOBS-03**: Daily digest email is always sent, even on zero-alert days — "Scanned N tickers, 0 alerts" with explicit confirmation, never silence
+- [x] **JOBS-04**: Job run hard-caps: news-morning processes maximum 50 headlines per run; excess headlines are written as MONITORING rows with "volume cap reached" note
 
 ### Measurement
 
@@ -187,10 +187,10 @@ Deferred to future. Not in current roadmap.
 | ROUT-03 | Phase 5 | Pending |
 | ROUT-04 | Phase 5 | Pending |
 | ROUT-05 | Phase 5 | Pending |
-| JOBS-01 | Phase 6 | Pending |
+| JOBS-01 | Phase 6 | Complete |
 | JOBS-02 | Phase 6 | Pending |
-| JOBS-03 | Phase 6 | Pending |
-| JOBS-04 | Phase 6 | Pending |
+| JOBS-03 | Phase 6 | Complete |
+| JOBS-04 | Phase 6 | Complete |
 | MEAS-01 | Phase 6 | Pending |
 | MEAS-02 | Phase 6 | Pending |
 | OPS-01 | Phase 6 | Pending |
