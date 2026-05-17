@@ -4,8 +4,8 @@ Smoke tests for signal-system.
 All external I/O (Finnhub, SMTP, healthchecks.io) is mocked.
 """
 
-import smtplib
 import sqlite3
+import urllib.error
 from datetime import date
 from unittest.mock import MagicMock, patch
 
@@ -97,7 +97,7 @@ def test_daily_close_smoke(tmp_path, monkeypatch):
             "signal_system.data.finnhub_client.fetch_spy_close",
             return_value=591.42,
         ),
-        patch("signal_system.delivery.email_sender.send_email"),
+        patch("signal_system.delivery.telegram_sender.send_message"),
         patch(
             "httpx.post",
             return_value=MagicMock(raise_for_status=MagicMock()),
@@ -140,26 +140,75 @@ def test_daily_close_finnhub_failure(tmp_path, monkeypatch):
     assert row[0] == "failed"
 
 
-def test_daily_close_email_failure(tmp_path, monkeypatch):
-    """When email fails after signal insert, run is marked failed and signal row is retained."""
+def test_daily_close_delivery_failure(tmp_path, monkeypatch):
+    """When Telegram delivery fails after signal insert, run is marked failed and signal row is retained."""
     monkeypatch.setattr(repository, "DB_PATH", tmp_path / "test.db")
     repository.init_db()
 
     mock_post = MagicMock(return_value=MagicMock(raise_for_status=MagicMock()))
 
     with patch("signal_system.data.finnhub_client.fetch_spy_close", return_value=591.42), \
-         patch("signal_system.delivery.email_sender.send_email", side_effect=smtplib.SMTPException("SMTP down")), \
+         patch("signal_system.delivery.telegram_sender.send_message",
+               side_effect=urllib.error.HTTPError("url", 500, "Internal Server Error", {}, None)), \
          patch("httpx.post", mock_post):
-        with pytest.raises(smtplib.SMTPException):
+        with pytest.raises(urllib.error.HTTPError):
             daily_close.run()
 
-    # Signal was inserted before email failed — row should exist
+    # Signal was inserted before delivery failed — row should exist
     conn = sqlite3.connect(tmp_path / "test.db")
     signal_row = conn.execute("SELECT ticker FROM signals WHERE agent='DAILY_CLOSE'").fetchone()
     run_row = conn.execute("SELECT status FROM runs").fetchone()
     conn.close()
-    assert signal_row is not None, "Signal should be persisted even if email fails"
+    assert signal_row is not None, "Signal should be persisted even if delivery fails"
     assert run_row[0] == "failed"
+
+
+def test_telegram_sender_happy_path(monkeypatch):
+    """send_message calls urlopen once with correct URL and JSON payload."""
+    import json
+    import urllib.request
+    import signal_system.delivery.telegram_sender as ts
+
+    monkeypatch.setattr(ts.config, "TELEGRAM_BOT_TOKEN", "123:tok")
+    monkeypatch.setattr(ts.config, "TELEGRAM_CHAT_ID", "-1001")
+
+    captured = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+
+    def fake_urlopen(req, timeout):
+        captured.append((req, timeout))
+        return FakeResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    ts.send_message("hello world")
+
+    assert len(captured) == 1
+    req, timeout = captured[0]
+    assert req.full_url == "https://api.telegram.org/bot123:tok/sendMessage"
+    assert timeout == 10
+    assert json.loads(req.data) == {"chat_id": "-1001", "text": "hello world"}
+
+
+def test_telegram_sender_failure_propagates(monkeypatch):
+    """send_message propagates urllib.error.HTTPError from urlopen."""
+    import urllib.request
+    import signal_system.delivery.telegram_sender as ts
+
+    monkeypatch.setattr(ts.config, "TELEGRAM_BOT_TOKEN", "123:tok")
+    monkeypatch.setattr(ts.config, "TELEGRAM_CHAT_ID", "-1001")
+
+    def failing_urlopen(req, timeout):
+        raise urllib.error.HTTPError("url", 400, "Bad Request", {}, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", failing_urlopen)
+
+    with pytest.raises(urllib.error.HTTPError):
+        ts.send_message("will fail")
 
 
 def test_config_optional_fallback_and_phase_validation(monkeypatch):

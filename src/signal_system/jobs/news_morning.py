@@ -11,7 +11,7 @@ from signal_system.classifier.news_classifier import headline_dedup_key
 from signal_system.data.finnhub_client import fetch_company_news
 from signal_system.data.thesis_loader import load_thesis
 from signal_system.data.universe import get_core_holdings
-from signal_system.delivery import email_sender
+from signal_system.delivery import telegram_sender
 from signal_system.jobs.common import (
     PersistenceSummary,
     persist_routed_signals,
@@ -158,9 +158,7 @@ def _classify_kept_headlines(
 
 
 def _send_digest_once(*, subject: str, body: str) -> None:
-    email_sender.send_email(subject=subject, body=body)
-    if hasattr(email_sender.send_email, "call_count") and email_sender.send_email.call_count != 1:
-        raise RuntimeError("Digest email must be sent exactly once")
+    telegram_sender.send_message(f"{subject}\n\n{body}")
 
 
 def run() -> None:
