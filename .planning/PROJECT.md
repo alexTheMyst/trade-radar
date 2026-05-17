@@ -8,9 +8,19 @@ A rules-based, **alert-only** investment signal system for a solo operator with 
 
 Never miss a material thesis-relevant event on a held position — silent failure is indistinguishable from "no alerts today."
 
+## Current State
+
+**v1.0 shipped 2026-05-17** — implementation complete, 44/44 requirements satisfied, 120 tests passing, 6 phases complete with full VERIFICATION.md artifacts.
+
+Four manual go-live evidence items pending before production use:
+- OPS-01: Windows Task Scheduler import and validation on runner machine
+- OPS-02: Gmail SMTP + healthchecks.io live credential verification
+- JOBS-01: End-to-end credentialed `news-morning` run against live Finnhub + Anthropic APIs
+- MEAS-01: 7-day acted/user_note feedback workflow confirmed
+
 ## Requirements
 
-### Validated
+### Validated — v1.0
 
 - ✓ Daily close job with Finnhub market data fetch — MVP Week 1
 - ✓ SQLite persistence layer (WAL mode, `signals` + `runs` tables) via `state/repository.py` — MVP Week 1
@@ -19,20 +29,17 @@ Never miss a material thesis-relevant event on a held position — silent failur
 - ✓ Environment-based config loading with required-var validation via `config.py` — MVP Week 1
 - ✓ Job dispatcher entry point (`python -m signal_system <job>`) — MVP Week 1
 - ✓ Smoke test suite covering DB init, signal insert, heartbeat, daily-close paths — MVP Week 1
-
-### Active
-
-- [ ] **News Classifier agent** — Claude API, thesis.yaml-driven taxonomy, pillar delta scoring, `<headline>` delimiters for prompt injection safety
-- [ ] **Discovery Agent** — ~1,500 ticker universe, 1/3 daily rotation, core holdings always scanned, 35/30/25/10 scoring weights, Phase A logs-only before connecting to router
-- [ ] **Alert Router** — daily budget enforcement (1 ACTION_REQUIRED, 3 INFORMATIONAL), slot competition (higher score wins), suppressed signals tagged MONITORING in SQLite
-- [ ] **news-morning job** — wraps News Classifier, heartbeat-monitored, sends daily digest even on zero-alert days
-- [ ] **discovery job** — wraps Discovery Agent, heartbeat-monitored, logs to SQLite
-- [ ] **Ticker universe builder** — static universe list (~1,500 tickers), K-1 ETF exclusions (USO, UNG, DBC, GSG), core-holdings flag for daily scan priority
-- [ ] **thesis.yaml** — operator-maintained taxonomy defining news pillars, review_due gate, classifier reads at runtime
-- [ ] **Wash sale tracking table** — `wash_sale` table with `account` column (4 accounts: main Schwab, secondary Schwab, Roth IRA, HSA)
-- [ ] **Signal outcome backfill** — cron job fills `outcome_price_30d` / `outcome_price_90d` from Finnhub
-- [ ] **No-signal-day digest** — explicit "Scanned N tickers, 0 alerts" email (silence with confirmation, not ambiguity)
-- [ ] **Windows Task Scheduler integration docs** — setup guide for recurring job execution on Windows runner
+- ✓ **News Classifier agent** — Claude API, thesis.yaml-driven taxonomy, pillar delta scoring, `<headline>` delimiters — v1.0
+- ✓ **Discovery Agent** — ~1,500 ticker universe, 1/3 daily rotation, core holdings always scanned, 35/30/25/10 scoring weights, Phase A logs-only — v1.0
+- ✓ **Alert Router** — daily budget enforcement (1 ACTION_REQUIRED, 3 INFORMATIONAL), slot competition (higher score wins), suppressed signals tagged MONITORING in SQLite — v1.0
+- ✓ **news-morning job** — wraps News Classifier, heartbeat-monitored, sends daily digest even on zero-alert days — v1.0
+- ✓ **discovery job** — wraps Discovery Agent, heartbeat-monitored, logs to SQLite — v1.0
+- ✓ **Ticker universe builder** — static universe list (~1,500 tickers), K-1 ETF exclusions (USO, UNG, DBC, GSG), core-holdings flag for daily scan priority — v1.0
+- ✓ **thesis.yaml** — operator-maintained taxonomy defining news pillars, review_due gate, classifier reads at runtime — v1.0
+- ✓ **Wash sale tracking table** — `wash_sale` table with `account` column (4 accounts) — v1.0
+- ✓ **Signal outcome backfill** — `outcome_backfill` job coded, activate ~30 days post go-live — v1.0
+- ✓ **No-signal-day digest** — explicit "Scanned N tickers, 0 alerts" email — v1.0
+- ✓ **Windows Task Scheduler integration docs** — setup guide with `.xml` task files — v1.0
 
 ### Out of Scope
 
@@ -105,4 +112,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-05-14 after project initialization*
+*Last updated: 2026-05-17 after v1.0 milestone close*

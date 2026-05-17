@@ -1,113 +1,58 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.0
-milestone_name: milestone
-status: completed
-stopped_at: Completed 06-04-PLAN.md
-last_updated: "2026-05-17T04:30:54.728Z"
-last_activity: 2026-05-17 -- Phase 06 marked complete
+milestone: v1.1
+milestone_name: next milestone
+status: not_started
+stopped_at: v1.0 milestone archived
+last_updated: "2026-05-17"
+last_activity: 2026-05-17 -- v1.0 milestone complete and archived
 progress:
-  total_phases: 5
-  completed_phases: 5
-  total_plans: 5
-  completed_plans: 5
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-05-14)
+See: .planning/PROJECT.md (updated 2026-05-17)
 
 **Core value:** Never miss a material thesis-relevant event on a held position — silent failure is indistinguishable from "no alerts today."
-**Current focus:** Phase 06 — job-orchestration underway; Plan 06-02 complete
+**Current focus:** v1.0 shipped — run `/gsd-new-milestone` to define v1.1
 
 ## Current Position
 
-Phase: 06 — COMPLETE
-Plan: 4 of 4
-Status: Phase 06 complete
-Last activity: 2026-05-17 -- Phase 06 marked complete
+Phase: None (between milestones)
+Status: v1.0 complete and archived
+Last activity: 2026-05-17 -- v1.0 milestone archived with tag v1.0
 
-Progress: [██████████] 100%
+Progress: [----------] awaiting v1.1 milestone definition
 
-## Performance Metrics
+## v1.0 Summary
 
-**Velocity:**
+- 6 phases shipped, 9 plans executed, 44/44 requirements satisfied
+- 120 tests passing
+- Full archive: `.planning/milestones/v1.0-ROADMAP.md`
 
-- Total plans completed: 5
-- Average duration: ~40 min/plan
-- Total execution time: ~148 min
-
-**By Phase:**
-
-| Phase | Plans | Total | Avg/Plan |
-|-------|-------|-------|----------|
-| 01-foundation | 1 | ~35min | ~35min |
-| 02-data-layer | 1 | ~35min | ~35min |
-| 03-news-classifier | 1 | ~45min | ~45min |
-
-**Recent Trend:**
-
-- Last 5 plans: 01-01, 02-01, 03-01, 06-01, 06-02
-- Trend: consistent
-
-*Updated after each plan completion*
-| Phase 06 P01 | 25min | 3 tasks | 6 files |
-| Phase 06 P02 | 8min | 1 tasks | 3 files |
-| Phase 06 P03 | 4min | 2 tasks | 6 files |
-| Phase 06 P04 | 11min | 3 tasks | 8 files |
-
-## Accumulated Context
-
-### Decisions
-
-Decisions are logged in PROJECT.md Key Decisions table.
-Recent decisions affecting current work:
-
-- Foundation: `alert_id` is SHA-256 content-hash (not UUID) — enables idempotent reruns
-- Foundation: Universe rotation uses `hashlib.md5`, not Python `hash()` — deterministic across processes
-- Discovery: Phase A = logs-only controlled by `DISCOVERY_PHASE=A` config value, no code change to promote
-- Router: Always reads budget from DB (`count_delivered_today()`), never in-memory — safe for same-day multi-job runs
-- Data Layer: `_is_transient_error` discriminates 429 (retry) from 403/404 (skip) — critical correctness guarantee
-- Data Layer: `fetch_company_news` returns `[]` not `None` on all failure paths — consistent empty-news contract
-- Data Layer: `PAID_TIER_STATUS_CODES` is public frozenset — Discovery Agent may reference it directly
-- News Classifier: ANSI escape pre-stripping before Cc-category filter — prevents `[31m` leakage
-- News Classifier: `insert_llm_call` keyword-only — prevents positional-arg drift
-- News Classifier: Dedup key = SHA-256(ticker:ET-date:normalized-headline) — date-scoped per-ticker dedup
-- News Classifier: `None` parsed_output → MONITORING, no retry (refusal case)
-- [Phase 06]: Anchor news-morning to the latest successful daily-close ET date at 4:00 PM instead of naive date subtraction.
-- [Phase 06]: Validate digest counts and zero-alert confirmation before sending email so the run fails closed on mismatches.
-- [Phase 06]: Deduplicate windowed headlines newest-first before the 50-headline cap; persist every overflow headline as its own MONITORING row.
-- [Phase 06]: Discovery branches on config.DISCOVERY_PHASE instead of the score_universe() return value so Phase A and zero-alert Phase B stay correct.
-- [Phase 06]: Phase B validates digest counts against persisted routing results before sending the discovery digest.
-- [Phase 06]: Keep MEAS-02 as importable internal code only; do not register a public CLI job before the deferred post-go-live activation window.
-- [Phase 06]: Use current quote snapshots to fill due 30d/90d outcome fields while preserving idempotent non-overwrite semantics in repository writes.
-- [Phase 06]: Standardize Windows scheduling guidance on absolute-path uv run python -m signal_system <job> commands with StartWhenAvailable, IgnoreNew single-instance policy, and password-backed logon.
-- [Phase 06]: Keep Phase 6 UAT limited to the summary-driven operator workflow review; verification evidence lives in separate *-VERIFICATION.md artifacts.
-- [Phase 06]: Treat Windows Task Scheduler import, Gmail/Healthchecks setup, live credentialed news-morning, and the 7-day feedback workflow as manual evidence blockers instead of auto-claiming them.
-- [Phase 06]: Refresh all completed v1 requirement traceability so the rerun audit reflects current implementation rather than stale pending rows.
-
-### Pending Todos
-
-None.
-
-### Blockers/Concerns
-
-- Finnhub free-tier endpoint availability for Discovery Agent scoring (35/30/25/10 weights) is LOW confidence — validate empirically at Phase 2/4 boundary before writing scoring code (R-02-A1 through R-02-A5 deferred to first live runs)
-- MEAS-02 (outcome backfill) is in Phase 6 but must NOT be activated until ~30 days post go-live
+**4 manual go-live items pending before production use:**
+- OPS-01: Windows Task Scheduler import on runner machine
+- OPS-02: Gmail SMTP + healthchecks.io live credential check
+- JOBS-01: End-to-end credentialed `news-morning` live run
+- MEAS-01: 7-day acted/user_note feedback workflow
 
 ## Deferred Items
 
 | Category | Item | Status | Deferred At |
 |----------|------|--------|-------------|
-| Measurement | MEAS-02: outcome backfill cron | Coded in Phase 6, activate post go-live | Roadmap |
-| Validation | R-02-A1 to R-02-A5: Finnhub free-tier endpoint assumptions | Validate on first live Phase 3/4 run | Phase 2 risk register |
-| Tuning | Classifier confidence thresholds (0.85/0.60) | Confirm during quarterly review | Phase 3 RESEARCH §3 A2 |
+| Measurement | MEAS-02: outcome backfill | Coded, activate ~30 days post go-live | Phase 6 |
+| Validation | R-02-A1 to R-02-A5: Finnhub free-tier endpoint assumptions | Validate on first live run | Phase 2 risk register |
+| Tuning | Classifier confidence thresholds (0.85/0.60) | Confirm during quarterly review | Phase 3 |
 
 ## Session Continuity
 
-Last session: 2026-05-17T04:30:26.695Z
-Stopped at: Completed 06-04-PLAN.md
-Resume file: None
+Last session: 2026-05-17
+Stopped at: v1.0 milestone archived
+Resume: Run `/gsd-new-milestone v1.1` to begin next milestone
