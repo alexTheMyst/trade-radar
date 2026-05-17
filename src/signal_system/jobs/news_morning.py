@@ -6,10 +6,11 @@ from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from signal_system import config
-from signal_system.classifier.news_classifier import _headline_dedup_key, classify_headlines
+from signal_system.classifier import classify_headlines
+from signal_system.classifier.news_classifier import headline_dedup_key
 from signal_system.data.finnhub_client import fetch_company_news
 from signal_system.data.thesis_loader import load_thesis
-from signal_system.data.universe import get_core_holdings, get_todays_universe
+from signal_system.data.universe import get_core_holdings
 from signal_system.delivery import email_sender
 from signal_system.jobs.common import (
     PersistenceSummary,
@@ -66,7 +67,7 @@ def _make_overflow_monitoring_signal(
     headline_dt: datetime,
     thesis_version_hash: str,
 ) -> Signal:
-    rule = f"volume_cap:{_headline_dedup_key(ticker, headline)[:16]}"
+    rule = f"volume_cap:{headline_dedup_key(ticker, headline)[:16]}"
     return Signal(
         ticker=ticker,
         score=None,
@@ -112,7 +113,7 @@ def _dedupe_and_cap_headlines(
         headline = str(item.get("headline", ""))
         if not headline.strip():
             continue
-        dedup_key = _headline_dedup_key(ticker, headline)
+        dedup_key = headline_dedup_key(ticker, headline)
         if dedup_key in seen:
             continue
         seen.add(dedup_key)

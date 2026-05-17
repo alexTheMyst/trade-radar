@@ -118,7 +118,7 @@ def _normalize_headline_for_dedup(headline: str) -> str:
     return s.rstrip(".!?;:,")
 
 
-def _headline_dedup_key(ticker: str, headline: str) -> str:
+def headline_dedup_key(ticker: str, headline: str) -> str:
     """Compute a deterministic dedup key for (ticker, ET date, normalized headline)."""
     et_date = datetime.now(_ET).date().isoformat()
     norm = _normalize_headline_for_dedup(headline)
@@ -231,7 +231,7 @@ def classify_headline(
     sanitized = _sanitize_headline(raw)
 
     # Compute alert_id up front — same value for happy-path and parse-failure signals
-    headline_hash = _headline_dedup_key(ticker, raw)
+    headline_hash = headline_dedup_key(ticker, raw)
     date_iso = datetime.now(_ET).date().isoformat()
     alert_id = compute_alert_id(ticker, date_iso, f"news:{headline_hash[:16]}", "news_classifier")
 
@@ -329,7 +329,7 @@ def classify_headlines(
             continue  # skip empty headlines
 
         # Layer 1: in-memory dedup — short-circuit before any API call
-        dedup_key = _headline_dedup_key(ticker, str(raw))
+        dedup_key = headline_dedup_key(ticker, str(raw))
         if dedup_key in dedup_seen:
             logger.debug("Skipping duplicate headline for %r (dedup hit)", ticker)
             continue

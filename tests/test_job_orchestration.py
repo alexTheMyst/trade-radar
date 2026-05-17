@@ -206,7 +206,6 @@ def test_news_morning_core_holdings_only_and_zero_alert_digest(db):
     with patch("signal_system.jobs.news_morning.heartbeat.heartbeat", _noop_heartbeat), \
          patch("signal_system.jobs.news_morning._now_et", return_value=fixed_now), \
          patch("signal_system.jobs.news_morning.get_core_holdings", return_value=["AAPL", "MSFT"]), \
-         patch("signal_system.jobs.news_morning.get_todays_universe", side_effect=AssertionError("wrong universe helper")), \
          patch("signal_system.jobs.news_morning.repository.get_latest_successful_run_date", return_value=date(2026, 5, 16)), \
          patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
          patch("signal_system.jobs.news_morning.fetch_company_news", side_effect=fetch_side_effect) as mock_fetch, \
