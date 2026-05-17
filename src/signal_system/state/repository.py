@@ -7,6 +7,7 @@ to prevent "database is locked" errors under concurrent Task Scheduler runs.
 
 import sqlite3
 import uuid
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -14,6 +15,15 @@ from zoneinfo import ZoneInfo
 from signal_system.models import Signal
 
 DB_PATH = Path(__file__).parents[3] / "state" / "signals.db"
+
+
+@dataclass(frozen=True, slots=True)
+class OutcomeBackfillCandidate:
+    alert_id: str
+    ticker: str
+    timestamp: datetime
+    outcome_price_30d: float | None
+    outcome_price_90d: float | None
 
 
 def _connect() -> sqlite3.Connection:
@@ -303,5 +313,74 @@ def count_delivered_today() -> dict[str, int]:
             GROUP BY severity
         """, (today_iso,))
         return {row[0]: row[1] for row in cursor.fetchall()}
+    finally:
+        conn.close()
+
+
+def list_outcome_backfill_candidates() -> list[OutcomeBackfillCandidate]:
+    """Return acted-on signals still missing at least one deferred outcome price."""
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT alert_id, ticker, timestamp, outcome_price_30d, outcome_price_90d
+            FROM signals
+            WHERE acted IS NOT NULL
+              AND ticker IS NOT NULL
+              AND ticker != ''
+              AND (outcome_price_30d IS NULL OR outcome_price_90d IS NULL)
+            ORDER BY timestamp ASC
+            """
+        )
+        return [
+            OutcomeBackfillCandidate(
+                alert_id=row[0],
+                ticker=row[1],
+                timestamp=datetime.fromisoformat(row[2]),
+                outcome_price_30d=row[3],
+                outcome_price_90d=row[4],
+            )
+            for row in cursor.fetchall()
+        ]
+    finally:
+        conn.close()
+
+
+def update_signal_outcomes(
+    alert_id: str,
+    *,
+    outcome_price_30d: float | None = None,
+    outcome_price_90d: float | None = None,
+) -> None:
+    """Persist deferred outcome prices without overwriting existing values."""
+    if outcome_price_30d is None and outcome_price_90d is None:
+        return
+
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE signals
+            SET outcome_price_30d = CASE
+                    WHEN ? IS NOT NULL AND outcome_price_30d IS NULL THEN ?
+                    ELSE outcome_price_30d
+                END,
+                outcome_price_90d = CASE
+                    WHEN ? IS NOT NULL AND outcome_price_90d IS NULL THEN ?
+                    ELSE outcome_price_90d
+                END
+            WHERE alert_id = ?
+            """,
+            (
+                outcome_price_30d,
+                outcome_price_30d,
+                outcome_price_90d,
+                outcome_price_90d,
+                alert_id,
+            ),
+        )
+        conn.commit()
     finally:
         conn.close()

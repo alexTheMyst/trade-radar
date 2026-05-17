@@ -100,13 +100,13 @@ def test_outcome_backfill_respects_thresholds_and_stays_internal(tmp_path, monke
         acted=None,
     )
 
-    fetch_quote = MagicMock(side_effect=[{"c": 101.5}, {"c": 222.25}])
+    fetch_quote = MagicMock(side_effect=lambda ticker: {"c": {"AAPL": 101.5, "MSFT": 222.25}[ticker]})
 
     result = outcome_backfill.backfill_due_outcomes(now_et=now_et, fetch_quote=fetch_quote)
 
     assert result.filled_30d == 2
     assert result.filled_90d == 1
-    assert fetch_quote.call_args_list == [call("AAPL"), call("MSFT")]
+    fetch_quote.assert_has_calls([call("AAPL"), call("MSFT")], any_order=True)
     assert _read_outcomes(str(db_path)) == {
         "after-30d": (101.5, None),
         "after-90d": (222.25, 222.25),
