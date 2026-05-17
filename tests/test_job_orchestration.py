@@ -351,8 +351,169 @@ def test_news_morning_digest_counts_zero_alert_and_mismatch_guard(db):
     mismatch_send.assert_not_called()
 
 
+def test_discovery_phase_a_branches_on_config_and_skips_router_and_email():
+    from signal_system.jobs import discovery
+
+    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
+    phase_a_signal = _sig(ticker="AAPL", agent="discovery_agent", score=88.0)
+    events: list[str] = []
+
+    @contextmanager
+    def recording_heartbeat():
+        events.append("heartbeat-enter")
+        yield
+        events.append("heartbeat-exit")
+
+    def insert_run(job: str) -> str:
+        events.append(f"insert:{job}")
+        return "run-123"
+
+    def update_run(run_id: str, status: str) -> None:
+        events.append(f"update:{run_id}:{status}")
+
+    with patch.object(discovery.config, "DISCOVERY_PHASE", "A"), \
+         patch("signal_system.jobs.discovery._now_et", return_value=fixed_now), \
+         patch("signal_system.jobs.discovery.repository.insert_run", side_effect=insert_run), \
+         patch("signal_system.jobs.discovery.repository.update_run", side_effect=update_run), \
+         patch("signal_system.jobs.discovery.heartbeat.heartbeat", recording_heartbeat), \
+         patch("signal_system.jobs.discovery.get_todays_universe", return_value=["AAPL", "MSFT"]) as mock_universe, \
+         patch("signal_system.jobs.discovery.score_universe", return_value=[phase_a_signal]) as mock_score, \
+         patch("signal_system.jobs.discovery.route_signals") as mock_route, \
+         patch("signal_system.jobs.discovery.email_sender.send_email") as mock_send:
+        discovery.run()
+
+    mock_universe.assert_called_once_with()
+    mock_score.assert_called_once_with(["AAPL", "MSFT"], "run-123", "2026-05-19")
+    mock_route.assert_not_called()
+    mock_send.assert_not_called()
+    assert events == [
+        "insert:discovery",
+        "heartbeat-enter",
+        "update:run-123:success",
+        "heartbeat-exit",
+    ]
+
+
+def test_discovery_phase_b_routes_persists_and_sends_digest(db):
+    from signal_system.jobs import discovery
+
+    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
+    delivered_signal = _sig(
+        ticker="AAPL",
+        severity="ACTION_REQUIRED",
+        agent="discovery_agent",
+        score=88.0,
+    )
+    suppressed_signal = _sig(
+        ticker="MSFT",
+        severity="INFORMATIONAL",
+        agent="discovery_agent",
+        score=71.0,
+    )
+
+    with patch.object(discovery.config, "DISCOVERY_PHASE", "B"), \
+         patch("signal_system.jobs.discovery._now_et", return_value=fixed_now), \
+         patch("signal_system.jobs.discovery.heartbeat.heartbeat", _noop_heartbeat), \
+         patch("signal_system.jobs.discovery.get_todays_universe", return_value=["AAPL", "MSFT"]), \
+         patch(
+             "signal_system.jobs.discovery.score_universe",
+             return_value=[delivered_signal, suppressed_signal],
+         ), \
+         patch(
+             "signal_system.jobs.discovery.route_signals",
+             return_value=[
+                 (delivered_signal, "DELIVERED", None),
+                 (suppressed_signal, "SUPPRESSED", "outscored"),
+             ],
+         ) as mock_route, \
+         patch("signal_system.jobs.discovery.email_sender.send_email") as mock_send:
+        discovery.run()
+
+    mock_route.assert_called_once_with([delivered_signal, suppressed_signal])
+    assert mock_send.call_count == 1
+    assert "Scanned 2 tickers, 1 alert" in mock_send.call_args.kwargs["body"]
+    assert "AAPL: important update" in mock_send.call_args.kwargs["body"]
+    assert "Suppressed: 1" in mock_send.call_args.kwargs["body"]
+    assert "Monitoring: 0" in mock_send.call_args.kwargs["body"]
+
+    conn = sqlite3.connect(db)
+    rows = conn.execute(
+        "SELECT ticker, routing_status, demoted_from FROM signals ORDER BY ticker"
+    ).fetchall()
+    status = conn.execute("SELECT status FROM runs WHERE job = 'discovery'").fetchone()
+    conn.close()
+    assert rows == [
+        ("AAPL", "DELIVERED", None),
+        ("MSFT", "SUPPRESSED", "outscored"),
+    ]
+    assert status == ("success",)
+
+
+def test_discovery_phase_b_zero_alert_digest_even_when_score_returns_empty(db):
+    from signal_system.jobs import discovery
+
+    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
+
+    with patch.object(discovery.config, "DISCOVERY_PHASE", "B"), \
+         patch("signal_system.jobs.discovery._now_et", return_value=fixed_now), \
+         patch("signal_system.jobs.discovery.heartbeat.heartbeat", _noop_heartbeat), \
+         patch("signal_system.jobs.discovery.get_todays_universe", return_value=["AAPL"]), \
+         patch("signal_system.jobs.discovery.score_universe", return_value=[]), \
+         patch("signal_system.jobs.discovery.route_signals", return_value=[]) as mock_route, \
+         patch("signal_system.jobs.discovery.email_sender.send_email") as mock_send:
+        discovery.run()
+
+    mock_route.assert_called_once_with([])
+    assert mock_send.call_count == 1
+    assert "Scanned 1 tickers, 0 alerts" in mock_send.call_args.kwargs["body"]
+    assert "Suppressed: 0" in mock_send.call_args.kwargs["body"]
+    assert "Monitoring: 0" in mock_send.call_args.kwargs["body"]
+
+    conn = sqlite3.connect(db)
+    status = conn.execute("SELECT status FROM runs WHERE job = 'discovery'").fetchone()
+    conn.close()
+    assert status == ("success",)
+
+
+def test_discovery_phase_b_fails_on_digest_count_mismatch(db):
+    from signal_system.jobs import discovery
+    from signal_system.jobs.common import DigestPayload
+
+    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
+    routed_signal = _sig(ticker="AAPL", agent="discovery_agent", score=88.0)
+
+    with patch.object(discovery.config, "DISCOVERY_PHASE", "B"), \
+         patch("signal_system.jobs.discovery._now_et", return_value=fixed_now), \
+         patch("signal_system.jobs.discovery.heartbeat.heartbeat", _noop_heartbeat), \
+         patch("signal_system.jobs.discovery.get_todays_universe", return_value=["AAPL"]), \
+         patch("signal_system.jobs.discovery.score_universe", return_value=[routed_signal]), \
+         patch(
+             "signal_system.jobs.discovery.route_signals",
+             return_value=[(routed_signal, "DELIVERED", None)],
+         ), \
+         patch(
+             "signal_system.jobs.discovery.render_digest",
+             return_value=DigestPayload(
+                 subject="bad digest",
+                 body="Scanned 1 tickers, 0 alerts",
+                 status_counts={"DELIVERED": 0, "SUPPRESSED": 0, "MONITORING": 0},
+             ),
+         ), \
+         patch("signal_system.jobs.discovery.email_sender.send_email") as mock_send:
+        with pytest.raises(RuntimeError, match="Digest counts"):
+            discovery.run()
+
+    mock_send.assert_not_called()
+
+    conn = sqlite3.connect(db)
+    status = conn.execute("SELECT status FROM runs WHERE job = 'discovery'").fetchone()
+    conn.close()
+    assert status == ("failed",)
+
+
 def test_dispatcher_registers_news_morning():
     from signal_system import __main__
-    from signal_system.jobs import news_morning
+    from signal_system.jobs import discovery, news_morning
 
     assert __main__.JOBS["news-morning"] is news_morning.run
+    assert __main__.JOBS["discovery"] is discovery.run
