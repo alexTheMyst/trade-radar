@@ -8,7 +8,52 @@ Two AI agents (News Classifier + Discovery Agent), Alert Router with daily budge
 
 ---
 
-## v1.1 Phases
+## v1.1 Phases — Go-Live & Calibration
 
-_Phases for the next milestone will be added by `/gsd-new-milestone`._
+**Milestone goal:** Get the v1.0 system running in production and establish the feedback loop before Discovery Phase B routing.
+**Phases:** 2 | **Requirements:** 5 | **Coverage:** 100%
+
+| # | Phase | Goal | Requirements | Success Criteria |
+|---|-------|------|--------------|------------------|
+| 7 | Deployment & Live Validation | System running in production with all credentials verified | OPS-01, OPS-02, JOBS-01 | 3 |
+| 8 | Measurement & Phase B Prep | Feedback loop confirmed; Phase B transition documented | MEAS-01, DISCOVERY-B | 3 |
+
+---
+
+### Phase 7: Deployment & Live Validation
+
+**Goal:** System running in production with all credentials verified and all three jobs completing successfully against live APIs.
+
+**Requirements:**
+- OPS-01: Task Scheduler XML tasks imported and enabled on runner machine
+- OPS-02: Gmail SMTP delivery confirmed + healthchecks.io pings verified live
+- JOBS-01: All 3 jobs run end-to-end against live Finnhub + Anthropic APIs
+
+**Success Criteria:**
+1. `daily-close`, `news-morning`, and `discovery` tasks appear in Windows Task Scheduler and show Last Run Result = 0 (success)
+2. A digest email lands in `ALERT_RECIPIENT_EMAIL` inbox from a live `news-morning` run
+3. healthchecks.io dashboard shows all 3 checks green within 24 hours of Task Scheduler activation
+
+**Runbook reference:** `E2E-TEST-PLAN.md` at repo root — follow sections 0–8 in order.
+
+---
+
+### Phase 8: Measurement & Phase B Prep
+
+**Goal:** Operator feedback loop confirmed over first live week; Discovery Phase A → B transition criteria documented.
+
+**Requirements:**
+- MEAS-01: acted/user_note workflow confirmed over first 7 days
+- DISCOVERY-B: Phase A → B transition criteria and switch procedure documented
+
+**Success Criteria:**
+1. At least one signal has `acted=1`, `acted_at` timestamp, and non-empty `user_note` in the `signals` table after the first live week
+2. A written runbook exists describing Phase B transition criteria (minimum days, signal volume, score distribution review checklist)
+3. Operator confirms criteria are understood and will be applied before setting `DISCOVERY_PHASE=B`
+
+**Deliverable:** `docs/runbooks/phase-b-transition.md` — Phase A calibration review checklist and `.env` flip procedure.
+
+---
+
+*v1.1 roadmap created: 2026-05-17*
 

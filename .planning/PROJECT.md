@@ -8,15 +8,22 @@ A rules-based, **alert-only** investment signal system for a solo operator with 
 
 Never miss a material thesis-relevant event on a held position — silent failure is indistinguishable from "no alerts today."
 
+## Current Milestone: v1.1 Go-Live & Calibration
+
+**Goal:** Get the v1.0 system running in production and establish the feedback loop before Discovery Phase B routing.
+
+**Target features:**
+- OPS-01: Windows Task Scheduler tasks imported and validated on the runner machine
+- OPS-02: Gmail SMTP + healthchecks.io live credential verification confirmed
+- JOBS-01: End-to-end credentialed live run of all 3 jobs against real Finnhub + Anthropic APIs
+- MEAS-01: Operator acted/user_note feedback workflow confirmed over first 7 days of live operation
+- DISCOVERY-B: Phase A → B transition criteria defined and switch procedure documented
+
+**Note:** No code changes in this milestone. All requirements are operational evidence items or runbooks.
+
 ## Current State
 
-**v1.0 shipped 2026-05-17** — implementation complete, 44/44 requirements satisfied, 120 tests passing, 6 phases complete with full VERIFICATION.md artifacts.
-
-Four manual go-live evidence items pending before production use:
-- OPS-01: Windows Task Scheduler import and validation on runner machine
-- OPS-02: Gmail SMTP + healthchecks.io live credential verification
-- JOBS-01: End-to-end credentialed `news-morning` run against live Finnhub + Anthropic APIs
-- MEAS-01: 7-day acted/user_note feedback workflow confirmed
+**v1.0 shipped 2026-05-17** — implementation complete, 44/44 requirements satisfied, 120 tests passing, 6 phases complete with full VERIFICATION.md artifacts. v1.1 in progress — go-live and calibration.
 
 ## Requirements
 
