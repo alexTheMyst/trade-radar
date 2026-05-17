@@ -41,9 +41,9 @@
 
 ## Summary
 
-The hard parts of the system are already built in isolation: thesis loading, news classification, discovery scoring, routing, run persistence, heartbeat, and email sending. Phase 6 should stay thin and focus on orchestration-only glue: two job modules, a small amount of shared digest/persistence code, one repository helper for the most recent successful `daily-close`, and the measurement/ops handoff docs.
+The hard parts of the system are already built in isolation: thesis loading, news classification, discovery scoring, routing, run persistence, heartbeat, and email sending. Phase 6 should stay thin and focus on orchestration-only glue: two job modules, a small amount of shared digest/persistence code, one repository helper for the most recent successful `daily-close` date, and the measurement/ops handoff docs.
 
-The best planning assumption is to anchor `news-morning` to the most recent successful `daily-close` rather than naïve date subtraction, and to reuse one plain-text digest builder for `news-morning` and Discovery Phase B.
+The best planning assumption is to derive the **previous market-close boundary** from the most recent successful `daily-close` run date (use that ET date at 4:00 PM ET) rather than naïve date subtraction or the job's raw `started_at` timestamp, and to reuse one plain-text digest builder for `news-morning` and Discovery Phase B.
 
 ## Standard Stack
 
@@ -66,7 +66,7 @@ The best planning assumption is to anchor `news-morning` to the most recent succ
 1. `run_id = repository.insert_run("news-morning")` before entering the heartbeat context.
 2. Inside `with heartbeat.heartbeat():`, call `load_thesis(config.THESIS_PATH)` exactly once so stale or missing thesis aborts the job before classification.
 3. Read **core holdings only** from the universe CSV; adding `get_core_holdings()` beside `get_todays_universe()` is the cleanest code shape.
-4. Derive the lower news-window bound from the most recent successful `daily-close` run in `runs`, not from simple calendar subtraction.
+4. Derive the lower news-window bound from the most recent successful `daily-close` **run date** in `runs`, then convert that date into the actual previous market-close boundary at 4:00 PM ET.
 5. Fetch company news per core ticker with `fetch_company_news(ticker, from_date, to_date)`, then filter client-side to `previous_close <= item.datetime <= now`.
 6. Deduplicate **before** the cap using the same normalization rule the classifier already uses; extract or reuse that helper instead of duplicating logic.
 7. Sort deduped items by `datetime` descending, keep the newest 50, and convert every remainder into its own MONITORING signal with a "volume cap reached" note.
@@ -108,7 +108,7 @@ The best planning assumption is to anchor `news-morning` to the most recent succ
 | Retry loops | custom sleep/retry logic | existing `tenacity`-wrapped helpers | Retry semantics already exist. |
 | Routing logic | second budget implementation | `route_signals()` | Avoid budget drift and audit mismatch. |
 | HTML email templating | custom formatter system | plain-text digest builder | Existing delivery path is plain text only. |
-| Holiday calendar dependency | new calendar package | last successful `daily-close` anchor in DB | Reuses current runtime state and avoids new dependencies. |
+| Holiday calendar dependency | new calendar package | last successful `daily-close` date in DB + explicit 4:00 PM ET boundary | Reuses current runtime state and avoids new dependencies. |
 
 ## Measurement / Docs Deliverables Without Scope Creep
 
@@ -120,7 +120,7 @@ The best planning assumption is to anchor `news-morning` to the most recent succ
 ## Common Pitfalls
 
 ### 1. Miscomputing "previous market close"
-Simple "now minus 1 day" breaks on Mondays and market holidays. Prefer the most recent successful `daily-close` run as the lower-bound anchor.
+Simple "now minus 1 day" breaks on Mondays and market holidays. Prefer the most recent successful `daily-close` run date as the lower-bound anchor, then convert it to the actual market-close boundary at 4:00 PM ET.
 
 ### 2. Applying the 50-headline cap too late
 If the cap happens after classification, you waste LLM calls and cannot produce correct overflow MONITORING rows.
@@ -144,7 +144,7 @@ The classifier already defines normalization and dedup semantics; copying a seco
 
 ### Wave 0 — Shared prerequisites
 - Add `get_core_holdings()` in `data/universe.py`.
-- Add a repository helper to fetch the most recent successful run timestamp for a named job, likely `daily-close`.
+- Add a repository helper to fetch the most recent successful run date for a named job, likely `daily-close`.
 - Add shared digest rendering + routed-signal persistence helpers in `jobs/` or a nearby utility module.
 - Decide and document cold-start behavior when no successful `daily-close` exists yet.
 
@@ -213,22 +213,17 @@ The classifier already defines normalization and dedup semantics; copying a seco
 
 | # | Claim | Section | Risk if Wrong |
 |---|---|---|---|
-| A1 | Use the last successful `daily-close` run as the authoritative "previous market close" anchor. | Concrete Orchestration Plan | News window may need a different source if operator expectations differ. |
+| A1 | Use the latest successful `daily-close` run date to derive the previous market-close boundary at 4:00 PM ET. | Concrete Orchestration Plan | News window can drift if raw run timestamps or naïve date subtraction are used. |
 | A2 | Add `get_core_holdings()` rather than reusing `get_todays_universe()` plus filtering elsewhere. | News job / Wave 0 | Minor module-shape drift only. |
 | A3 | Prefer `TASK_INSTANCES_IGNORE_NEW` for single-instance enforcement. | OPS-01 | If queueing is preferred, scheduler behavior changes. |
-| A4 | Deferred outcome backfill can use current quote fetches rather than new historical endpoints. | MEAS-02 | If exact 30th/90th-day closes are required, scope expands. |
+| A4 | Deferred outcome backfill stays internal / unscheduled in Phase 6 and can use current quote fetches rather than new historical endpoints. | MEAS-02 | If exact 30th/90th-day closes or a public CLI entrypoint are required, scope expands. |
 | A5 | Digest rerun idempotence does not need to be solved in Phase 6. | Pitfalls | Manual reruns may resend emails. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Cold start for `news-morning`: what if no successful `daily-close` exists yet?**  
-   Recommendation: require one manual `daily-close` before enabling `news-morning`, or explicitly document the fallback.
-
-2. **Should deferred outcome backfill be exposed through `__main__`?**  
-   Context decisions only require two new public jobs, so keeping backfill internal is cleaner unless the user explicitly wants a third public entrypoint.
-
-3. **What exact Windows command line should the XML template use?**  
-   This depends on whether the operator schedules `uv run ...` or a dedicated interpreter path on the Windows host.
+1. **Cold start — RESOLVED:** `news-morning` requires one successful `daily-close` first and fails closed otherwise.
+2. **Backfill exposure — RESOLVED:** deferred outcome backfill remains internal / unscheduled in Phase 6.
+3. **Windows command shape — RESOLVED:** ops artifacts should document `uv run python -m signal_system <job>`.
 
 ## Sources
 
