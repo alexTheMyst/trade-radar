@@ -6,7 +6,7 @@ from signal_system.models import Signal, compute_alert_id
 from signal_system.monitoring import heartbeat
 from signal_system.data import finnhub_client
 from signal_system.state import repository
-from signal_system.delivery import email_sender
+from signal_system.delivery import telegram_sender
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +30,8 @@ def run() -> None:
             )
             repository.insert_signal(signal)
 
-            email_sender.send_email(
-                subject=f"Daily Close — SPY {spy_close:.2f}",
-                body=f"SPY closed at {spy_close:.2f}\nAlert ID: {alert_id}",
+            telegram_sender.send_message(
+                f"Daily Close — SPY {spy_close:.2f}\n\nSPY closed at {spy_close:.2f}\nAlert ID: {alert_id}"
             )
             repository.update_run(run_id, "success")  # inside heartbeat: DB failure trips /fail ping
     except Exception:

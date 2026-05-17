@@ -159,7 +159,7 @@ def test_news_morning_requires_previous_daily_close_before_fetch_or_email(db):
          patch("signal_system.jobs.news_morning.repository.get_latest_successful_run_date", return_value=None), \
          patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
          patch("signal_system.jobs.news_morning.fetch_company_news", side_effect=AssertionError("should not fetch")), \
-         patch("signal_system.jobs.news_morning.email_sender.send_email") as mock_send:
+         patch("signal_system.jobs.news_morning.telegram_sender.send_message") as mock_send:
         with pytest.raises(RuntimeError, match="daily-close"):
             news_morning.run()
 
@@ -178,7 +178,7 @@ def test_news_morning_thesis_failure_aborts_before_classification_or_digest(db):
          patch("signal_system.jobs.news_morning.load_thesis", side_effect=FileNotFoundError("missing thesis")) as mock_load, \
          patch("signal_system.jobs.news_morning.fetch_company_news") as mock_fetch, \
          patch("signal_system.jobs.news_morning.classify_headlines") as mock_classify, \
-         patch("signal_system.jobs.news_morning.email_sender.send_email") as mock_send:
+         patch("signal_system.jobs.news_morning.telegram_sender.send_message") as mock_send:
         with pytest.raises(FileNotFoundError, match="missing thesis"):
             news_morning.run()
 
@@ -210,14 +210,14 @@ def test_news_morning_core_holdings_only_and_zero_alert_digest(db):
          patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
          patch("signal_system.jobs.news_morning.fetch_company_news", side_effect=fetch_side_effect) as mock_fetch, \
          patch("signal_system.jobs.news_morning.classify_headlines", return_value=[]), \
-         patch("signal_system.jobs.news_morning.email_sender.send_email") as mock_send:
+         patch("signal_system.jobs.news_morning.telegram_sender.send_message") as mock_send:
         news_morning.run()
 
     assert mock_fetch.call_args_list[0].args[0] == "AAPL"
     assert mock_fetch.call_args_list[1].args[0] == "MSFT"
     assert fetch_calls == [(date(2026, 5, 16), fixed_now.date()), (date(2026, 5, 16), fixed_now.date())]
     assert mock_send.call_count == 1
-    assert "Scanned 2 tickers, 0 alerts" in mock_send.call_args.kwargs["body"]
+    assert "Scanned 2 tickers, 0 alerts" in mock_send.call_args.args[0]
 
     conn = sqlite3.connect(db)
     status = conn.execute("SELECT status FROM runs WHERE job = 'news-morning'").fetchone()
@@ -253,7 +253,7 @@ def test_news_morning_headline_cap_dedups_before_cap_and_persists_overflow(db):
          patch("signal_system.jobs.news_morning.fetch_company_news", return_value=items), \
          patch("signal_system.jobs.news_morning.classify_headlines", side_effect=classify_side_effect), \
          patch("signal_system.jobs.news_morning.route_signals", return_value=[]), \
-         patch("signal_system.jobs.news_morning.email_sender.send_email"):
+         patch("signal_system.jobs.news_morning.telegram_sender.send_message"):
         news_morning.run()
 
     assert len(captured_headlines) == 50
@@ -289,7 +289,7 @@ def test_news_morning_parse_failure_monitoring_bypasses_router_and_persists(db):
          patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[_news_item("AAPL event", fixed_now)]), \
          patch("signal_system.jobs.news_morning.classify_headlines", return_value=[monitoring_signal, delivered_signal]), \
          patch("signal_system.jobs.news_morning.route_signals", return_value=[(delivered_signal, "DELIVERED", None)]) as mock_route, \
-         patch("signal_system.jobs.news_morning.email_sender.send_email"):
+         patch("signal_system.jobs.news_morning.telegram_sender.send_message"):
         news_morning.run()
 
     assert mock_route.call_args.args[0] == [delivered_signal]
@@ -319,13 +319,13 @@ def test_news_morning_digest_counts_zero_alert_and_mismatch_guard(db):
          patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[_news_item("AAPL event", fixed_now)]), \
          patch("signal_system.jobs.news_morning.classify_headlines", return_value=[monitoring_signal, suppressed_signal]), \
          patch("signal_system.jobs.news_morning.route_signals", return_value=[(suppressed_signal, "SUPPRESSED", "outscored")]), \
-         patch("signal_system.jobs.news_morning.email_sender.send_email") as mock_send:
+         patch("signal_system.jobs.news_morning.telegram_sender.send_message") as mock_send:
         news_morning.run()
 
     assert mock_send.call_count == 1
-    assert "Scanned 1 tickers, 0 alerts" in mock_send.call_args.kwargs["body"]
-    assert "Suppressed: 1" in mock_send.call_args.kwargs["body"]
-    assert "Monitoring: 1" in mock_send.call_args.kwargs["body"]
+    assert "Scanned 1 tickers, 0 alerts" in mock_send.call_args.args[0]
+    assert "Suppressed: 1" in mock_send.call_args.args[0]
+    assert "Monitoring: 1" in mock_send.call_args.args[0]
 
     with patch("signal_system.jobs.news_morning.heartbeat.heartbeat", _noop_heartbeat), \
          patch("signal_system.jobs.news_morning._now_et", return_value=fixed_now), \
@@ -343,7 +343,7 @@ def test_news_morning_digest_counts_zero_alert_and_mismatch_guard(db):
                  status_counts={"DELIVERED": 1, "SUPPRESSED": 0, "MONITORING": 0},
              ),
          ), \
-         patch("signal_system.jobs.news_morning.email_sender.send_email") as mismatch_send:
+         patch("signal_system.jobs.news_morning.telegram_sender.send_message") as mismatch_send:
         with pytest.raises(RuntimeError, match="Digest counts"):
             news_morning.run()
 
@@ -378,7 +378,7 @@ def test_discovery_phase_a_branches_on_config_and_skips_router_and_email():
          patch("signal_system.jobs.discovery.get_todays_universe", return_value=["AAPL", "MSFT"]) as mock_universe, \
          patch("signal_system.jobs.discovery.score_universe", return_value=[phase_a_signal]) as mock_score, \
          patch("signal_system.jobs.discovery.route_signals") as mock_route, \
-         patch("signal_system.jobs.discovery.email_sender.send_email") as mock_send:
+         patch("signal_system.jobs.discovery.telegram_sender.send_message") as mock_send:
         discovery.run()
 
     mock_universe.assert_called_once_with()
@@ -425,15 +425,15 @@ def test_discovery_phase_b_routes_persists_and_sends_digest(db):
                  (suppressed_signal, "SUPPRESSED", "outscored"),
              ],
          ) as mock_route, \
-         patch("signal_system.jobs.discovery.email_sender.send_email") as mock_send:
+         patch("signal_system.jobs.discovery.telegram_sender.send_message") as mock_send:
         discovery.run()
 
     mock_route.assert_called_once_with([delivered_signal, suppressed_signal])
     assert mock_send.call_count == 1
-    assert "Scanned 2 tickers, 1 alert" in mock_send.call_args.kwargs["body"]
-    assert "AAPL: important update" in mock_send.call_args.kwargs["body"]
-    assert "Suppressed: 1" in mock_send.call_args.kwargs["body"]
-    assert "Monitoring: 0" in mock_send.call_args.kwargs["body"]
+    assert "Scanned 2 tickers, 1 alert" in mock_send.call_args.args[0]
+    assert "AAPL: important update" in mock_send.call_args.args[0]
+    assert "Suppressed: 1" in mock_send.call_args.args[0]
+    assert "Monitoring: 0" in mock_send.call_args.args[0]
 
     conn = sqlite3.connect(db)
     rows = conn.execute(
@@ -459,14 +459,14 @@ def test_discovery_phase_b_zero_alert_digest_even_when_score_returns_empty(db):
          patch("signal_system.jobs.discovery.get_todays_universe", return_value=["AAPL"]), \
          patch("signal_system.jobs.discovery.score_universe", return_value=[]), \
          patch("signal_system.jobs.discovery.route_signals", return_value=[]) as mock_route, \
-         patch("signal_system.jobs.discovery.email_sender.send_email") as mock_send:
+         patch("signal_system.jobs.discovery.telegram_sender.send_message") as mock_send:
         discovery.run()
 
     mock_route.assert_called_once_with([])
     assert mock_send.call_count == 1
-    assert "Scanned 1 tickers, 0 alerts" in mock_send.call_args.kwargs["body"]
-    assert "Suppressed: 0" in mock_send.call_args.kwargs["body"]
-    assert "Monitoring: 0" in mock_send.call_args.kwargs["body"]
+    assert "Scanned 1 tickers, 0 alerts" in mock_send.call_args.args[0]
+    assert "Suppressed: 0" in mock_send.call_args.args[0]
+    assert "Monitoring: 0" in mock_send.call_args.args[0]
 
     conn = sqlite3.connect(db)
     status = conn.execute("SELECT status FROM runs WHERE job = 'discovery'").fetchone()
@@ -498,7 +498,7 @@ def test_discovery_phase_b_fails_on_digest_count_mismatch(db):
                  status_counts={"DELIVERED": 0, "SUPPRESSED": 0, "MONITORING": 0},
              ),
          ), \
-         patch("signal_system.jobs.discovery.email_sender.send_email") as mock_send:
+         patch("signal_system.jobs.discovery.telegram_sender.send_message") as mock_send:
         with pytest.raises(RuntimeError, match="Digest counts"):
             discovery.run()
 
