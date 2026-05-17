@@ -25,47 +25,47 @@ Requirements for the current milestone. Each maps to roadmap phases.
 
 ### Shared Types
 
-- [ ] **TYPE-01**: System has a canonical `Signal` dataclass in `models.py` that serves as the contract between agents and the router (ticker, score, severity, agent, timestamp, alert_id)
-- [ ] **TYPE-02**: `alert_id` is a deterministic content-hash (SHA-256 of ticker + date + rule + agent), not a UUID — enables idempotent reruns
+- [x] **TYPE-01**: System has a canonical `Signal` dataclass in `models.py` that serves as the contract between agents and the router (ticker, score, severity, agent, timestamp, alert_id)
+- [x] **TYPE-02**: `alert_id` is a deterministic content-hash (SHA-256 of ticker + date + rule + agent), not a UUID — enables idempotent reruns
 
 ### Taxonomy
 
-- [ ] **TAX-01**: Operator can maintain investment thesis pillars in `thesis.yaml` without code changes
-- [ ] **TAX-02**: System refuses to run the News Classifier when `thesis.yaml`'s `review_due` date is past — hard abort, not a warning, trips /fail ping
-- [ ] **TAX-03**: thesis.yaml is loaded once per job start and validated against a Pydantic schema before any classification occurs
-- [ ] **TAX-04**: System stores `thesis_version_hash` (SHA-256 of file contents) on every classified signal row for IC comparability across thesis versions
+- [x] **TAX-01**: Operator can maintain investment thesis pillars in `thesis.yaml` without code changes
+- [x] **TAX-02**: System refuses to run the News Classifier when `thesis.yaml`'s `review_due` date is past — hard abort, not a warning, trips /fail ping
+- [x] **TAX-03**: thesis.yaml is loaded once per job start and validated against a Pydantic schema before any classification occurs
+- [x] **TAX-04**: System stores `thesis_version_hash` (SHA-256 of file contents) on every classified signal row for IC comparability across thesis versions
 
 ### Universe
 
-- [ ] **UNIV-01**: System maintains a static ticker universe of ~1,500 tickers with a `core_holding` flag for positions the operator holds
-- [ ] **UNIV-02**: System partitions the universe into thirds for daily rotation using deterministic `hashlib.md5(ticker)` — not Python's `hash()` — so the same ticker lands in the same partition every day
-- [ ] **UNIV-03**: Core holdings are scanned every day regardless of rotation partition
-- [ ] **UNIV-04**: K-1 ETFs (USO, UNG, DBC, GSG) are excluded at the universe-builder level, not at alert time
+- [x] **UNIV-01**: System maintains a static ticker universe of ~1,500 tickers with a `core_holding` flag for positions the operator holds
+- [x] **UNIV-02**: System partitions the universe into thirds for daily rotation using deterministic `hashlib.md5(ticker)` — not Python's `hash()` — so the same ticker lands in the same partition every day
+- [x] **UNIV-03**: Core holdings are scanned every day regardless of rotation partition
+- [x] **UNIV-04**: K-1 ETFs (USO, UNG, DBC, GSG) are excluded at the universe-builder level, not at alert time
 
 ### Data Layer
 
-- [ ] **DATA-01**: Finnhub client supports bulk quote fetch for a list of tickers with a preemptive rate-limit token bucket (≤55 calls/min)
-- [ ] **DATA-02**: System retries Finnhub 429 responses with exponential backoff via `tenacity` (up to 5 attempts)
-- [ ] **DATA-03**: System detects paid-tier Finnhub endpoints (403/404 for free-tier accounts) and skips gracefully with a logged warning — does not score tickers with missing data
-- [ ] **DATA-04**: Finnhub client fetches company news headlines for a ticker within a date range
+- [x] **DATA-01**: Finnhub client supports bulk quote fetch for a list of tickers with a preemptive rate-limit token bucket (≤55 calls/min)
+- [x] **DATA-02**: System retries Finnhub 429 responses with exponential backoff via `tenacity` (up to 5 attempts)
+- [x] **DATA-03**: System detects paid-tier Finnhub endpoints (403/404 for free-tier accounts) and skips gracefully with a logged warning — does not score tickers with missing data
+- [x] **DATA-04**: Finnhub client fetches company news headlines for a ticker within a date range
 
 ### Schema
 
-- [ ] **SCHEMA-01**: `signals` table has a `routing_status` column (DELIVERED / MONITORING / SUPPRESSED) — router sets this, never modifies `severity`
-- [ ] **SCHEMA-02**: `signals` table has a `signal_price_snapshot` column capturing unadjusted price at signal generation time (for outcome measurement)
-- [ ] **SCHEMA-03**: `signals` table has a `model_version` column storing the pinned Claude model ID used for classification
-- [ ] **SCHEMA-04**: System has a `wash_sale` table with an `account` column from day one (4 accounts: schwab_main, schwab_secondary, roth_ira, hsa)
-- [ ] **SCHEMA-05**: System has an `llm_calls` table logging token counts per classifier invocation (`input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, job name, timestamp)
-- [ ] **SCHEMA-06**: `repository.py` has a `count_delivered_today()` function that queries today's DELIVERED signal count by severity — used by router, no in-memory alternatives
+- [x] **SCHEMA-01**: `signals` table has a `routing_status` column (DELIVERED / MONITORING / SUPPRESSED) — router sets this, never modifies `severity`
+- [x] **SCHEMA-02**: `signals` table has a `signal_price_snapshot` column capturing unadjusted price at signal generation time (for outcome measurement)
+- [x] **SCHEMA-03**: `signals` table has a `model_version` column storing the pinned Claude model ID used for classification
+- [x] **SCHEMA-04**: System has a `wash_sale` table with an `account` column from day one (4 accounts: schwab_main, schwab_secondary, roth_ira, hsa)
+- [x] **SCHEMA-05**: System has an `llm_calls` table logging token counts per classifier invocation (`input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, job name, timestamp)
+- [x] **SCHEMA-06**: `repository.py` has a `count_delivered_today()` function that queries today's DELIVERED signal count by severity — used by router, no in-memory alternatives
 
 ### News Classifier
 
-- [ ] **CLFY-01**: News Classifier fetches company news headlines from Finnhub, sanitizes them (strip control chars, cap at 500 chars, wrap in `<headline>` delimiters), and classifies each against thesis pillars
-- [ ] **CLFY-02**: Classification uses the Anthropic tool-use API with a typed schema — not free-text parsing; `temperature=0`; pinned model ID from config
-- [ ] **CLFY-03**: thesis.yaml system prompt is passed with `cache_control: {type: "ephemeral"}` to enable prompt caching across headlines within a single job run
-- [ ] **CLFY-04**: On structured output parse failure (second retry), system inserts a MONITORING-severity signal with `raw_response` captured — never silently drops a classification attempt
-- [ ] **CLFY-05**: News Classifier emits `Signal` objects with per-pillar confidence scores; it never sends email directly
-- [ ] **CLFY-06**: Headline deduplication within a trading day prevents re-classifying the same story from multiple sources
+- [x] **CLFY-01**: News Classifier fetches company news headlines from Finnhub, sanitizes them (strip control chars, cap at 500 chars, wrap in `<headline>` delimiters), and classifies each against thesis pillars
+- [x] **CLFY-02**: Classification uses the Anthropic tool-use API with a typed schema — not free-text parsing; `temperature=0`; pinned model ID from config
+- [x] **CLFY-03**: thesis.yaml system prompt is passed with `cache_control: {type: "ephemeral"}` to enable prompt caching across headlines within a single job run
+- [x] **CLFY-04**: On structured output parse failure (second retry), system inserts a MONITORING-severity signal with `raw_response` captured — never silently drops a classification attempt
+- [x] **CLFY-05**: News Classifier emits `Signal` objects with per-pillar confidence scores; it never sends email directly
+- [x] **CLFY-06**: Headline deduplication within a trading day prevents re-classifying the same story from multiple sources
 
 ### Discovery Agent
 
@@ -77,11 +77,11 @@ Requirements for the current milestone. Each maps to roadmap phases.
 
 ### Alert Router
 
-- [ ] **ROUT-01**: Alert Router enforces daily hard caps: 1 ACTION_REQUIRED and 3 INFORMATIONAL signals delivered per day, regardless of how many agents run
-- [ ] **ROUT-02**: When competing signals exceed the budget cap, the higher-scoring signal wins the slot; the loser is written to SQLite with `routing_status=SUPPRESSED` and a `demoted_from` reason code — severity is never mutated
-- [ ] **ROUT-03**: Router reads today's delivered signal count from the DB (`count_delivered_today()`), not from in-memory state — safe when multiple jobs run same day
-- [ ] **ROUT-04**: Budget reset uses `America/New_York` midnight — never UTC or timezone-naive `datetime.now()`
-- [ ] **ROUT-05**: Tiebreaking between equal-scored signals is deterministic (alphabetical by ticker as secondary sort) — reruns produce identical routing decisions
+- [x] **ROUT-01**: Alert Router enforces daily hard caps: 1 ACTION_REQUIRED and 3 INFORMATIONAL signals delivered per day, regardless of how many agents run
+- [x] **ROUT-02**: When competing signals exceed the budget cap, the higher-scoring signal wins the slot; the loser is written to SQLite with `routing_status=SUPPRESSED` and a `demoted_from` reason code — severity is never mutated
+- [x] **ROUT-03**: Router reads today's delivered signal count from the DB (`count_delivered_today()`), not from in-memory state — safe when multiple jobs run same day
+- [x] **ROUT-04**: Budget reset uses `America/New_York` midnight — never UTC or timezone-naive `datetime.now()`
+- [x] **ROUT-05**: Tiebreaking between equal-scored signals is deterministic (alphabetical by ticker as secondary sort) — reruns produce identical routing decisions
 
 ### Job Orchestration
 
@@ -151,42 +151,42 @@ Deferred to future. Not in current roadmap.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| TYPE-01 | Phase 1 | Pending |
-| TYPE-02 | Phase 1 | Pending |
-| TAX-01 | Phase 1 | Pending |
-| TAX-02 | Phase 1 | Pending |
-| TAX-03 | Phase 1 | Pending |
-| TAX-04 | Phase 1 | Pending |
-| UNIV-01 | Phase 1 | Pending |
-| UNIV-02 | Phase 1 | Pending |
-| UNIV-03 | Phase 1 | Pending |
-| UNIV-04 | Phase 1 | Pending |
-| SCHEMA-01 | Phase 1 | Pending |
-| SCHEMA-02 | Phase 1 | Pending |
-| SCHEMA-03 | Phase 1 | Pending |
-| SCHEMA-04 | Phase 1 | Pending |
-| SCHEMA-05 | Phase 1 | Pending |
-| SCHEMA-06 | Phase 1 | Pending |
-| DATA-01 | Phase 2 | Pending |
-| DATA-02 | Phase 2 | Pending |
-| DATA-03 | Phase 2 | Pending |
-| DATA-04 | Phase 2 | Pending |
-| CLFY-01 | Phase 3 | Pending |
-| CLFY-02 | Phase 3 | Pending |
-| CLFY-03 | Phase 3 | Pending |
-| CLFY-04 | Phase 3 | Pending |
-| CLFY-05 | Phase 3 | Pending |
-| CLFY-06 | Phase 3 | Pending |
+| TYPE-01 | Phase 1 | Complete |
+| TYPE-02 | Phase 1 | Complete |
+| TAX-01 | Phase 1 | Complete |
+| TAX-02 | Phase 1 | Complete |
+| TAX-03 | Phase 1 | Complete |
+| TAX-04 | Phase 1 | Complete |
+| UNIV-01 | Phase 1 | Complete |
+| UNIV-02 | Phase 1 | Complete |
+| UNIV-03 | Phase 1 | Complete |
+| UNIV-04 | Phase 1 | Complete |
+| SCHEMA-01 | Phase 1 | Complete |
+| SCHEMA-02 | Phase 1 | Complete |
+| SCHEMA-03 | Phase 1 | Complete |
+| SCHEMA-04 | Phase 1 | Complete |
+| SCHEMA-05 | Phase 1 | Complete |
+| SCHEMA-06 | Phase 1 | Complete |
+| DATA-01 | Phase 2 | Complete |
+| DATA-02 | Phase 2 | Complete |
+| DATA-03 | Phase 2 | Complete |
+| DATA-04 | Phase 2 | Complete |
+| CLFY-01 | Phase 3 | Complete |
+| CLFY-02 | Phase 3 | Complete |
+| CLFY-03 | Phase 3 | Complete |
+| CLFY-04 | Phase 3 | Complete |
+| CLFY-05 | Phase 3 | Complete |
+| CLFY-06 | Phase 3 | Complete |
 | DISC-01 | Phase 4 | Complete |
 | DISC-02 | Phase 4 | Complete |
 | DISC-03 | Phase 4 | Complete |
 | DISC-04 | Phase 4 | Complete |
 | DISC-05 | Phase 4 | Complete |
-| ROUT-01 | Phase 5 | Pending |
-| ROUT-02 | Phase 5 | Pending |
-| ROUT-03 | Phase 5 | Pending |
-| ROUT-04 | Phase 5 | Pending |
-| ROUT-05 | Phase 5 | Pending |
+| ROUT-01 | Phase 5 | Complete |
+| ROUT-02 | Phase 5 | Complete |
+| ROUT-03 | Phase 5 | Complete |
+| ROUT-04 | Phase 5 | Complete |
+| ROUT-05 | Phase 5 | Complete |
 | JOBS-01 | Phase 6 | Complete |
 | JOBS-02 | Phase 6 | Complete |
 | JOBS-03 | Phase 6 | Complete |
@@ -203,4 +203,4 @@ Deferred to future. Not in current roadmap.
 
 ---
 *Requirements defined: 2026-05-14*
-*Last updated: 2026-05-15 after roadmap creation*
+*Last updated: 2026-05-17 after Phase 6 closeout and milestone audit refresh*
