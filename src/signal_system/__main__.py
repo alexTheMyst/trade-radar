@@ -3,6 +3,7 @@ import sys
 
 from signal_system.state import repository
 from signal_system.jobs.daily_close import run as run_daily_close
+from signal_system.jobs.discovery import run as run_discovery
 from signal_system.jobs.news_morning import run as run_news_morning
 
 logging.basicConfig(
@@ -12,6 +13,7 @@ logging.basicConfig(
 
 JOBS = {
     "daily-close": run_daily_close,
+    "discovery": run_discovery,
     "news-morning": run_news_morning,
 }
 
