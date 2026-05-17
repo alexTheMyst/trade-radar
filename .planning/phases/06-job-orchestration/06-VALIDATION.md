@@ -1,9 +1,9 @@
 ---
 phase: "06"
 slug: job-orchestration
-status: draft
-nyquist_compliant: false
-wave_0_complete: false
+status: verified
+nyquist_compliant: true
+wave_0_complete: true
 created: 2026-05-16
 ---
 
@@ -23,7 +23,7 @@ created: 2026-05-16
 | **Full suite command** | `uv run pytest -q` |
 | **Estimated runtime** | ~25 seconds |
 
-**Current baseline:** full suite passes with `101` tests before Phase 6 work begins.
+**Current baseline:** full suite passes with `120` tests after Phase 6 implementation and closeout.
 
 ---
 
@@ -40,15 +40,15 @@ created: 2026-05-16
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 06-01-01 | 01 | 0 | JOBS-01 | T-06-01 | Core-holdings lookup and previous-close date helper preserve the ET market-close boundary and fail-closed cold-start rules | unit | `uv run pytest tests/test_job_orchestration.py -k "core_holdings or latest_successful_run_date" -q` | ❌ W0 | ⬜ pending |
-| 06-01-02 | 01 | 0 | JOBS-01, JOBS-03 | T-06-02 | Shared digest helpers preserve routed tuple persistence, count-only non-delivered sections, and explicit zero-alert confirmation | unit | `uv run pytest tests/test_job_orchestration.py -k "shared_digest or routed_persistence" -q` | ❌ W0 | ⬜ pending |
-| 06-01-03 | 01 | 1 | JOBS-01, JOBS-03, JOBS-04 | T-06-03 | `news-morning` preserves thesis fail-closed behavior, core-holdings-only scope, parse-failure `MONITORING`, dedup-before-cap, overflow rows, digest count consistency, and fail-on-mismatch guardrails | unit/integration | `uv run pytest tests/test_job_orchestration.py -k "news_morning or core_holdings or headline_cap or zero_alert or dispatcher or thesis or parse_failure or digest_counts or digest_mismatch" -q` | ❌ W0 | ⬜ pending |
-| 06-02-01 | 02 | 2 | JOBS-02, JOBS-03 | T-06-04 | Discovery Phase A sends no email; Phase B persists routed signals, enforces digest count consistency, and emits explicit zero-alert digest | unit/integration | `uv run pytest tests/test_job_orchestration.py -k "discovery_phase_a or discovery_phase_b or dispatcher or digest_counts or digest_mismatch" -q` | ❌ W0 | ⬜ pending |
-| 06-03-01 | 03 | 3 | MEAS-02 | T-06-05 | Outcome backfill stays deferred, internal-only, and idempotent | unit | `uv run pytest tests/test_outcome_backfill.py -q` | ❌ W0 | ⬜ pending |
-| 06-03-02 | 03 | 3 | MEAS-01, OPS-01, OPS-02 | T-06-06 | Ops artifacts are scrubbed, non-secret, document the required scheduler/filter/notification settings, and preserve the 7-day operator feedback workflow | source/docs | `test -f ops/task-scheduler-reference.xml && test -f ops/windows-task-scheduler.md && test -f ops/operator-setup-checklist.md && rg -n "uv run python -m signal_system|StartWhenAvailable|single-instance|absolute path|Eastern Time|run whether logged on or not|password-backed" ops/task-scheduler-reference.xml ops/windows-task-scheduler.md && rg -n "Gmail filter|Healthchecks|30 days post-go-live|7 days|acted|acted_at|user_note" ops/windows-task-scheduler.md ops/operator-setup-checklist.md` | ❌ W0 | ⬜ pending |
-| 06-04-01 | 04 | 4 | JOBS-01, JOBS-02, JOBS-03, JOBS-04 | T-06-07 | Summary/UAT closeout captures the built operator workflow and completes Phase 6 UAT | source/docs | `test -f .planning/phases/06-job-orchestration/06-SUMMARY.md && rg -n "^status: complete$" .planning/phases/06-job-orchestration/06-UAT.md && rg -n "^source: 06-SUMMARY.md$" .planning/phases/06-job-orchestration/06-UAT.md` | ✅ existing suite | ⬜ pending |
-| 06-04-02 | 04 | 4 | MEAS-01, OPS-01, OPS-02 | T-06-08 | Phase 6 verification records the manual-only checks plus the 7-day operator feedback workflow, and closeout updates both validation flags | source/docs | `test -f .planning/phases/04-discovery-agent/04-VERIFICATION.md && test -f .planning/phases/05-alert-router/05-VERIFICATION.md && test -f .planning/phases/06-job-orchestration/06-VERIFICATION.md && rg -n "^nyquist_compliant: true$" .planning/phases/06-job-orchestration/06-VALIDATION.md && rg -n "^wave_0_complete: true$" .planning/phases/06-job-orchestration/06-VALIDATION.md && rg -n "Task Scheduler|Gmail filter|Healthchecks|news-morning|acted|acted_at|user_note|7 days" .planning/phases/06-job-orchestration/06-VERIFICATION.md` | ✅ existing suite | ⬜ pending |
-| 06-04-03 | 04 | 4 | JOBS-01, JOBS-02, JOBS-03, JOBS-04, MEAS-01, MEAS-02, OPS-01, OPS-02 | T-06-09 | Traceability and milestone audit reflect the verified Phase 6 state instead of stale blockers | source/docs | `test -f .planning/v1.0-v1.0-MILESTONE-AUDIT.md && ! rg -n "JOBS-01.*Pending|JOBS-02.*Pending|JOBS-03.*Pending|JOBS-04.*Pending|MEAS-01.*Pending|MEAS-02.*Pending|OPS-01.*Pending|OPS-02.*Pending" .planning/REQUIREMENTS.md && ! rg -n "missing 04-VERIFICATION|missing 05-VERIFICATION|missing build artifacts|No `\\*-SUMMARY\\.md`" .planning/v1.0-v1.0-MILESTONE-AUDIT.md` | ✅ existing suite | ⬜ pending |
+| 06-01-01 | 01 | 0 | JOBS-01 | T-06-01 | Core-holdings lookup and previous-close date helper preserve the ET market-close boundary and fail-closed cold-start rules | unit | `uv run pytest tests/test_job_orchestration.py -k "core_holdings or latest_successful_run_date" -q` | ✅ | ✅ green |
+| 06-01-02 | 01 | 0 | JOBS-01, JOBS-03 | T-06-02 | Shared digest helpers preserve routed tuple persistence, count-only non-delivered sections, and explicit zero-alert confirmation | unit | `uv run pytest tests/test_job_orchestration.py -k "shared_digest or routed_persistence" -q` | ✅ | ✅ green |
+| 06-01-03 | 01 | 1 | JOBS-01, JOBS-03, JOBS-04 | T-06-03 | `news-morning` preserves thesis fail-closed behavior, core-holdings-only scope, parse-failure `MONITORING`, dedup-before-cap, overflow rows, digest count consistency, and fail-on-mismatch guardrails | unit/integration | `uv run pytest tests/test_job_orchestration.py -k "news_morning or core_holdings or headline_cap or zero_alert or dispatcher or thesis or parse_failure or digest_counts or digest_mismatch" -q` | ✅ | ✅ green |
+| 06-02-01 | 02 | 2 | JOBS-02, JOBS-03 | T-06-04 | Discovery Phase A sends no email; Phase B persists routed signals, enforces digest count consistency, and emits explicit zero-alert digest | unit/integration | `uv run pytest tests/test_job_orchestration.py -k "discovery_phase_a or discovery_phase_b or dispatcher or digest_counts or digest_mismatch" -q` | ✅ | ✅ green |
+| 06-03-01 | 03 | 3 | MEAS-02 | T-06-05 | Outcome backfill stays deferred, internal-only, and idempotent | unit | `uv run pytest tests/test_outcome_backfill.py -q` | ✅ | ✅ green |
+| 06-03-02 | 03 | 3 | MEAS-01, OPS-01, OPS-02 | T-06-06 | Ops artifacts are scrubbed, non-secret, document the required scheduler/filter/notification settings, and preserve the 7-day operator feedback workflow | source/docs | `test -f ops/task-scheduler-reference.xml && test -f ops/windows-task-scheduler.md && test -f ops/operator-setup-checklist.md && rg -n "uv run python -m signal_system|StartWhenAvailable|single-instance|absolute path|Eastern Time|run whether logged on or not|password-backed" ops/task-scheduler-reference.xml ops/windows-task-scheduler.md && rg -n "Gmail filter|Healthchecks|30 days post-go-live|7 days|acted|acted_at|user_note" ops/windows-task-scheduler.md ops/operator-setup-checklist.md` | ✅ | ✅ green |
+| 06-04-01 | 04 | 4 | JOBS-01, JOBS-02, JOBS-03, JOBS-04 | T-06-07 | Summary/UAT closeout captures the built operator workflow and completes Phase 6 UAT | source/docs | `test -f .planning/phases/06-job-orchestration/06-SUMMARY.md && rg -n "^status: complete$" .planning/phases/06-job-orchestration/06-UAT.md && rg -n "^source: 06-SUMMARY.md$" .planning/phases/06-job-orchestration/06-UAT.md` | ✅ | ✅ green |
+| 06-04-02 | 04 | 4 | MEAS-01, OPS-01, OPS-02 | T-06-08 | Phase 6 verification records the manual-only checks plus the 7-day operator feedback workflow, and closeout updates both validation flags | source/docs | `test -f .planning/phases/04-discovery-agent/04-VERIFICATION.md && test -f .planning/phases/05-alert-router/05-VERIFICATION.md && test -f .planning/phases/06-job-orchestration/06-VERIFICATION.md && rg -n "^nyquist_compliant: true$" .planning/phases/06-job-orchestration/06-VALIDATION.md && rg -n "^wave_0_complete: true$" .planning/phases/06-job-orchestration/06-VALIDATION.md && rg -n "Task Scheduler|Gmail filter|Healthchecks|news-morning|acted|acted_at|user_note|7 days" .planning/phases/06-job-orchestration/06-VERIFICATION.md` | ✅ | ✅ green |
+| 06-04-03 | 04 | 4 | JOBS-01, JOBS-02, JOBS-03, JOBS-04, MEAS-01, MEAS-02, OPS-01, OPS-02 | T-06-09 | Traceability and milestone audit reflect the verified Phase 6 state instead of stale blockers | source/docs | `test -f .planning/v1.0-v1.0-MILESTONE-AUDIT.md && ! rg -n "JOBS-01.*Pending|JOBS-02.*Pending|JOBS-03.*Pending|JOBS-04.*Pending|MEAS-01.*Pending|MEAS-02.*Pending|OPS-01.*Pending|OPS-02.*Pending" .planning/REQUIREMENTS.md && ! rg -n "missing 04-VERIFICATION|missing 05-VERIFICATION|missing build artifacts|No `\\*-SUMMARY\\.md`" .planning/v1.0-v1.0-MILESTONE-AUDIT.md` | ✅ | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -56,9 +56,9 @@ created: 2026-05-16
 
 ## Wave 0 Requirements
 
-- [ ] `tests/test_job_orchestration.py` — new focused coverage for dispatcher wiring, core-holdings-only `news-morning`, parse-failure persistence, `discovery`, digests, and routing persistence
-- [ ] `tests/test_outcome_backfill.py` — idempotent deferred backfill coverage
-- [ ] shared fixtures/mocks for repository, email, heartbeat, Finnhub news, and classifier outputs
+- [x] `tests/test_job_orchestration.py` — focused coverage for dispatcher wiring, core-holdings-only `news-morning`, parse-failure persistence, `discovery`, digests, and routing persistence
+- [x] `tests/test_outcome_backfill.py` — idempotent deferred backfill coverage
+- [x] shared fixtures/mocks for repository, email, heartbeat, Finnhub news, and classifier outputs
 
 ---
 
@@ -75,11 +75,11 @@ created: 2026-05-16
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or explicit Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 25s
-- [ ] `nyquist_compliant: true` set in frontmatter after implementation completes
+- [x] All tasks have `<automated>` verify or explicit Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references
+- [x] No watch-mode flags
+- [x] Feedback latency < 25s
+- [x] `nyquist_compliant: true` set in frontmatter after implementation completes
 
-**Approval:** pending
+**Approval:** approved 2026-05-17
