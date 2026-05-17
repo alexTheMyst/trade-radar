@@ -17,7 +17,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 3: News Classifier** - Claude API agent, thesis-driven classification, prompt caching
 - [x] **Phase 4: Discovery Agent** - Ticker scoring, Phase A logs-only mode, per-factor sub-scores (completed 2026-05-16)
 - [x] **Phase 5: Alert Router** - Daily budget enforcement, slot competition, deterministic tiebreak (completed 2026-05-16)
-- [ ] **Phase 6: Job Orchestration** - news-morning + discovery jobs, digest email, Windows Task Scheduler docs
+- [x] **Phase 6: Job Orchestration** - news-morning + discovery jobs, digest email, Windows Task Scheduler docs (completed 2026-05-17)
 
 ## Phase Details
 
@@ -75,7 +75,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   - [x] 06-01-PLAN.md — Shared orchestration helpers + `news-morning`
   - [x] 06-02-PLAN.md — `discovery` job wiring and digest guardrails
   - [x] 06-03-PLAN.md — deferred outcome backfill + ops artifacts
-  - [ ] 06-04-PLAN.md — verification + audit closeout
+  - [x] 06-04-PLAN.md — verification + audit closeout
 
 ### Phase 5: Alert Router
 **Goal**: Deliver the Alert Router that enforces daily delivery budgets, runs slot competition with deterministic tiebreaking, and writes suppressed signals to SQLite with full audit trail — always reading budget state from the DB, never from memory.
@@ -113,4 +113,4 @@ Phases execute in numeric order. Phase 3 and Phase 4 can be built in parallel (b
 | 3. News Classifier | 0/TBD | Not started | - |
 | 4. Discovery Agent | 1/1 | Complete   | 2026-05-16 |
 | 5. Alert Router | 2/2 | Complete | 2026-05-16 |
-| 6. Job Orchestration | 2/4 | In Progress | - |
+| 6. Job Orchestration | 4/4 | Complete   | 2026-05-17 |
