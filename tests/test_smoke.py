@@ -189,7 +189,7 @@ def test_telegram_sender_happy_path(monkeypatch):
 
     assert len(captured) == 1
     req = captured[0]
-    assert "123:tok" in req.full_url
+    assert req.full_url == "https://api.telegram.org/bot123:tok/sendMessage"
     assert json.loads(req.data) == {"chat_id": "-1001", "text": "hello world"}
 
 
