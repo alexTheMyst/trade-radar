@@ -74,7 +74,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans**: 4 plans
   - [x] 06-01-PLAN.md — Shared orchestration helpers + `news-morning`
   - [x] 06-02-PLAN.md — `discovery` job wiring and digest guardrails
-  - [ ] 06-03-PLAN.md — deferred outcome backfill + ops artifacts
+  - [x] 06-03-PLAN.md — deferred outcome backfill + ops artifacts
   - [ ] 06-04-PLAN.md — verification + audit closeout
 
 ### Phase 5: Alert Router

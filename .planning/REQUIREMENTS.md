@@ -92,13 +92,13 @@ Requirements for the current milestone. Each maps to roadmap phases.
 
 ### Measurement
 
-- [ ] **MEAS-01**: `signals` table has operator feedback fields (`acted`, `acted_at`, `user_note`) filled manually within 7 days of alert
-- [ ] **MEAS-02**: Signal outcome backfill job idempotently fills `outcome_price_30d` and `outcome_price_90d` via Finnhub for rows where `acted IS NOT NULL` — deferred until ~30 days post go-live
+- [x] **MEAS-01**: `signals` table has operator feedback fields (`acted`, `acted_at`, `user_note`) filled manually within 7 days of alert
+- [x] **MEAS-02**: Signal outcome backfill job idempotently fills `outcome_price_30d` and `outcome_price_90d` via Finnhub for rows where `acted IS NOT NULL` — deferred until ~30 days post go-live
 
 ### Operations
 
-- [ ] **OPS-01**: Windows Task Scheduler configuration is documented with an exported `.xml` task file as reference — not just prose — covering: "run whether logged on or not," absolute paths, missed-run policy, Eastern Time trigger, single-instance enforcement
-- [ ] **OPS-02**: Setup guide documents the Gmail filter (`from:GMAIL_USERNAME → never send to spam`) and instructs operator to configure healthchecks.io SMS/push (not email) as the canonical "job ran" signal
+- [x] **OPS-01**: Windows Task Scheduler configuration is documented with an exported `.xml` task file as reference — not just prose — covering: "run whether logged on or not," absolute paths, missed-run policy, Eastern Time trigger, single-instance enforcement
+- [x] **OPS-02**: Setup guide documents the Gmail filter (`from:GMAIL_USERNAME → never send to spam`) and instructs operator to configure healthchecks.io SMS/push (not email) as the canonical "job ran" signal
 
 ---
 
@@ -191,10 +191,10 @@ Deferred to future. Not in current roadmap.
 | JOBS-02 | Phase 6 | Complete |
 | JOBS-03 | Phase 6 | Complete |
 | JOBS-04 | Phase 6 | Complete |
-| MEAS-01 | Phase 6 | Pending |
-| MEAS-02 | Phase 6 | Pending |
-| OPS-01 | Phase 6 | Pending |
-| OPS-02 | Phase 6 | Pending |
+| MEAS-01 | Phase 6 | Complete |
+| MEAS-02 | Phase 6 | Complete |
+| OPS-01 | Phase 6 | Complete |
+| OPS-02 | Phase 6 | Complete |
 
 **Coverage:**
 - v1 requirements: 44 total

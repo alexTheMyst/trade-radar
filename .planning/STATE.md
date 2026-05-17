@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 06-02-PLAN.md
-last_updated: "2026-05-17T04:02:28.448Z"
+stopped_at: Completed 06-03-PLAN.md
+last_updated: "2026-05-17T04:09:42.098Z"
 last_activity: 2026-05-17
 progress:
   total_phases: 5
@@ -26,8 +26,8 @@ See: .planning/PROJECT.md (updated 2026-05-14)
 ## Current Position
 
 Phase: 06 (job-orchestration)
-Plan: 2 of 4
-Status: Plan 06-02 complete — 118 tests passing
+Plan: 3 of 4
+Status: Ready to execute
 Last activity: 2026-05-17
 
 Progress: [██████████] 100%
@@ -56,6 +56,7 @@ Progress: [██████████] 100%
 *Updated after each plan completion*
 | Phase 06 P01 | 25min | 3 tasks | 6 files |
 | Phase 06 P02 | 8min | 1 tasks | 3 files |
+| Phase 06 P03 | 4min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -80,6 +81,9 @@ Recent decisions affecting current work:
 - [Phase 06]: Deduplicate windowed headlines newest-first before the 50-headline cap; persist every overflow headline as its own MONITORING row.
 - [Phase 06]: Discovery branches on config.DISCOVERY_PHASE instead of the score_universe() return value so Phase A and zero-alert Phase B stay correct.
 - [Phase 06]: Phase B validates digest counts against persisted routing results before sending the discovery digest.
+- [Phase 06]: Keep MEAS-02 as importable internal code only; do not register a public CLI job before the deferred post-go-live activation window.
+- [Phase 06]: Use current quote snapshots to fill due 30d/90d outcome fields while preserving idempotent non-overwrite semantics in repository writes.
+- [Phase 06]: Standardize Windows scheduling guidance on absolute-path uv run python -m signal_system <job> commands with StartWhenAvailable, IgnoreNew single-instance policy, and password-backed logon.
 
 ### Pending Todos
 
@@ -100,6 +104,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-17T04:02:28.443Z
-Stopped at: Completed 06-02-PLAN.md
+Last session: 2026-05-17T04:09:42.094Z
+Stopped at: Completed 06-03-PLAN.md
 Resume file: None
