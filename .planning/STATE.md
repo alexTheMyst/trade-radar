@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: completed
-stopped_at: Completed 06-01-PLAN.md
-last_updated: "2026-05-17T03:02:39.878Z"
+status: executing
+stopped_at: Completed 06-02-PLAN.md
+last_updated: "2026-05-17T04:02:28.448Z"
 last_activity: 2026-05-17
 progress:
   total_phases: 5
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-14)
 
 **Core value:** Never miss a material thesis-relevant event on a held position — silent failure is indistinguishable from "no alerts today."
-**Current focus:** Phase 06 — job-orchestration underway; Plan 06-01 complete
+**Current focus:** Phase 06 — job-orchestration underway; Plan 06-02 complete
 
 ## Current Position
 
 Phase: 06 (job-orchestration)
-Plan: 1 of 4
-Status: Plan 06-01 complete — 114 tests passing
+Plan: 2 of 4
+Status: Plan 06-02 complete — 118 tests passing
 Last activity: 2026-05-17
 
 Progress: [██████████] 100%
@@ -36,9 +36,9 @@ Progress: [██████████] 100%
 
 **Velocity:**
 
-- Total plans completed: 3
+- Total plans completed: 5
 - Average duration: ~40 min/plan
-- Total execution time: ~120 min
+- Total execution time: ~148 min
 
 **By Phase:**
 
@@ -50,11 +50,12 @@ Progress: [██████████] 100%
 
 **Recent Trend:**
 
-- Last 5 plans: 01-01, 02-01, 03-01
+- Last 5 plans: 01-01, 02-01, 03-01, 06-01, 06-02
 - Trend: consistent
 
 *Updated after each plan completion*
 | Phase 06 P01 | 25min | 3 tasks | 6 files |
+| Phase 06 P02 | 8min | 1 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -77,6 +78,8 @@ Recent decisions affecting current work:
 - [Phase 06]: Anchor news-morning to the latest successful daily-close ET date at 4:00 PM instead of naive date subtraction.
 - [Phase 06]: Validate digest counts and zero-alert confirmation before sending email so the run fails closed on mismatches.
 - [Phase 06]: Deduplicate windowed headlines newest-first before the 50-headline cap; persist every overflow headline as its own MONITORING row.
+- [Phase 06]: Discovery branches on config.DISCOVERY_PHASE instead of the score_universe() return value so Phase A and zero-alert Phase B stay correct.
+- [Phase 06]: Phase B validates digest counts against persisted routing results before sending the discovery digest.
 
 ### Pending Todos
 
@@ -97,6 +100,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-17T03:00:43.804Z
-Stopped at: Completed 06-01-PLAN.md
+Last session: 2026-05-17T04:02:28.443Z
+Stopped at: Completed 06-02-PLAN.md
 Resume file: None

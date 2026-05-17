@@ -71,7 +71,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. A ticker missing one or more required Finnhub data fields produces no signal at all — it is not scored with a partial or zero score
   3. Setting `DISCOVERY_PHASE=A` in `.env` causes all agent output to be written to SQLite as MONITORING rows; changing to `DISCOVERY_PHASE=B` enables live routing — no code change required in either direction
   4. After each run, the `runs` table row for that job contains the list of tickers that were scanned in that execution
-**Plans**: TBD
+**Plans**: 4 plans
+  - [x] 06-01-PLAN.md — Shared orchestration helpers + `news-morning`
+  - [x] 06-02-PLAN.md — `discovery` job wiring and digest guardrails
+  - [ ] 06-03-PLAN.md — deferred outcome backfill + ops artifacts
+  - [ ] 06-04-PLAN.md — verification + audit closeout
 
 ### Phase 5: Alert Router
 **Goal**: Deliver the Alert Router that enforces daily delivery budgets, runs slot competition with deterministic tiebreaking, and writes suppressed signals to SQLite with full audit trail — always reading budget state from the DB, never from memory.
@@ -109,4 +113,4 @@ Phases execute in numeric order. Phase 3 and Phase 4 can be built in parallel (b
 | 3. News Classifier | 0/TBD | Not started | - |
 | 4. Discovery Agent | 1/1 | Complete   | 2026-05-16 |
 | 5. Alert Router | 2/2 | Complete | 2026-05-16 |
-| 6. Job Orchestration | 0/TBD | Not started | - |
+| 6. Job Orchestration | 2/4 | In Progress | - |
