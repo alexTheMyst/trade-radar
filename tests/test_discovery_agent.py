@@ -588,7 +588,7 @@ def test_discovery_agent_isolated_from_delivery_and_router():
 import builtins
 
 blocked = {
-    "signal_system.delivery.email_sender",
+    "signal_system.delivery.telegram_sender",
     "signal_system.router",
     "signal_system.router.alert_router",
 }
@@ -597,8 +597,8 @@ orig_import = builtins.__import__
 def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
     if name in blocked:
         raise AssertionError(f"blocked import: {name}")
-    if name == "signal_system.delivery" and fromlist and "email_sender" in fromlist:
-        raise AssertionError("blocked import: signal_system.delivery.email_sender")
+    if name == "signal_system.delivery" and fromlist and "telegram_sender" in fromlist:
+        raise AssertionError("blocked import: signal_system.delivery.telegram_sender")
     if name == "signal_system" and fromlist and "router" in fromlist:
         raise AssertionError("blocked import: signal_system.router")
     return orig_import(name, globals, locals, fromlist, level)

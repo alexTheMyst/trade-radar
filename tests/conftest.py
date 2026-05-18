@@ -10,9 +10,8 @@ import os
 # Must run before any signal_system import (fixture timing is too late)
 os.environ.setdefault("FINNHUB_API_KEY", "test_key")
 os.environ.setdefault("HEALTHCHECKS_UUID", "test-uuid-1234")
-os.environ.setdefault("GMAIL_USERNAME", "test@example.com")
-os.environ.setdefault("GMAIL_APP_PASSWORD", "test_password")
-os.environ.setdefault("ALERT_RECIPIENT_EMAIL", "recipient@example.com")
+os.environ.setdefault("TELEGRAM_BOT_TOKEN", "123456:test_token")
+os.environ.setdefault("TELEGRAM_CHAT_ID", "-1001234567890")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test_anthropic_key")
 os.environ.setdefault("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 
