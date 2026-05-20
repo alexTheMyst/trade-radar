@@ -11,11 +11,11 @@
 ### Operations — Deployment
 
 - [ ] **OPS-01**: Operator imports Task Scheduler XML task files on the Windows runner machine and validates that `daily-close`, `news-morning`, and `discovery` tasks are listed and enabled → *Phase 7*
-- [ ] **OPS-02**: Operator verifies Gmail SMTP delivers successfully with production `GMAIL_APP_PASSWORD` and confirms healthchecks.io receives start/success pings from at least one job run → *Phase 7*
+- [ ] **OPS-02**: Operator confirms Telegram delivery works with production `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` (message received in chat from a live job run) and confirms healthchecks.io receives start/success pings from at least one job run → *Phase 7*
 
 ### Jobs — Live Validation
 
-- [ ] **JOBS-01**: All three jobs (`daily-close`, `news-morning`, `discovery`) run end-to-end against live Finnhub and Anthropic APIs with no unhandled exceptions; digest email delivered to `ALERT_RECIPIENT_EMAIL`; `runs` table shows `status=success` for all three → *Phase 7*
+- [ ] **JOBS-01**: All three jobs (`daily-close`, `news-morning`, `discovery`) run end-to-end against live Finnhub and Anthropic APIs with no unhandled exceptions; Telegram digest message delivered from `news-morning`; `runs` table shows `status=success` for all three → *Phase 7*
 
 ### Measurement
 
