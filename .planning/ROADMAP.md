@@ -26,13 +26,20 @@ Two AI agents (News Classifier + Discovery Agent), Alert Router with daily budge
 
 **Requirements:**
 - OPS-01: Task Scheduler XML tasks imported and enabled on runner machine
-- OPS-02: Gmail SMTP delivery confirmed + healthchecks.io pings verified live
+- OPS-02: Telegram delivery confirmed + healthchecks.io pings verified live
 - JOBS-01: All 3 jobs run end-to-end against live Finnhub + Anthropic APIs
+
+**Plans:** 3 plans
+
+Plans:
+- [ ] 07-01-PLAN.md — Pre-flight: credential validation (Telegram, Finnhub, healthchecks.io) and DB initialization
+- [ ] 07-02-PLAN.md — Task Scheduler import and on-demand test run of daily-close
+- [ ] 07-03-PLAN.md — Full end-to-end live run of all three jobs with DB and delivery audit
 
 **Success Criteria:**
 1. `daily-close`, `news-morning`, and `discovery` tasks appear in Windows Task Scheduler and show Last Run Result = 0 (success)
-2. A digest email lands in `ALERT_RECIPIENT_EMAIL` inbox from a live `news-morning` run
-3. healthchecks.io dashboard shows all 3 checks green within 24 hours of Task Scheduler activation
+2. A Telegram message is delivered from a live `news-morning` run to `TELEGRAM_CHAT_ID`
+3. healthchecks.io dashboard shows the check green within 24 hours of Task Scheduler activation
 
 **Runbook reference:** `E2E-TEST-PLAN.md` at repo root — follow sections 0–8 in order.
 
@@ -56,4 +63,3 @@ Two AI agents (News Classifier + Discovery Agent), Alert Router with daily budge
 ---
 
 *v1.1 roadmap created: 2026-05-17*
-
