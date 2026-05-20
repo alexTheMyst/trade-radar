@@ -84,9 +84,12 @@ def _build_system_prompt(thesis: Thesis) -> str:
     """
     pillar_lines = []
     for pillar in thesis.pillars:
-        keywords_str = ", ".join(pillar.keywords)
+        pos = ", ".join(pillar.positive_signals)
+        neg = ", ".join(pillar.negative_signals)
         pillar_lines.append(
-            f"  - **{pillar.name}**: {pillar.description} (keywords: {keywords_str})"
+            f"  - **{pillar.name}**: {pillar.description}"
+            f"\n    Positive signals: {pos}"
+            f"\n    Negative signals: {neg}"
         )
     pillars_block = "\n".join(pillar_lines)
 

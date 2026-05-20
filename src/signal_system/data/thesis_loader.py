@@ -26,11 +26,13 @@ class ThesisStaleError(RuntimeError):
 
 
 class Pillar(BaseModel):
-    """One investment thesis pillar with associated keywords."""
+    """One investment thesis pillar with associated signals and tickers."""
 
     name: str
     description: str
-    keywords: list[str]
+    tickers: list[str]
+    positive_signals: list[str]
+    negative_signals: list[str]
 
 
 class Thesis(BaseModel):
