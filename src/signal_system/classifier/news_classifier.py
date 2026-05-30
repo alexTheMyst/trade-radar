@@ -130,6 +130,21 @@ def headline_dedup_key(ticker: str, headline: str) -> str:
     return hashlib.sha256(f"{ticker}:{et_date}:{norm}".encode("utf-8")).hexdigest()
 
 
+def article_dedup_key(item: dict) -> str:
+    """Ticker-independent identity for a news article, for cross-ticker dedup.
+
+    Finnhub returns the same story under every related ticker, so a headline that
+    mentions two holdings would otherwise be delivered (and counted against the
+    budget) twice. Prefer Finnhub's stable article id; fall back to the normalized
+    headline when no usable id is present.
+    """
+    article_id = item.get("id")
+    if article_id not in (None, "", 0):
+        return f"id:{article_id}"
+    norm = _normalize_headline_for_dedup(str(item.get("headline", "")))
+    return f"hl:{norm}"
+
+
 def _severity_from_confidence(conf: float) -> str:
     """Map confidence score to severity band.
 

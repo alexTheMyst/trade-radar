@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 from signal_system import config
 from signal_system.classifier import classify_headlines
-from signal_system.classifier.news_classifier import headline_dedup_key
+from signal_system.classifier.news_classifier import article_dedup_key, headline_dedup_key
 from signal_system.data.finnhub_client import fetch_company_news
 from signal_system.data.thesis_loader import load_thesis
 from signal_system.data.universe import get_core_holdings
@@ -113,7 +113,9 @@ def _dedupe_and_cap_headlines(
         headline = str(item.get("headline", ""))
         if not headline.strip():
             continue
-        dedup_key = headline_dedup_key(ticker, headline)
+        # Dedup by article identity, not (ticker, headline): the same story is
+        # returned under every related ticker, and must alert only once.
+        dedup_key = article_dedup_key(item)
         if dedup_key in seen:
             continue
         seen.add(dedup_key)
