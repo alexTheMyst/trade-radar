@@ -7,7 +7,11 @@ from zoneinfo import ZoneInfo
 
 from signal_system import config
 from signal_system.classifier import classify_headlines
-from signal_system.classifier.news_classifier import article_dedup_key, headline_dedup_key
+from signal_system.classifier.news_classifier import (
+    NEWS_CLASSIFIER_AGENT,
+    article_dedup_key,
+    headline_dedup_key,
+)
 from signal_system.data.finnhub_client import fetch_company_news
 from signal_system.data.thesis_loader import load_thesis
 from signal_system.data.universe import get_core_holdings
@@ -65,18 +69,27 @@ def _make_overflow_monitoring_signal(
     ticker: str,
     headline: str,
     headline_dt: datetime,
+    generated_at: datetime,
     thesis_version_hash: str,
 ) -> Signal:
+    # `timestamp` is signal-generation time (the run), NOT the article's publication
+    # time — the article time is preserved in the body. Stamping article time here
+    # produced phantom weekend/no-run rows in the signals table.
     rule = f"volume_cap:{headline_dedup_key(ticker, headline)[:16]}"
     return Signal(
         ticker=ticker,
         score=None,
         severity="MONITORING",
-        agent="news_morning",
-        timestamp=headline_dt,
-        alert_id=compute_alert_id(ticker, headline_dt.date().isoformat(), rule, "news_morning"),
+        agent=NEWS_CLASSIFIER_AGENT,
+        timestamp=generated_at,
+        alert_id=compute_alert_id(
+            ticker, headline_dt.date().isoformat(), rule, NEWS_CLASSIFIER_AGENT
+        ),
         title=f"[volume_cap] {headline[:120]}",
-        body="Headline skipped because deduped news exceeded the newest-50 volume cap.",
+        body=(
+            f"Headline skipped because deduped news exceeded the newest-"
+            f"{_MAX_NEWS_HEADLINES} volume cap. Published {headline_dt.isoformat()}."
+        ),
         model_version=config.ANTHROPIC_MODEL,
         thesis_version_hash=thesis_version_hash,
     )
@@ -191,6 +204,7 @@ def run() -> None:
                         ticker=ticker,
                         headline=str(item.get("headline", "")),
                         headline_dt=item_dt,
+                        generated_at=now_et,
                         thesis_version_hash=thesis_version_hash,
                     )
                 )

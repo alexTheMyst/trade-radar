@@ -33,6 +33,11 @@ _INFORMATIONAL_THRESHOLD: float = 0.60
 _ET = ZoneInfo("America/New_York")
 _client: Anthropic | None = None
 
+# Single agent identity for every signal from the news pillar — classified,
+# parse-failure, and volume-cap overflow alike. Keeps the `agent` dimension
+# consistent for per-signal-type measurement (see signal-log-schema.md).
+NEWS_CLASSIFIER_AGENT: str = "news_classifier"
+
 # Map common typographic/smart-quote Unicode to ASCII equivalents.
 # Applied before storing in Signal.title and before sending to Claude.
 _TYPOGRAPHIC_TO_ASCII: dict[int, str] = {
@@ -276,7 +281,7 @@ def _make_parse_failure_signal(
         ticker=ticker,
         score=None,
         severity="MONITORING",
-        agent="news_classifier",
+        agent=NEWS_CLASSIFIER_AGENT,
         timestamp=datetime.now(_ET),
         alert_id=alert_id,
         title=f"[parse_failure] {headline_text[:200]}",
@@ -304,7 +309,7 @@ def classify_headline(
     # Compute alert_id up front — same value for happy-path and parse-failure signals
     headline_hash = headline_dedup_key(ticker, raw)
     date_iso = datetime.now(_ET).date().isoformat()
-    alert_id = compute_alert_id(ticker, date_iso, f"news:{headline_hash[:16]}", "news_classifier")
+    alert_id = compute_alert_id(ticker, date_iso, f"news:{headline_hash[:16]}", NEWS_CLASSIFIER_AGENT)
 
     try:
         parsed, usage = _call_with_retry(sanitized, system_prompt)
@@ -353,7 +358,7 @@ def classify_headline(
         ticker=ticker,
         score=parsed.confidence,
         severity=_severity_from_confidence(parsed.confidence),
-        agent="news_classifier",
+        agent=NEWS_CLASSIFIER_AGENT,
         timestamp=datetime.now(_ET),
         alert_id=alert_id,
         title=f"{parsed.pillar_name}: {_fix_encoding(raw)[:120]}",

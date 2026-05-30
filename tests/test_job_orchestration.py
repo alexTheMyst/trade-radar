@@ -263,15 +263,22 @@ def test_news_morning_headline_cap_dedups_before_cap_and_persists_overflow(db):
     conn = sqlite3.connect(db)
     overflow_rows = conn.execute(
         """
-        SELECT title, routing_status
+        SELECT title, routing_status, timestamp
         FROM signals
-        WHERE agent = 'news_morning' AND routing_status = 'MONITORING'
+        WHERE agent = 'news_classifier' AND routing_status = 'MONITORING'
         ORDER BY title
         """
     ).fetchall()
+    # No signal should be written under the legacy 'news_morning' agent name.
+    legacy_count = sqlite3.connect(db).execute(
+        "SELECT COUNT(*) FROM signals WHERE agent = 'news_morning'"
+    ).fetchone()[0]
     conn.close()
     assert len(overflow_rows) == 3
     assert all("[volume_cap]" in row[0] for row in overflow_rows)
+    # timestamp is signal-generation time (the run), NOT article publication time
+    assert all(row[2] == fixed_now.isoformat() for row in overflow_rows)
+    assert legacy_count == 0
 
 
 def test_dedupe_collapses_same_headline_across_tickers():
