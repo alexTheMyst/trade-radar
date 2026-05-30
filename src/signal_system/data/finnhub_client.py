@@ -97,17 +97,20 @@ def fetch_quotes(tickers: list[str]) -> dict[str, dict | None]:
 def fetch_quote(ticker: str) -> dict | None:
     """Fetch and validate a single quote for Discovery Agent scoring.
 
-    Returns the full quote dict (c, dp, v, h, l) if all required score-floor
-    fields are present and valid, else None.
+    Finnhub free-tier /quote returns c, d, dp, h, l, o, pc, t — it does NOT
+    include volume ('v'). We therefore require only the fields the scorer can
+    actually use: a percent-change (dp) for momentum and a sane high/low band
+    for range. Volume is optional; when absent the scorer drops the volume
+    factor and renormalises the remaining weights. (Requiring 'v' previously
+    rejected every ticker, so Discovery emitted zero signals on every run.)
     """
     quote = _fetch_single_quote(ticker)
     if quote is None:
         return None
     dp = quote.get("dp")
-    v = quote.get("v")
     h = quote.get("h", 0)
     l = quote.get("l", 0)
-    if dp is None or v is None or h < l or l <= 0:
+    if dp is None or h < l or l <= 0:
         logger.debug("Incomplete quote for %r — skipping", ticker)
         return None
     return quote
