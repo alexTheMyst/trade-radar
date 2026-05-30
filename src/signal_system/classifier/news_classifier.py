@@ -33,6 +33,18 @@ _INFORMATIONAL_THRESHOLD: float = 0.60
 _ET = ZoneInfo("America/New_York")
 _client: Anthropic | None = None
 
+# Map common typographic/smart-quote Unicode to ASCII equivalents.
+# Applied before storing in Signal.title and before sending to Claude.
+_TYPOGRAPHIC_TO_ASCII: dict[int, str] = {
+    ord("\u2018"): "'",   # LEFT SINGLE QUOTATION MARK
+    ord("\u2019"): "'",   # RIGHT SINGLE QUOTATION MARK
+    ord("\u201c"): '"',   # LEFT DOUBLE QUOTATION MARK
+    ord("\u201d"): '"',   # RIGHT DOUBLE QUOTATION MARK
+    ord("\u2013"): "-",   # EN DASH
+    ord("\u2014"): "-",   # EM DASH
+    ord("\u2026"): "...", # HORIZONTAL ELLIPSIS
+}
+
 
 class ClassificationResult(BaseModel):
     """Structured output from the Anthropic classifier call."""
@@ -47,6 +59,26 @@ def _get_client() -> Anthropic:
     if _client is None:
         _client = Anthropic(api_key=config.ANTHROPIC_API_KEY)
     return _client
+
+
+def _fix_encoding(text: str) -> str:
+    """Repair cp1252 mojibake and normalize typographic Unicode to ASCII equivalents.
+
+    News aggregators (including Finnhub sources) sometimes deliver headlines where
+    UTF-8 byte sequences were decoded as cp1252 (e.g. U+2019 RIGHT SINGLE QUOTATION
+    MARK becomes the three-char sequence â€™).  Attempting the reverse round-trip
+    (encode to cp1252, decode as UTF-8) transparently repairs this.  Any string that
+    is already correct Unicode or contains characters outside the cp1252 range will
+    fail one of the two steps and is left unchanged.
+
+    Typographic characters that survive (or were never mojibake) are then replaced
+    with their ASCII equivalents so stored signals and delivered alerts stay clean.
+    """
+    try:
+        text = text.encode("cp1252").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        pass  # not mojibake or outside cp1252 range — leave as-is
+    return text.translate(_TYPOGRAPHIC_TO_ASCII)
 
 
 def _sanitize_headline(raw: object) -> str:
@@ -64,6 +96,8 @@ def _sanitize_headline(raw: object) -> str:
         raw = str(raw) if raw is not None else ""
     # Strip ANSI escape sequences (e.g. \x1b[31m) before per-char filtering
     cleaned = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", raw)
+    # Repair cp1252 mojibake and normalise typographic chars to ASCII
+    cleaned = _fix_encoding(cleaned)
     # Strip control chars (Cc category) except newline and tab
     cleaned = "".join(
         ch for ch in cleaned
@@ -322,7 +356,7 @@ def classify_headline(
         agent="news_classifier",
         timestamp=datetime.now(_ET),
         alert_id=alert_id,
-        title=f"{parsed.pillar_name}: {raw[:120]}",
+        title=f"{parsed.pillar_name}: {_fix_encoding(raw)[:120]}",
         body=parsed.rationale,
         model_version=config.ANTHROPIC_MODEL,
         thesis_version_hash=thesis_version_hash,
