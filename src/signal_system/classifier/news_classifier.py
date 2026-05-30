@@ -10,6 +10,7 @@ import hashlib
 import logging
 import re
 import unicodedata
+from dataclasses import replace
 from datetime import datetime
 from typing import Literal
 from zoneinfo import ZoneInfo
@@ -19,6 +20,7 @@ from pydantic import BaseModel, Field, ValidationError
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
 
 from signal_system import config
+from signal_system.data.finnhub_client import fetch_quotes
 from signal_system.data.thesis_loader import Thesis
 from signal_system.models import Signal, compute_alert_id
 from signal_system.state import repository
@@ -139,6 +141,23 @@ def _severity_from_confidence(conf: float) -> str:
     if conf >= _INFORMATIONAL_THRESHOLD:
         return "INFORMATIONAL"
     return "MONITORING"
+
+
+def _fetch_price_snapshot(ticker: str) -> float | None:
+    """Best-effort unadjusted price at signal time for outcome measurement.
+
+    Uses fetch_quotes (never raises). Returns None if the quote is missing or the
+    close price is non-positive — the signal is still emitted, just without a
+    snapshot. Capturing this is required for outcome backfill / IC measurement
+    (CLAUDE.md): without it, outcome_price_30d/90d can never be computed.
+    """
+    quote = fetch_quotes([ticker]).get(ticker)
+    if not quote:
+        return None
+    close = quote.get("c")
+    if close is None or close <= 0:
+        return None
+    return float(close)
 
 
 def _classify_one_call(
@@ -347,5 +366,20 @@ def classify_headlines(
         )
         if signal is not None:
             results.append(signal)
+
+    # Stamp price-at-signal on routable signals — required for outcome backfill /
+    # IC measurement (CLAUDE.md). Fetch once per ticker, and only when at least one
+    # routable signal was emitted, so off-thesis tickers don't waste a Finnhub call.
+    # MONITORING signals (off-thesis exhaust, parse failures) get no outcome
+    # measurement, so they are intentionally left without a snapshot.
+    if any(s.severity != "MONITORING" for s in results):
+        price = _fetch_price_snapshot(ticker)
+        if price is not None:
+            results = [
+                replace(s, signal_price_snapshot=price)
+                if s.severity != "MONITORING"
+                else s
+                for s in results
+            ]
 
     return results
