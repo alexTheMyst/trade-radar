@@ -13,15 +13,15 @@ Single-day percent change (`dp`) is noise, not momentum. Cross-sectional ranking
 
 ### Solution
 
-Replace the current scoring with multi-day momentum computed from `/stock/candle` (Finnhub free tier, daily resolution, 20-day lookback).
+Replace the current scoring with multi-day momentum computed from `yfinance` historical daily candles (20-day lookback). Finnhub `/stock/candle` is confirmed 403 on free tier — Yahoo Finance provides free historical OHLCV with no API key and no warm-up period.
 
 ### New Factors
 
 | Factor | Weight | Source | Meaning |
 |--------|--------|--------|---------|
-| `momentum_20d` | 50 | 20-day return from candles | Medium-term trend strength |
-| `momentum_5d` | 30 | 5-day return from candles | Short-term acceleration |
-| `range_vs_20d` | 20 | `(close - low_20d) / (high_20d - low_20d)` | Position within 20-day range |
+| `momentum_20d` | 50 | 20-day return from yfinance daily candles | Medium-term trend strength |
+| `momentum_5d` | 30 | 5-day return from yfinance daily candles | Short-term acceleration |
+| `range_vs_20d` | 20 | `(close - low_20d) / (high_20d - low_20d)` from yfinance | Position within 20-day range |
 
 ### Scoring Formula
 
@@ -39,12 +39,21 @@ composite = 100 * (0.50 * rank(return_20d) + 0.30 * rank(return_5d) + 0.20 * ran
 ### Edge Cases
 
 - **Fewer than 20 candles returned:** If a ticker has fewer than 5 trading days of data, skip it entirely (can't compute momentum). If it has 5-19 days, compute momentum from available data (e.g., 12-day return instead of 20-day). The 5-day factor uses min(available, 5).
-- **`/stock/candle` returns empty or None:** Skip the ticker (same as current behavior when `/quote` fails). Log at DEBUG level.
+- **yfinance returns empty DataFrame:** Skip the ticker (same as current behavior when `/quote` fails). Log at DEBUG level.
 - **All tickers skipped:** `score_universe()` returns empty list, run still marked success with 0 signals.
+- **yfinance throttling:** Yahoo rarely throttles at 500 tickers/day. If it does, `yfinance` raises an exception — tenacity retry with backoff handles this.
+
+### Data Source Split
+
+| Purpose | Source | Rationale |
+|---------|--------|-----------|
+| Historical daily OHLCV (momentum) | `yfinance` | Finnhub `/stock/candle` is 403 on free tier |
+| Real-time quote (price snapshot) | Finnhub `/quote` | Already used, confirmed free tier |
+| Company news | Finnhub `/company-news` | Already used, confirmed free tier |
 
 ### API Budget
 
-One `/stock/candle` call per ticker (in addition to existing `/quote` for price snapshot). At ~500 tickers/day with 55 calls/min rate limit: ~1000 total calls = ~18 minutes wall time. Acceptable.
+`yfinance` batch-downloads multiple tickers in one HTTP request (`yf.download(tickers, period="1mo")`). One batch call for the entire universe replaces ~500 individual Finnhub candle calls. Finnhub budget is unchanged (one `/quote` per ticker for price snapshot). Total wall time decreases significantly.
 
 ### Thresholds
 
@@ -53,10 +62,11 @@ One `/stock/candle` call per ticker (in addition to existing `/quote` for price 
 
 ### Changes to Files
 
-- `src/signal_system/data/finnhub_client.py` — add `fetch_candles(ticker, days=20)`
-- `src/signal_system/discovery/discovery_agent.py` — rewrite scoring logic, remove news/volume factors, remove Phase A path
+- `src/signal_system/data/yahoo_client.py` — new module: `fetch_history(tickers, days=25)` returns `dict[str, DataFrame]` of daily OHLCV per ticker
+- `src/signal_system/discovery/discovery_agent.py` — rewrite scoring logic, remove news/volume/dp factors, remove Phase A path, consume yahoo candle data
 - `src/signal_system/jobs/discovery.py` — remove Phase A early-return branch
 - `src/signal_system/config.py` — remove `DISCOVERY_PHASE` config
+- `pyproject.toml` — add `yfinance` dependency
 
 ---
 
@@ -195,9 +205,13 @@ The router sees signals *after* severity has been weight-adjusted. A high-weight
 - `universe.csv` without `weight_pct` column: `get_position_weights()` returns empty dict, no shift applied
 - Discovery Phase A config in `.env` is removed (breaking change, documented)
 
+### New Dependency
+
+- `yfinance` — added to `pyproject.toml` for historical daily OHLCV. Used only by `yahoo_client.py`. Does not replace Finnhub for real-time quotes or news.
+
 ### Testing Strategy
 
-- Unit tests for `fetch_candles()` with mocked Finnhub responses
+- Unit tests for `fetch_history()` with mocked yfinance responses
 - Unit tests for momentum/range computation from candle data
 - Unit tests for `adjusted_severity()` with various weight ratios
 - Integration test: full Discovery pipeline with mocked candles → signals emitted with correct severity
