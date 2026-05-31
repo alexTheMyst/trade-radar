@@ -471,7 +471,6 @@ def test_discovery_zero_alert_digest_even_when_score_returns_empty(db):
     fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
 
     with patch("signal_system.jobs.discovery._now_et", return_value=fixed_now), \
-         patch("signal_system.jobs.discovery._now_et", return_value=fixed_now), \
          patch("signal_system.jobs.discovery.heartbeat.heartbeat", _noop_heartbeat), \
          patch("signal_system.jobs.discovery.get_todays_universe", return_value=["AAPL"]), \
          patch("signal_system.jobs.discovery.score_universe", return_value=[]), \
@@ -499,7 +498,6 @@ def test_discovery_fails_on_digest_count_mismatch(db):
     routed_signal = _sig(ticker="AAPL", agent="discovery_agent", score=88.0)
 
     with patch("signal_system.jobs.discovery._now_et", return_value=fixed_now), \
-         patch("signal_system.jobs.discovery._now_et", return_value=fixed_now), \
          patch("signal_system.jobs.discovery.heartbeat.heartbeat", _noop_heartbeat), \
          patch("signal_system.jobs.discovery.get_todays_universe", return_value=["AAPL"]), \
          patch("signal_system.jobs.discovery.score_universe", return_value=[routed_signal]), \
