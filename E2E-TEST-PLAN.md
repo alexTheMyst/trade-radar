@@ -105,8 +105,7 @@ uv run python -m signal_system news-morning
 uv run python -c "import sqlite3; [print(*r) for r in sqlite3.connect('state/signals.db').execute('SELECT job, status, started_at FROM runs WHERE job=? ORDER BY started_at DESC LIMIT 3', ('news-morning',))]"
 
 # Check classified signals — should have routing_status set
-uv run python -c "import sqlite3; [print(*r) for r in sqlite3.connect('state/signals.db').execute('SELECT agent, ticker, severity, routing_status, title FROM signals WHERE agent=? ORDER BY timestamp DESC LIMIT 10', ('news_morning',))]"
-
+uv run python -c "import sqlite3; [print(*r) for r in sqlite3.connect('state/signals.db').execute('SELECT agent, ticker, severity, routing_status, title FROM signals WHERE agent=? ORDER BY timestamp DESC LIMIT 10', ('news_classifier',))]"
 # Check LLM token telemetry was logged
 uv run python -c "import sqlite3; [print(*r) for r in sqlite3.connect('state/signals.db').execute('SELECT job, model_version, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens FROM llm_calls ORDER BY id DESC LIMIT 5')]"
 

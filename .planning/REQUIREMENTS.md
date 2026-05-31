@@ -2,8 +2,7 @@
 
 **Milestone:** v1.1 Go-Live & Calibration
 **Goal:** Get the v1.0 system running in production and establish the feedback loop before Discovery Phase B routing.
-**Note:** No code changes. All requirements are operational evidence items or runbooks.
-
+**Note:** v1.1 is primarily operational (evidence items/runbooks). Code changes, if any, should be limited to go-live bug fixes.
 ---
 
 ## Active Requirements
