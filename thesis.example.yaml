@@ -1,35 +1,34 @@
-# thesis.example.yaml — operator-maintained investment thesis TEMPLATE
+# thesis.example.yaml — operator-maintained investment thesis
 #
-# Copy this file to thesis.yaml (gitignored) and customize before running news-morning.
-# IMPORTANT: Update review_due before each quarterly review — the classifier refuses to
-# run when this date is in the past (ThesisStaleError trips the /fail heartbeat ping).
-#
-# Schema: review_due (ISO date), pillars (list of name/description/keywords)
+# Copy to thesis.yaml (gitignored) and customize before running news-morning.
+# Update review_due before each quarterly review — the classifier refuses to
+# run when this date is in the past (ThesisStaleError trips the /fail ping).
 
 review_due: 2026-11-01
 
 pillars:
   - name: monetary_policy
     description: Federal Reserve policy and macro liquidity conditions
-    keywords:
-      - rate cut
-      - rate hike
-      - FOMC
-      - quantitative easing
-      - quantitative tightening
-      - liquidity
-      - federal funds rate
-      - pivot
+    positive_signals:
+      - "rate cut announced or strongly signaled"
+      - "balance sheet expansion or QE restart"
+      - "dovish pivot language from Fed officials"
+    negative_signals:
+      - "rate hike or hawkish hold"
+      - "quantitative tightening acceleration"
+      - "inflation surprise upward"
+    holdings_exposed: [SPY, QQQ, VTI]
+    threshold_event: "unscheduled FOMC action or >50bp surprise vs expectations"
 
   - name: ai_capex
     description: Capital expenditure cycle in AI infrastructure — chips, data centers, hyperscalers
-    keywords:
-      - GPU
-      - data center
-      - capex
-      - hyperscaler
-      - inference
-      - training cluster
-      - NVIDIA
-      - semiconductor
-      - AI spending
+    positive_signals:
+      - "hyperscaler capex guidance raised"
+      - "new datacenter build announced"
+      - "GPU demand exceeding supply signals"
+    negative_signals:
+      - "capex cuts or deferrals announced"
+      - "GPU oversupply or inventory build"
+      - "AI spending pullback guidance"
+    holdings_exposed: [NVDA, MSFT, GOOGL, AMZN, META]
+    threshold_event: "any single hyperscaler cutting forward capex guidance by >10%"

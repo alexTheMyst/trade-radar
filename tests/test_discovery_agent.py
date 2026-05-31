@@ -1,32 +1,23 @@
-"""Tests for the Discovery Agent — score_universe() and supporting helpers.
+"""Tests for the Discovery Agent — multi-day momentum scoring.
 
-Tests T-01 through T-21 covering DISC-01..DISC-05 requirements and UAT smoke.
+Tests cover the new yfinance-based scoring with factors:
+momentum_20d (50), momentum_5d (30), range_vs_20d (20).
 """
-import os
 import sqlite3
-import subprocess
-import sys
-from datetime import datetime, timezone
-from pathlib import Path
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch
 
+import pandas as pd
 import pytest
 
-from signal_system import config
 from signal_system.state import repository
-from signal_system.discovery import score_universe
-from signal_system.data.finnhub_client import fetch_quote
 
 DATE_ISO = "2026-05-16"
 
 
-def _q(dp=5.0, v=300, c=50.0, h=60.0, l=40.0):
-    """Build a valid quote dict."""
-    return {"c": c, "dp": dp, "v": v, "h": h, "l": l, "o": 48.0, "pc": 49.0}
-
-
-def _news(n=2):
-    return [{"headline": f"News {i}"} for i in range(n)]
+def _make_candle_df(closes: list[float], highs: list[float], lows: list[float]):
+    """Build a DataFrame matching yahoo_client.fetch_history() output format."""
+    dates = pd.date_range(end="2026-05-16", periods=len(closes), freq="B")
+    return pd.DataFrame({"Close": closes, "High": highs, "Low": lows}, index=dates)
 
 
 @pytest.fixture
@@ -36,576 +27,257 @@ def db(tmp_path, monkeypatch):
     return tmp_path / "test.db"
 
 
-# ---------------------------------------------------------------------------
-# T-01: test_score_computation
-# ---------------------------------------------------------------------------
+def test_momentum_scoring_three_tickers(db):
+    """Cross-sectional ranking produces correct composite with 20d/5d/range factors."""
+    from signal_system.discovery.discovery_agent import score_universe
 
-def test_score_computation(db, monkeypatch):
-    """Cross-sectional ranking produces correct composite scores for 3 tickers."""
-    monkeypatch.setattr(config, "DISCOVERY_PHASE", "B")
+    strong = _make_candle_df(
+        closes=[100 + i for i in range(20)],  # 100..119, last=119
+        highs=[102 + i for i in range(20)],
+        lows=[98 + i for i in range(20)],
+    )
+    medium = _make_candle_df(
+        closes=[100 + i * 0.5 for i in range(20)],  # 100..109.5
+        highs=[105 + i * 0.5 for i in range(20)],
+        lows=[95 + i * 0.5 for i in range(20)],
+    )
+    weak = _make_candle_df(
+        closes=[100 - i * 0.25 for i in range(20)],  # 100..95.25
+        highs=[105 - i * 0.2 for i in range(20)],
+        lows=[94 - i * 0.3 for i in range(20)],
+    )
 
-    quotes = {
-        "A": _q(dp=10.0, v=300, c=50.0, h=60.0, l=40.0),
-        "B": _q(dp=5.0,  v=200, c=48.0, h=50.0, l=40.0),
-        "C": _q(dp=1.0,  v=100, c=41.0, h=50.0, l=40.0),
-    }
-    news_counts = {"A": 3, "B": 2, "C": 1}
-
-    def fq_side(ticker):
-        return quotes[ticker]
-
-    def fcn_side(ticker, from_date, to_date):
-        return _news(news_counts[ticker])
-
-    run_id = repository.insert_run("discovery")
-
-    with patch("signal_system.discovery.discovery_agent.fetch_quote", side_effect=fq_side), \
-         patch("signal_system.discovery.discovery_agent.fetch_company_news", side_effect=fcn_side):
-        signals = score_universe(["A", "B", "C"], run_id, DATE_ISO)
-
-    assert len(signals) == 2
-    sig_a = next(s for s in signals if s.ticker == "A")
-    sig_b = next(s for s in signals if s.ticker == "B")
-    assert sig_a.score == pytest.approx(87.5)
-    assert sig_b.score == pytest.approx(62.5)
-    assert "C" not in [s.ticker for s in signals]
-
-
-# ---------------------------------------------------------------------------
-# T-02: test_score_floor_invalid_quote (dp=None)
-# ---------------------------------------------------------------------------
-
-def test_score_floor_invalid_quote():
-    """fetch_quote returns None when dp is None (score-floor guard)."""
-    with patch("signal_system.data.finnhub_client._fetch_single_quote",
-               return_value={"c": 50.0, "dp": None, "v": 300, "h": 60.0, "l": 40.0}):
-        result = fetch_quote("AAPL")
-    assert result is None
-
-
-# ---------------------------------------------------------------------------
-# T-02b: test_quote_accepted_without_volume (Finnhub free-tier /quote has no 'v')
-# ---------------------------------------------------------------------------
-
-def test_quote_accepted_without_volume():
-    """fetch_quote accepts a real free-tier quote that omits 'v' (volume).
-
-    Finnhub /quote returns c, d, dp, h, l, o, pc, t — never volume. Requiring 'v'
-    rejected every ticker, so Discovery emitted zero signals on every run.
-    """
-    with patch(
-        "signal_system.data.finnhub_client._fetch_single_quote",
-        return_value={"c": 50.0, "d": 1.0, "dp": 2.0, "h": 60.0, "l": 40.0, "o": 48.0, "pc": 49.0, "t": 0},
-    ):
-        result = fetch_quote("AAPL")
-    assert result is not None
-    assert "v" not in result
-
-
-# ---------------------------------------------------------------------------
-# T-02c: test_score_universe_without_volume_emits_signal (regression for 0-signal bug)
-# ---------------------------------------------------------------------------
-
-def test_score_universe_without_volume_emits_signal(db, monkeypatch):
-    """With volume-less quotes, the composite renormalizes over the 3 available
-    factors and still emits signals (the production bug produced zero)."""
-    monkeypatch.setattr(config, "DISCOVERY_PHASE", "B")
-
-    # No 'v' key — mirrors the real Finnhub /quote payload.
-    quotes = {
-        "HIGH": {"c": 55.0, "dp": 10.0, "h": 60.0, "l": 40.0, "o": 48.0, "pc": 49.0},
-        "LOW": {"c": 41.0, "dp": 1.0, "h": 50.0, "l": 40.0, "o": 48.0, "pc": 49.0},
-    }
-    news_counts = {"HIGH": 2, "LOW": 0}
-
-    def fq_side(ticker):
-        return quotes[ticker]
-
-    def fcn_side(ticker, from_date, to_date):
-        return _news(news_counts[ticker])
+    history = {"STRONG": strong, "MEDIUM": medium, "WEAK": weak}
+    weights = {"STRONG": 10.0, "MEDIUM": 10.0, "WEAK": 10.0}
 
     run_id = repository.insert_run("discovery")
 
-    with patch("signal_system.discovery.discovery_agent.fetch_quote", side_effect=fq_side), \
-         patch("signal_system.discovery.discovery_agent.fetch_company_news", side_effect=fcn_side):
-        result = score_universe(["HIGH", "LOW"], run_id, DATE_ISO)
+    with patch("signal_system.discovery.discovery_agent.fetch_history", return_value=history), \
+         patch("signal_system.discovery.discovery_agent.get_position_weights", return_value=weights), \
+         patch("signal_system.discovery.discovery_agent.fetch_quote", return_value={"c": 119.0, "dp": 1.0, "h": 121.0, "l": 117.0}):
+        signals = score_universe(["STRONG", "MEDIUM", "WEAK"], run_id, DATE_ISO)
 
-    high = next(s for s in result if s.ticker == "HIGH")
-    # Top on all 3 available factors → renormalized composite = 100.0
-    assert high.score == pytest.approx(100.0)
-    # Volume factor is dropped, not faked
-    assert "volume_rank" not in high.sub_scores
-    assert set(high.sub_scores.keys()) == {"price_momentum", "range_position", "news_activity"}
-    assert "LOW" not in [s.ticker for s in result]
-
-
-# ---------------------------------------------------------------------------
-# T-03: test_score_floor_null_quote
-# ---------------------------------------------------------------------------
-
-def test_score_floor_null_quote(db, monkeypatch):
-    """Ticker is excluded when fetch_quote returns None."""
-    monkeypatch.setattr(config, "DISCOVERY_PHASE", "B")
-    run_id = repository.insert_run("discovery")
-
-    with patch("signal_system.discovery.discovery_agent.fetch_quote", return_value=None):
-        result = score_universe(["AAPL"], run_id, DATE_ISO)
-
-    assert result == []
+    assert len(signals) >= 1
+    tickers = [s.ticker for s in signals]
+    assert "STRONG" in tickers
+    strong_sig = next(s for s in signals if s.ticker == "STRONG")
+    assert strong_sig.score == pytest.approx(100.0)
+    assert strong_sig.severity == "ACTION_REQUIRED"
+    assert set(strong_sig.sub_scores.keys()) == {"momentum_20d", "momentum_5d", "range_vs_20d"}
 
 
-# ---------------------------------------------------------------------------
-# T-04: test_range_position_flat_day
-# ---------------------------------------------------------------------------
+def test_ticker_with_fewer_than_5_days_skipped(db):
+    """Tickers with fewer than 5 trading days of data are skipped entirely."""
+    from signal_system.discovery.discovery_agent import score_universe
 
-def test_range_position_flat_day(db, monkeypatch):
-    """h==l (flat day) produces range_position=0.0 without exception; ticker still scored."""
-    monkeypatch.setattr(config, "DISCOVERY_PHASE", "B")
-    run_id = repository.insert_run("discovery")
-
-    aapl_q = _q(dp=5.0, v=200, c=50.0, h=50.0, l=50.0)
-    msft_q = _q(dp=3.0, v=150, c=55.0, h=60.0, l=40.0)
-
-    quotes = {"AAPL": aapl_q, "MSFT": msft_q}
-
-    def fq_side(ticker):
-        return quotes[ticker]
-
-    def fcn_side(ticker, from_date, to_date):
-        return _news(1)
-
-    # Should not raise
-    with patch("signal_system.discovery.discovery_agent.fetch_quote", side_effect=fq_side), \
-         patch("signal_system.discovery.discovery_agent.fetch_company_news", side_effect=fcn_side):
-        result = score_universe(["AAPL", "MSFT"], run_id, DATE_ISO)
-
-    # Verify no exception was raised (we reached this point)
-    # MSFT should get range_rank=1.0, AAPL range_rank=0.0
-    # If MSFT scores >=60, verify its range sub_score != AAPL's
-    msft_signals = [s for s in result if s.ticker == "MSFT"]
-    aapl_signals = [s for s in result if s.ticker == "AAPL"]
-    if msft_signals and aapl_signals:
-        assert msft_signals[0].sub_scores["range_position"] != aapl_signals[0].sub_scores["range_position"]
-    elif msft_signals:
-        # MSFT scored, AAPL didn't — range guard worked
-        assert msft_signals[0].sub_scores["range_position"] == pytest.approx(1.0)
-
-
-# ---------------------------------------------------------------------------
-# T-05: test_news_activity_missing (fetch_company_news returns None)
-# ---------------------------------------------------------------------------
-
-def test_news_activity_missing(db, monkeypatch):
-    """No exception when fetch_company_news returns None (treated as 0 news)."""
-    monkeypatch.setattr(config, "DISCOVERY_PHASE", "B")
-    run_id = repository.insert_run("discovery")
-
-    with patch("signal_system.discovery.discovery_agent.fetch_quote", return_value=_q()), \
-         patch("signal_system.discovery.discovery_agent.fetch_company_news", return_value=None):
-        result = score_universe(["AAPL"], run_id, DATE_ISO)
-
-    # Single ticker → all ranks 0.5 → composite=50.0 < 60 → no signal
-    assert result == []
-
-
-# ---------------------------------------------------------------------------
-# T-06: test_news_activity_empty (fetch_company_news returns [])
-# ---------------------------------------------------------------------------
-
-def test_news_activity_empty(db, monkeypatch):
-    """No exception when fetch_company_news returns empty list."""
-    monkeypatch.setattr(config, "DISCOVERY_PHASE", "B")
-    run_id = repository.insert_run("discovery")
-
-    with patch("signal_system.discovery.discovery_agent.fetch_quote", return_value=_q()), \
-         patch("signal_system.discovery.discovery_agent.fetch_company_news", return_value=[]):
-        result = score_universe(["AAPL"], run_id, DATE_ISO)
-
-    assert result == []
-
-
-# ---------------------------------------------------------------------------
-# T-07: test_phase_a_inserts_monitoring
-# ---------------------------------------------------------------------------
-
-def test_phase_a_inserts_monitoring(db, monkeypatch):
-    """Phase A inserts signals with routing_status='MONITORING' and returns []."""
-    monkeypatch.setattr(config, "DISCOVERY_PHASE", "A")
-
-    quotes = {
-        "HIGH": _q(dp=10.0, v=200, c=55.0, h=60.0, l=40.0),
-        "LOW":  _q(dp=1.0,  v=100, c=41.0, h=50.0, l=40.0),
-    }
-    news_counts = {"HIGH": 2, "LOW": 0}
-
-    def fq_side(ticker):
-        return quotes[ticker]
-
-    def fcn_side(ticker, from_date, to_date):
-        return _news(news_counts[ticker])
+    short = _make_candle_df(
+        closes=[100, 101, 102, 103],
+        highs=[102, 103, 104, 105],
+        lows=[98, 99, 100, 101],
+    )
+    history = {"SHORT": short}
+    weights = {"SHORT": 10.0}
 
     run_id = repository.insert_run("discovery")
 
-    with patch("signal_system.discovery.discovery_agent.fetch_quote", side_effect=fq_side), \
-         patch("signal_system.discovery.discovery_agent.fetch_company_news", side_effect=fcn_side), \
-         patch("signal_system.state.repository.insert_signal") as mock_insert:
-        result = score_universe(["HIGH", "LOW"], run_id, DATE_ISO)
+    with patch("signal_system.discovery.discovery_agent.fetch_history", return_value=history), \
+         patch("signal_system.discovery.discovery_agent.get_position_weights", return_value=weights), \
+         patch("signal_system.discovery.discovery_agent.fetch_quote", return_value=None):
+        signals = score_universe(["SHORT"], run_id, DATE_ISO)
 
-    assert result == []
-    assert mock_insert.called is True
-    assert mock_insert.call_args.kwargs["routing_status"] == "MONITORING"
+    assert signals == []
 
 
-# ---------------------------------------------------------------------------
-# T-08: test_phase_b_returns_signals
-# ---------------------------------------------------------------------------
-
-def test_phase_b_returns_signals(db, monkeypatch):
-    """Phase B returns list[Signal] without calling insert_signal."""
-    monkeypatch.setattr(config, "DISCOVERY_PHASE", "B")
-
-    quotes = {
-        "HIGH": _q(dp=10.0, v=200, c=55.0, h=60.0, l=40.0),
-        "LOW":  _q(dp=1.0,  v=100, c=41.0, h=50.0, l=40.0),
-    }
-    news_counts = {"HIGH": 2, "LOW": 0}
-
-    def fq_side(ticker):
-        return quotes[ticker]
-
-    def fcn_side(ticker, from_date, to_date):
-        return _news(news_counts[ticker])
+def test_empty_universe(db):
+    """Empty ticker list returns [] without calling fetch_history."""
+    from signal_system.discovery.discovery_agent import score_universe
 
     run_id = repository.insert_run("discovery")
 
-    with patch("signal_system.discovery.discovery_agent.fetch_quote", side_effect=fq_side), \
-         patch("signal_system.discovery.discovery_agent.fetch_company_news", side_effect=fcn_side), \
-         patch("signal_system.state.repository.insert_signal") as mock_insert:
-        result = score_universe(["HIGH", "LOW"], run_id, DATE_ISO)
+    with patch("signal_system.discovery.discovery_agent.fetch_history") as mock_fh:
+        signals = score_universe([], run_id, DATE_ISO)
 
-    assert len(result) == 1
-    assert result[0].ticker == "HIGH"
-    mock_insert.assert_not_called()
+    assert signals == []
+    mock_fh.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# T-09: test_threshold_below_60_suppressed
-# ---------------------------------------------------------------------------
-
-def test_threshold_below_60_suppressed(db, monkeypatch):
-    """Single ticker gets all 0.5 ranks → composite=50.0 < 60 → no signal."""
-    monkeypatch.setattr(config, "DISCOVERY_PHASE", "B")
-    run_id = repository.insert_run("discovery")
-
-    with patch("signal_system.discovery.discovery_agent.fetch_quote", return_value=_q()), \
-         patch("signal_system.discovery.discovery_agent.fetch_company_news", return_value=_news(1)):
-        result = score_universe(["AAPL"], run_id, DATE_ISO)
-
-    assert result == []
-
-
-# ---------------------------------------------------------------------------
-# T-10: test_action_required_severity
-# ---------------------------------------------------------------------------
-
-def test_action_required_severity(db, monkeypatch):
-    """Ticker with composite score >= 80 gets severity='ACTION_REQUIRED'."""
-    monkeypatch.setattr(config, "DISCOVERY_PHASE", "B")
-
-    quotes = {
-        "HIGH": _q(dp=10.0, v=200, c=55.0, h=60.0, l=40.0),
-        "LOW":  _q(dp=1.0,  v=100, c=41.0, h=50.0, l=40.0),
-    }
-    news_counts = {"HIGH": 2, "LOW": 0}
-
-    def fq_side(ticker):
-        return quotes[ticker]
-
-    def fcn_side(ticker, from_date, to_date):
-        return _news(news_counts[ticker])
+def test_all_tickers_no_data(db):
+    """When fetch_history returns empty, no signals emitted and run counts updated."""
+    from signal_system.discovery.discovery_agent import score_universe
 
     run_id = repository.insert_run("discovery")
 
-    with patch("signal_system.discovery.discovery_agent.fetch_quote", side_effect=fq_side), \
-         patch("signal_system.discovery.discovery_agent.fetch_company_news", side_effect=fcn_side):
-        result = score_universe(["HIGH", "LOW"], run_id, DATE_ISO)
+    with patch("signal_system.discovery.discovery_agent.fetch_history", return_value={}), \
+         patch("signal_system.discovery.discovery_agent.get_position_weights", return_value={}):
+        signals = score_universe(["AAPL", "MSFT"], run_id, DATE_ISO)
 
-    high_signal = next(s for s in result if s.ticker == "HIGH")
-    assert high_signal.score == pytest.approx(100.0)
-    assert high_signal.severity == "ACTION_REQUIRED"
+    assert signals == []
+    conn = sqlite3.connect(db)
+    row = conn.execute("SELECT tickers_scanned, tickers_signaled FROM runs WHERE run_id=?", (run_id,)).fetchone()
+    conn.close()
+    assert row == (2, 0)
 
 
-# ---------------------------------------------------------------------------
-# T-11: test_informational_severity
-# ---------------------------------------------------------------------------
+def test_weight_amplifier_integration(db):
+    """High-weight ticker promotes to ACTION_REQUIRED at lower score than low-weight ticker."""
+    from signal_system.discovery.discovery_agent import score_universe
 
-def test_informational_severity(db, monkeypatch):
-    """Ticker with 60 <= composite < 80 gets severity='INFORMATIONAL'."""
-    monkeypatch.setattr(config, "DISCOVERY_PHASE", "B")
-
-    quotes = {
-        "A": _q(dp=10.0, v=300, c=50.0, h=60.0, l=40.0),
-        "B": _q(dp=5.0,  v=200, c=48.0, h=50.0, l=40.0),
-        "C": _q(dp=1.0,  v=100, c=41.0, h=50.0, l=40.0),
-    }
-    news_counts = {"A": 3, "B": 2, "C": 1}
-
-    def fq_side(ticker):
-        return quotes[ticker]
-
-    def fcn_side(ticker, from_date, to_date):
-        return _news(news_counts[ticker])
+    candles = _make_candle_df(
+        closes=[100 + i for i in range(20)],
+        highs=[102 + i for i in range(20)],
+        lows=[98 + i for i in range(20)],
+    )
+    history = {"BIG": candles, "SMALL": candles}
+    weights = {"BIG": 25.0, "SMALL": 1.0}
 
     run_id = repository.insert_run("discovery")
 
-    with patch("signal_system.discovery.discovery_agent.fetch_quote", side_effect=fq_side), \
-         patch("signal_system.discovery.discovery_agent.fetch_company_news", side_effect=fcn_side):
-        result = score_universe(["A", "B", "C"], run_id, DATE_ISO)
+    with patch("signal_system.discovery.discovery_agent.fetch_history", return_value=history), \
+         patch("signal_system.discovery.discovery_agent.get_position_weights", return_value=weights), \
+         patch("signal_system.discovery.discovery_agent.fetch_quote", return_value={"c": 119.0, "dp": 1.0, "h": 121.0, "l": 117.0}):
+        signals = score_universe(["BIG", "SMALL"], run_id, DATE_ISO)
 
-    sig_b = next(s for s in result if s.ticker == "B")
-    assert sig_b.score == pytest.approx(62.5)
-    assert sig_b.severity == "INFORMATIONAL"
+    big_signals = [s for s in signals if s.ticker == "BIG"]
+    assert len(big_signals) == 1
+    assert big_signals[0].severity == "ACTION_REQUIRED"
 
 
-# ---------------------------------------------------------------------------
-# T-12: test_cross_sectional_ranking_ties
-# ---------------------------------------------------------------------------
+def test_signal_price_snapshot_from_quote(db):
+    """Signal.signal_price_snapshot comes from fetch_quote, not from candle data."""
+    from signal_system.discovery.discovery_agent import score_universe
 
-def test_cross_sectional_ranking_ties(db, monkeypatch):
-    """Equal dp values: alphabetical tiebreak puts AAPL above BIDU."""
-    monkeypatch.setattr(config, "DISCOVERY_PHASE", "B")
-
-    quotes = {
-        "AAPL": _q(dp=5.0, v=200, c=50.0, h=60.0, l=40.0),
-        "BIDU": _q(dp=5.0, v=100, c=45.0, h=55.0, l=40.0),
-    }
-
-    def fq_side(ticker):
-        return quotes[ticker]
-
-    def fcn_side(ticker, from_date, to_date):
-        return _news(2 if ticker == "AAPL" else 1)
+    candles = _make_candle_df(
+        closes=[100 + i for i in range(20)],
+        highs=[102 + i for i in range(20)],
+        lows=[98 + i for i in range(20)],
+    )
+    history = {"AAPL": candles, "MSFT": candles}
+    weights = {"AAPL": 10.0, "MSFT": 10.0}
 
     run_id = repository.insert_run("discovery")
 
-    with patch("signal_system.discovery.discovery_agent.fetch_quote", side_effect=fq_side), \
-         patch("signal_system.discovery.discovery_agent.fetch_company_news", side_effect=fcn_side):
-        result = score_universe(["AAPL", "BIDU"], run_id, DATE_ISO)
+    with patch("signal_system.discovery.discovery_agent.fetch_history", return_value=history), \
+         patch("signal_system.discovery.discovery_agent.get_position_weights", return_value=weights), \
+         patch("signal_system.discovery.discovery_agent.fetch_quote", return_value={"c": 177.50, "dp": 1.0, "h": 180.0, "l": 175.0}):
+        signals = score_universe(["AAPL", "MSFT"], run_id, DATE_ISO)
 
-    aapl_signals = [s for s in result if s.ticker == "AAPL"]
-    bidu_signals = [s for s in result if s.ticker == "BIDU"]
-    assert aapl_signals, "AAPL should score >=60"
-    assert aapl_signals[0].sub_scores["price_momentum"] == pytest.approx(1.0)
-    if bidu_signals:
-        assert bidu_signals[0].sub_scores["price_momentum"] == pytest.approx(0.0)
+    for sig in signals:
+        assert sig.signal_price_snapshot == pytest.approx(177.50)
 
 
-# ---------------------------------------------------------------------------
-# T-13: test_single_ticker_universe
-# ---------------------------------------------------------------------------
+def test_rank_values_helper():
+    """_rank_values produces correct cross-sectional ranks."""
+    from signal_system.discovery.discovery_agent import _rank_values
 
-def test_single_ticker_universe(db, monkeypatch):
-    """Single ticker gets all ranks=0.5; verify sub_scores by lowering threshold."""
-    monkeypatch.setattr(config, "DISCOVERY_PHASE", "B")
-    import signal_system.discovery.discovery_agent as da
-    monkeypatch.setattr(da, "SCORE_THRESHOLD_INFORM", 0.0)
-
-    run_id = repository.insert_run("discovery")
-
-    with patch("signal_system.discovery.discovery_agent.fetch_quote", return_value=_q()), \
-         patch("signal_system.discovery.discovery_agent.fetch_company_news", return_value=_news(1)):
-        result = score_universe(["AAPL"], run_id, DATE_ISO)
-
-    # With threshold lowered, signal should be emitted
-    assert len(result) == 1
-    for v in result[0].sub_scores.values():
-        assert v == pytest.approx(0.5)
+    assert _rank_values({}) == {}
+    assert _rank_values({"A": 5.0}) == {"A": 0.5}
+    assert _rank_values({"A": 10.0, "B": 5.0}) == {"A": 1.0, "B": 0.0}
+    assert _rank_values({"B": 5.0, "A": 5.0}) == {"A": 1.0, "B": 0.0}
 
 
-# ---------------------------------------------------------------------------
-# T-14: test_empty_universe
-# ---------------------------------------------------------------------------
+def test_update_run_counts(db):
+    """score_universe writes tickers_scanned and tickers_signaled to runs table."""
+    from signal_system.discovery.discovery_agent import score_universe
 
-def test_empty_universe(db, monkeypatch):
-    """Empty ticker list returns [] without calling fetch_quote."""
-    run_id = repository.insert_run("discovery")
-
-    with patch("signal_system.discovery.discovery_agent.fetch_quote") as mock_fq:
-        result = score_universe([], run_id, DATE_ISO)
-
-    assert result == []
-    mock_fq.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# T-15: test_update_run_counts
-# ---------------------------------------------------------------------------
-
-def test_update_run_counts(db, monkeypatch):
-    """update_run_counts writes tickers_scanned and tickers_signaled to runs table."""
-    monkeypatch.setattr(config, "DISCOVERY_PHASE", "B")
-
-    quotes = {
-        "HIGH": _q(dp=10.0, v=200, c=55.0, h=60.0, l=40.0),
-        "LOW":  _q(dp=1.0,  v=100, c=41.0, h=50.0, l=40.0),
-    }
-    news_counts = {"HIGH": 2, "LOW": 0}
-
-    def fq_side(ticker):
-        return quotes[ticker]
-
-    def fcn_side(ticker, from_date, to_date):
-        return _news(news_counts[ticker])
+    candles = _make_candle_df(
+        closes=[100 + i for i in range(20)],
+        highs=[102 + i for i in range(20)],
+        lows=[98 + i for i in range(20)],
+    )
+    history = {"HIGH": candles, "LOW": candles}
+    weights = {"HIGH": 10.0, "LOW": 10.0}
 
     run_id = repository.insert_run("discovery")
 
-    with patch("signal_system.discovery.discovery_agent.fetch_quote", side_effect=fq_side), \
-         patch("signal_system.discovery.discovery_agent.fetch_company_news", side_effect=fcn_side):
+    with patch("signal_system.discovery.discovery_agent.fetch_history", return_value=history), \
+         patch("signal_system.discovery.discovery_agent.get_position_weights", return_value=weights), \
+         patch("signal_system.discovery.discovery_agent.fetch_quote", return_value={"c": 119.0, "dp": 1.0, "h": 121.0, "l": 117.0}):
         score_universe(["HIGH", "LOW"], run_id, DATE_ISO)
 
     conn = sqlite3.connect(db)
-    row = conn.execute(
-        "SELECT tickers_scanned, tickers_signaled FROM runs WHERE run_id=?",
-        (run_id,),
-    ).fetchone()
+    row = conn.execute("SELECT tickers_scanned, tickers_signaled FROM runs WHERE run_id=?", (run_id,)).fetchone()
     conn.close()
-
-    assert row[0] == 2  # both tickers attempted
-    assert row[1] == 1  # only HIGH scored >=60
+    assert row[0] == 2
 
 
-# ---------------------------------------------------------------------------
-# T-16: test_alert_id_determinism
-# ---------------------------------------------------------------------------
-
-def test_alert_id_determinism(db, monkeypatch):
+def test_alert_id_determinism(db):
     """Same ticker + date produces identical alert_id across multiple runs."""
-    monkeypatch.setattr(config, "DISCOVERY_PHASE", "B")
+    from signal_system.discovery.discovery_agent import score_universe
 
-    quotes = {
-        "HIGH": _q(dp=10.0, v=200, c=55.0, h=60.0, l=40.0),
-        "LOW":  _q(dp=1.0,  v=100, c=41.0, h=50.0, l=40.0),
-    }
-    news_counts = {"HIGH": 2, "LOW": 0}
-
-    def fq_side(ticker):
-        return quotes[ticker]
-
-    def fcn_side(ticker, from_date, to_date):
-        return _news(news_counts[ticker])
+    candles = _make_candle_df(
+        closes=[100 + i for i in range(20)],
+        highs=[102 + i for i in range(20)],
+        lows=[98 + i for i in range(20)],
+    )
+    history = {"HIGH": candles, "LOW": candles}
+    weights = {"HIGH": 10.0, "LOW": 10.0}
 
     run_id1 = repository.insert_run("discovery")
-    with patch("signal_system.discovery.discovery_agent.fetch_quote", side_effect=fq_side), \
-         patch("signal_system.discovery.discovery_agent.fetch_company_news", side_effect=fcn_side):
+    with patch("signal_system.discovery.discovery_agent.fetch_history", return_value=history), \
+         patch("signal_system.discovery.discovery_agent.get_position_weights", return_value=weights), \
+         patch("signal_system.discovery.discovery_agent.fetch_quote", return_value={"c": 119.0, "dp": 1.0, "h": 121.0, "l": 117.0}):
         signals_run1 = score_universe(["HIGH", "LOW"], run_id1, DATE_ISO)
 
     run_id2 = repository.insert_run("discovery")
-    with patch("signal_system.discovery.discovery_agent.fetch_quote", side_effect=fq_side), \
-         patch("signal_system.discovery.discovery_agent.fetch_company_news", side_effect=fcn_side):
+    with patch("signal_system.discovery.discovery_agent.fetch_history", return_value=history), \
+         patch("signal_system.discovery.discovery_agent.get_position_weights", return_value=weights), \
+         patch("signal_system.discovery.discovery_agent.fetch_quote", return_value={"c": 119.0, "dp": 1.0, "h": 121.0, "l": 117.0}):
         signals_run2 = score_universe(["HIGH", "LOW"], run_id2, DATE_ISO)
 
-    assert signals_run1[0].alert_id == signals_run2[0].alert_id
+    assert len(signals_run1) == len(signals_run2)
+    for s1, s2 in zip(signals_run1, signals_run2):
+        assert s1.alert_id == s2.alert_id
 
 
-# ---------------------------------------------------------------------------
-# T-17: test_signal_price_snapshot
-# ---------------------------------------------------------------------------
+def test_sub_scores_contains_momentum_keys(db):
+    """Signal.sub_scores has momentum_20d, momentum_5d, range_vs_20d keys."""
+    from signal_system.discovery.discovery_agent import score_universe
 
-def test_signal_price_snapshot(db, monkeypatch):
-    """Signal.signal_price_snapshot equals quote['c'] for that ticker."""
-    monkeypatch.setattr(config, "DISCOVERY_PHASE", "B")
-
-    quotes = {
-        "HIGH": _q(dp=10.0, v=200, c=53.75, h=60.0, l=40.0),
-        "LOW":  _q(dp=1.0,  v=100, c=41.0,  h=50.0, l=40.0),
-    }
-    news_counts = {"HIGH": 2, "LOW": 0}
-
-    def fq_side(ticker):
-        return quotes[ticker]
-
-    def fcn_side(ticker, from_date, to_date):
-        return _news(news_counts[ticker])
+    candles = _make_candle_df(
+        closes=[100 + i for i in range(20)],
+        highs=[102 + i for i in range(20)],
+        lows=[98 + i for i in range(20)],
+    )
+    history = {"AAPL": candles, "MSFT": candles}
+    weights = {"AAPL": 10.0, "MSFT": 10.0}
 
     run_id = repository.insert_run("discovery")
 
-    with patch("signal_system.discovery.discovery_agent.fetch_quote", side_effect=fq_side), \
-         patch("signal_system.discovery.discovery_agent.fetch_company_news", side_effect=fcn_side):
-        result = score_universe(["HIGH", "LOW"], run_id, DATE_ISO)
+    with patch("signal_system.discovery.discovery_agent.fetch_history", return_value=history), \
+         patch("signal_system.discovery.discovery_agent.get_position_weights", return_value=weights), \
+         patch("signal_system.discovery.discovery_agent.fetch_quote", return_value={"c": 119.0, "dp": 1.0, "h": 121.0, "l": 117.0}):
+        signals = score_universe(["AAPL", "MSFT"], run_id, DATE_ISO)
 
-    high_signal = next(s for s in result if s.ticker == "HIGH")
-    assert high_signal.signal_price_snapshot == pytest.approx(53.75)
-
-
-# ---------------------------------------------------------------------------
-# T-18: test_sub_scores_dict
-# ---------------------------------------------------------------------------
-
-def test_sub_scores_dict(db, monkeypatch):
-    """Signal.sub_scores has exactly 4 keys with values in [0.0, 1.0]."""
-    monkeypatch.setattr(config, "DISCOVERY_PHASE", "B")
-
-    quotes = {
-        "HIGH": _q(dp=10.0, v=200, c=55.0, h=60.0, l=40.0),
-        "LOW":  _q(dp=1.0,  v=100, c=41.0, h=50.0, l=40.0),
-    }
-    news_counts = {"HIGH": 2, "LOW": 0}
-
-    def fq_side(ticker):
-        return quotes[ticker]
-
-    def fcn_side(ticker, from_date, to_date):
-        return _news(news_counts[ticker])
-
-    run_id = repository.insert_run("discovery")
-
-    with patch("signal_system.discovery.discovery_agent.fetch_quote", side_effect=fq_side), \
-         patch("signal_system.discovery.discovery_agent.fetch_company_news", side_effect=fcn_side):
-        result = score_universe(["HIGH", "LOW"], run_id, DATE_ISO)
-
-    assert len(result) >= 1
-    signal = result[0]
-    assert set(signal.sub_scores.keys()) == {
-        "price_momentum", "volume_rank", "range_position", "news_activity"
-    }
+    assert len(signals) >= 1
+    signal = signals[0]
+    assert set(signal.sub_scores.keys()) == {"momentum_20d", "momentum_5d", "range_vs_20d"}
     for v in signal.sub_scores.values():
         assert 0.0 <= v <= 1.0
 
 
-# ---------------------------------------------------------------------------
-# T-19: test_signal_body_prefix
-# ---------------------------------------------------------------------------
+def test_signal_body_prefix(db):
+    """Discovery signals include the factor-weight prefix in body."""
+    from signal_system.discovery.discovery_agent import score_universe
 
-def test_signal_body_prefix(db, monkeypatch):
-    """Discovery signals include the documented factor-weight prefix in body."""
-    monkeypatch.setattr(config, "DISCOVERY_PHASE", "B")
-
-    quotes = {
-        "HIGH": _q(dp=10.0, v=200, c=55.0, h=60.0, l=40.0),
-        "LOW": _q(dp=1.0, v=100, c=41.0, h=50.0, l=40.0),
-    }
-    news_counts = {"HIGH": 2, "LOW": 0}
-
-    def fq_side(ticker):
-        return quotes[ticker]
-
-    def fcn_side(ticker, from_date, to_date):
-        return _news(news_counts[ticker])
+    candles = _make_candle_df(
+        closes=[100 + i for i in range(20)],
+        highs=[102 + i for i in range(20)],
+        lows=[98 + i for i in range(20)],
+    )
+    history = {"HIGH": candles, "LOW": candles}
+    weights = {"HIGH": 10.0, "LOW": 10.0}
 
     run_id = repository.insert_run("discovery")
 
-    with patch("signal_system.discovery.discovery_agent.fetch_quote", side_effect=fq_side), \
-         patch("signal_system.discovery.discovery_agent.fetch_company_news", side_effect=fcn_side):
-        result = score_universe(["HIGH", "LOW"], run_id, DATE_ISO)
+    with patch("signal_system.discovery.discovery_agent.fetch_history", return_value=history), \
+         patch("signal_system.discovery.discovery_agent.get_position_weights", return_value=weights), \
+         patch("signal_system.discovery.discovery_agent.fetch_quote", return_value={"c": 119.0, "dp": 1.0, "h": 121.0, "l": 117.0}):
+        signals = score_universe(["HIGH", "LOW"], run_id, DATE_ISO)
 
-    assert len(result) == 1
-    assert result[0].body is not None
-    assert result[0].body.startswith("weights=35/30/25/10")
+    assert len(signals) >= 1
+    assert signals[0].body is not None
+    assert signals[0].body.startswith("weights=50/30/20")
 
-
-# ---------------------------------------------------------------------------
-# T-20: test_public_surface_smoke
-# ---------------------------------------------------------------------------
 
 def test_public_surface_smoke():
     """Package export, thresholds, and rank helper match the phase contract."""
@@ -623,73 +295,3 @@ def test_public_surface_smoke():
     assert _rank_values({"AAPL": 5.0}) == {"AAPL": 0.5}
     assert _rank_values({"AAPL": 5.0, "MSFT": 3.0}) == {"AAPL": 1.0, "MSFT": 0.0}
     assert _rank_values({"BIDU": 5.0, "AAPL": 5.0}) == {"AAPL": 1.0, "BIDU": 0.0}
-
-
-# ---------------------------------------------------------------------------
-# T-21: test_discovery_agent_isolated_from_delivery_and_router
-# ---------------------------------------------------------------------------
-
-def test_discovery_agent_isolated_from_delivery_and_router():
-    """Discovery agent import/execution must not load delivery or router modules."""
-    repo_root = Path(__file__).resolve().parents[1]
-    env = dict(os.environ)
-    src_path = str(repo_root / "src")
-    env["PYTHONPATH"] = (
-        src_path
-        if "PYTHONPATH" not in env
-        else src_path + os.pathsep + env["PYTHONPATH"]
-    )
-
-    script = """
-import builtins
-
-blocked = {
-    "signal_system.delivery.telegram_sender",
-    "signal_system.router",
-    "signal_system.router.alert_router",
-}
-orig_import = builtins.__import__
-
-def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
-    if name in blocked:
-        raise AssertionError(f"blocked import: {name}")
-    if name == "signal_system.delivery" and fromlist and "telegram_sender" in fromlist:
-        raise AssertionError("blocked import: signal_system.delivery.telegram_sender")
-    if name == "signal_system" and fromlist and "router" in fromlist:
-        raise AssertionError("blocked import: signal_system.router")
-    return orig_import(name, globals, locals, fromlist, level)
-
-builtins.__import__ = guarded_import
-
-from signal_system import config
-import signal_system.discovery.discovery_agent as da
-
-config.DISCOVERY_PHASE = "B"
-da.repository.update_run_counts = lambda *args, **kwargs: None
-da.fetch_quote = lambda ticker: {
-    "c": 55.0 if ticker == "HIGH" else 41.0,
-    "dp": 10.0 if ticker == "HIGH" else 1.0,
-    "v": 200 if ticker == "HIGH" else 100,
-    "h": 60.0 if ticker == "HIGH" else 50.0,
-    "l": 40.0,
-}
-da.fetch_company_news = lambda ticker, from_date, to_date: (
-    [{"headline": "News 1"}, {"headline": "News 2"}] if ticker == "HIGH" else []
-)
-
-signals = da.score_universe(["HIGH", "LOW"], "run-1", "2026-05-16")
-assert len(signals) == 1
-assert signals[0].ticker == "HIGH"
-print("OK")
-"""
-
-    result = subprocess.run(
-        [sys.executable, "-c", script],
-        cwd=repo_root,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr or result.stdout

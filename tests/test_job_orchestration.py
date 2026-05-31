@@ -406,50 +406,7 @@ def test_news_morning_digest_counts_zero_alert_and_mismatch_guard(db):
     mismatch_send.assert_not_called()
 
 
-def test_discovery_phase_a_branches_on_config_and_skips_router_and_delivery():
-    from signal_system.jobs import discovery
-
-    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
-    phase_a_signal = _sig(ticker="AAPL", agent="discovery_agent", score=88.0)
-    events: list[str] = []
-
-    @contextmanager
-    def recording_heartbeat():
-        events.append("heartbeat-enter")
-        yield
-        events.append("heartbeat-exit")
-
-    def insert_run(job: str) -> str:
-        events.append(f"insert:{job}")
-        return "run-123"
-
-    def update_run(run_id: str, status: str) -> None:
-        events.append(f"update:{run_id}:{status}")
-
-    with patch.object(discovery.config, "DISCOVERY_PHASE", "A"), \
-         patch("signal_system.jobs.discovery._now_et", return_value=fixed_now), \
-         patch("signal_system.jobs.discovery.repository.insert_run", side_effect=insert_run), \
-         patch("signal_system.jobs.discovery.repository.update_run", side_effect=update_run), \
-         patch("signal_system.jobs.discovery.heartbeat.heartbeat", recording_heartbeat), \
-         patch("signal_system.jobs.discovery.get_todays_universe", return_value=["AAPL", "MSFT"]) as mock_universe, \
-         patch("signal_system.jobs.discovery.score_universe", return_value=[phase_a_signal]) as mock_score, \
-         patch("signal_system.jobs.discovery.route_signals") as mock_route, \
-         patch("signal_system.jobs.discovery.telegram_sender.send_message") as mock_send:
-        discovery.run()
-
-    mock_universe.assert_called_once_with()
-    mock_score.assert_called_once_with(["AAPL", "MSFT"], "run-123", "2026-05-19")
-    mock_route.assert_not_called()
-    mock_send.assert_not_called()
-    assert events == [
-        "insert:discovery",
-        "heartbeat-enter",
-        "update:run-123:success",
-        "heartbeat-exit",
-    ]
-
-
-def test_discovery_phase_b_routes_persists_and_sends_digest(db):
+def test_discovery_routes_persists_and_sends_digest(db):
     from signal_system.jobs import discovery
 
     fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
@@ -466,8 +423,7 @@ def test_discovery_phase_b_routes_persists_and_sends_digest(db):
         score=71.0,
     )
 
-    with patch.object(discovery.config, "DISCOVERY_PHASE", "B"), \
-         patch("signal_system.jobs.discovery._now_et", return_value=fixed_now), \
+    with patch("signal_system.jobs.discovery._now_et", return_value=fixed_now), \
          patch("signal_system.jobs.discovery.heartbeat.heartbeat", _noop_heartbeat), \
          patch("signal_system.jobs.discovery.get_todays_universe", return_value=["AAPL", "MSFT"]), \
          patch(
@@ -504,12 +460,12 @@ def test_discovery_phase_b_routes_persists_and_sends_digest(db):
     assert status == ("success",)
 
 
-def test_discovery_phase_b_zero_alert_digest_even_when_score_returns_empty(db):
+def test_discovery_zero_alert_digest_even_when_score_returns_empty(db):
     from signal_system.jobs import discovery
 
     fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
 
-    with patch.object(discovery.config, "DISCOVERY_PHASE", "B"), \
+    with patch("signal_system.jobs.discovery._now_et", return_value=fixed_now), \
          patch("signal_system.jobs.discovery._now_et", return_value=fixed_now), \
          patch("signal_system.jobs.discovery.heartbeat.heartbeat", _noop_heartbeat), \
          patch("signal_system.jobs.discovery.get_todays_universe", return_value=["AAPL"]), \
@@ -530,14 +486,14 @@ def test_discovery_phase_b_zero_alert_digest_even_when_score_returns_empty(db):
     assert status == ("success",)
 
 
-def test_discovery_phase_b_fails_on_digest_count_mismatch(db):
+def test_discovery_fails_on_digest_count_mismatch(db):
     from signal_system.jobs import discovery
     from signal_system.jobs.common import DigestPayload
 
     fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
     routed_signal = _sig(ticker="AAPL", agent="discovery_agent", score=88.0)
 
-    with patch.object(discovery.config, "DISCOVERY_PHASE", "B"), \
+    with patch("signal_system.jobs.discovery._now_et", return_value=fixed_now), \
          patch("signal_system.jobs.discovery._now_et", return_value=fixed_now), \
          patch("signal_system.jobs.discovery.heartbeat.heartbeat", _noop_heartbeat), \
          patch("signal_system.jobs.discovery.get_todays_universe", return_value=["AAPL"]), \

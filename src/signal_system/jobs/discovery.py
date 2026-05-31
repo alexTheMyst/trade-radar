@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from signal_system import config
 from signal_system.data.universe import get_todays_universe
 from signal_system.delivery import telegram_sender
 from signal_system.discovery.discovery_agent import score_universe
@@ -16,6 +15,7 @@ from signal_system.jobs.common import (
 from signal_system.monitoring import heartbeat
 from signal_system.router import route_signals
 from signal_system.state import repository
+
 _ET = ZoneInfo("America/New_York")
 
 
@@ -34,10 +34,6 @@ def run() -> None:
             now_et = _now_et()
             tickers = get_todays_universe()
             discovered_signals = score_universe(tickers, run_id, now_et.date().isoformat())
-
-            if config.DISCOVERY_PHASE == "A":
-                repository.update_run(run_id, "success")
-                return
 
             persistence_summary: PersistenceSummary = persist_routed_signals(
                 route_signals(discovered_signals)

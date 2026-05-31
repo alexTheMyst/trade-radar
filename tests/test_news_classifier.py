@@ -11,6 +11,7 @@ first (matches the convention in test_job_orchestration.py).
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import patch
 
 
 def _usage():
@@ -23,9 +24,10 @@ def _usage():
 
 
 def _patch_common(monkeypatch, nc):
-    """Stub out the system-prompt build and telemetry write."""
+    """Stub out the system-prompt build, telemetry write, and position weights."""
     monkeypatch.setattr(nc, "_build_system_prompt", lambda thesis: "SYS")
     monkeypatch.setattr(nc.repository, "insert_llm_call", lambda **kwargs: None)
+    monkeypatch.setattr(nc, "get_position_weights", lambda: {})
 
 
 def test_routable_signal_carries_price_snapshot(monkeypatch):
@@ -151,3 +153,77 @@ def test_sanitize_headline_repairs_mojibake_end_to_end():
     result = _sanitize_headline(mojibake)
     assert result == "<headline>Nvidia's $5T market cap</headline>"
     assert "\ufffd" not in result  # no replacement characters
+
+
+# ---------------------------------------------------------------------------
+# Weight amplifier integration tests
+# ---------------------------------------------------------------------------
+
+
+def test_weight_amplifier_no_promotion_moderate_weight(monkeypatch):
+    """A moderate-weight ticker with confidence below shifted threshold stays INFORMATIONAL."""
+    from signal_system.classifier import news_classifier as nc
+
+    _patch_common(monkeypatch, nc)
+    result = nc.ClassificationResult(
+        pillar_name="ai_capex", confidence=0.75, direction="positive", rationale="x"
+    )
+    monkeypatch.setattr(nc, "_call_with_retry", lambda h, s: (result, _usage()))
+    monkeypatch.setattr(nc, "fetch_quotes", lambda tickers: {"NVDA": {"c": 123.45}})
+    monkeypatch.setattr(
+        "signal_system.classifier.news_classifier.get_position_weights",
+        lambda: {"NVDA": 25.0, "AAPL": 5.0},
+    )
+
+    from signal_system.data.thesis_loader import Thesis, Pillar
+    from datetime import date
+    thesis = Thesis(review_due=date(2099, 1, 1), pillars=[
+        Pillar(name="ai_capex", description="AI", positive_signals=["up"], negative_signals=["down"], holdings_exposed=["NVDA"])
+    ])
+
+    signals = nc.classify_headlines(
+        "NVDA",
+        [{"headline": "NVDA capex raised"}],
+        thesis=thesis,
+        thesis_version_hash="h",
+    )
+
+    assert len(signals) == 1
+    # weights={NVDA:25, AAPL:5}, median=15. ratio=25/15=1.67, shift=7.4
+    # AR threshold = 85 - 7.4 = 77.6. Score=75 < 77.6 → INFORMATIONAL
+    assert signals[0].severity == "INFORMATIONAL"
+
+
+def test_weight_amplifier_promotes_high_weight_ticker(monkeypatch):
+    """A dominant position with moderate confidence promotes to ACTION_REQUIRED."""
+    from signal_system.classifier import news_classifier as nc
+
+    _patch_common(monkeypatch, nc)
+    result = nc.ClassificationResult(
+        pillar_name="monetary_policy", confidence=0.80, direction="negative", rationale="x"
+    )
+    monkeypatch.setattr(nc, "_call_with_retry", lambda h, s: (result, _usage()))
+    monkeypatch.setattr(nc, "fetch_quotes", lambda tickers: {"SPY": {"c": 500.0}})
+    monkeypatch.setattr(
+        "signal_system.classifier.news_classifier.get_position_weights",
+        lambda: {"SPY": 25.0, "KO": 1.0},
+    )
+
+    from signal_system.data.thesis_loader import Thesis, Pillar
+    from datetime import date
+    thesis = Thesis(review_due=date(2099, 1, 1), pillars=[
+        Pillar(name="monetary_policy", description="Fed", positive_signals=["cut"], negative_signals=["hike"], holdings_exposed=["SPY"])
+    ])
+
+    signals = nc.classify_headlines(
+        "SPY",
+        [{"headline": "Fed hikes unexpectedly"}],
+        thesis=thesis,
+        thesis_version_hash="h",
+    )
+
+    assert len(signals) == 1
+    # weights={SPY:25, KO:1}, median=13. ratio=25/13=1.92, shift=9.4
+    # AR threshold = 85 - 9.4 = 75.6. Score=80 > 75.6 → ACTION_REQUIRED
+    assert signals[0].severity == "ACTION_REQUIRED"
+

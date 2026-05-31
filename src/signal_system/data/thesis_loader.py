@@ -14,7 +14,7 @@ from datetime import date
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, ValidationError  # noqa: F401 — re-exported for callers
+from pydantic import BaseModel, ValidationError, model_validator  # noqa: F401 — re-exported for callers
 
 
 class ThesisStaleError(RuntimeError):
@@ -30,9 +30,20 @@ class Pillar(BaseModel):
 
     name: str
     description: str
-    tickers: list[str]
-    positive_signals: list[str]
-    negative_signals: list[str]
+    tickers: list[str] = []
+    positive_signals: list[str] = []
+    negative_signals: list[str] = []
+    holdings_exposed: list[str] = []
+    threshold_event: str | None = None
+    keywords: list[str] = []
+
+    @model_validator(mode="after")
+    def _require_signals(self) -> "Pillar":
+        if not self.positive_signals and not self.negative_signals:
+            raise ValueError(
+                f"Pillar '{self.name}' must have at least one positive_signal or negative_signal"
+            )
+        return self
 
 
 class Thesis(BaseModel):

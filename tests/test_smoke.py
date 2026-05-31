@@ -211,19 +211,10 @@ def test_telegram_sender_failure_propagates(monkeypatch):
         ts.send_message("will fail")
 
 
-def test_config_optional_fallback_and_phase_validation(monkeypatch):
-    """DISCOVERY_PHASE=invalid must raise RuntimeError; THESIS_PATH defaults to 'thesis.yaml'."""
+def test_config_optional_fallback(monkeypatch):
+    """THESIS_PATH defaults to 'thesis.yaml'."""
     import importlib
     import signal_system.config as config_module
-
-    # Test invalid DISCOVERY_PHASE raises RuntimeError on reload
-    monkeypatch.setenv("DISCOVERY_PHASE", "invalid")
-    with pytest.raises(RuntimeError, match="DISCOVERY_PHASE"):
-        importlib.reload(config_module)
-
-    # Restore valid state
-    monkeypatch.setenv("DISCOVERY_PHASE", "A")
-    importlib.reload(config_module)
 
     # THESIS_PATH defaults to 'thesis.yaml' when env is unset
     monkeypatch.delenv("THESIS_PATH", raising=False)
@@ -376,10 +367,10 @@ def test_load_thesis_happy_path(tmp_path):
         "pillars:\n"
         "  - name: monetary_policy\n"
         "    description: Fed policy\n"
-        "    keywords: [rate cut, FOMC]\n"
+        "    positive_signals: [rate cut, FOMC]\n"
         "  - name: ai_capex\n"
         "    description: AI infrastructure spend\n"
-        "    keywords: [GPU, data center]\n"
+        "    positive_signals: [GPU, data center]\n"
     )
 
     thesis, version_hash = load_thesis(thesis_yaml)
@@ -398,7 +389,7 @@ def test_load_thesis_stale_raises(tmp_path):
         "pillars:\n"
         "  - name: old_pillar\n"
         "    description: Outdated\n"
-        "    keywords: [old]\n"
+        "    positive_signals: [old]\n"
     )
 
     assert issubclass(ThesisStaleError, RuntimeError)
@@ -505,10 +496,9 @@ def test_phase1_integration_imports(tmp_path, monkeypatch):
     result = count_delivered_today()
     assert isinstance(result, dict)
 
-    # config exports all three new Phase 1 vars
+    # config exports all Phase 1 vars
     assert config.ANTHROPIC_MODEL
     assert config.THESIS_PATH
-    assert config.DISCOVERY_PHASE in ("A", "B")
 
 
 # ---------------------------------------------------------------------------
@@ -755,7 +745,7 @@ def _make_test_thesis():
     return Thesis(
         review_due=date(2099, 1, 1),
         pillars=[
-            Pillar(name="growth", description="GDP-sensitive", keywords=["consumer", "spending"]),
+            Pillar(name="growth", description="GDP-sensitive", positive_signals=["consumer", "spending"]),
         ]
     )
 
@@ -996,8 +986,8 @@ def test_build_system_prompt_includes_all_pillars():
     thesis = Thesis(
         review_due=date(2099, 1, 1),
         pillars=[
-            Pillar(name="growth", description="GDP-sensitive", keywords=["consumer", "spending"]),
-            Pillar(name="rates", description="Rate-sensitive", keywords=["fed", "yield"]),
+            Pillar(name="growth", description="GDP-sensitive", positive_signals=["consumer", "spending"]),
+            Pillar(name="rates", description="Rate-sensitive", positive_signals=["fed", "yield"]),
         ]
     )
     prompt = _build_system_prompt(thesis)
@@ -1017,7 +1007,7 @@ def test_build_system_prompt_is_deterministic():
     from datetime import date
     thesis = Thesis(
         review_due=date(2099, 1, 1),
-        pillars=[Pillar(name="growth", description="GDP-sensitive", keywords=["consumer"])]
+        pillars=[Pillar(name="growth", description="GDP-sensitive", positive_signals=["consumer"])]
     )
     assert _build_system_prompt(thesis) == _build_system_prompt(thesis)
 

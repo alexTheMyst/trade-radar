@@ -22,7 +22,9 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fi
 from signal_system import config
 from signal_system.data.finnhub_client import fetch_quotes
 from signal_system.data.thesis_loader import Thesis
+from signal_system.data.universe import get_position_weights
 from signal_system.models import Signal, compute_alert_id
+from signal_system.scoring.weight_amplifier import adjusted_severity
 from signal_system.state import repository
 
 logger = logging.getLogger(__name__)
@@ -125,13 +127,16 @@ def _build_system_prompt(thesis: Thesis) -> str:
     """
     pillar_lines = []
     for pillar in thesis.pillars:
-        pos = ", ".join(pillar.positive_signals)
-        neg = ", ".join(pillar.negative_signals)
-        pillar_lines.append(
-            f"  - **{pillar.name}**: {pillar.description}"
-            f"\n    Positive signals: {pos}"
-            f"\n    Negative signals: {neg}"
-        )
+        lines = [f"  - **{pillar.name}**: {pillar.description}"]
+        if pillar.positive_signals:
+            pos = "; ".join(pillar.positive_signals)
+            lines.append(f"    Positive signals: {pos}")
+        if pillar.negative_signals:
+            neg = "; ".join(pillar.negative_signals)
+            lines.append(f"    Negative signals: {neg}")
+        if pillar.threshold_event:
+            lines.append(f"    Threshold event (ACTION_REQUIRED level): {pillar.threshold_event}")
+        pillar_lines.append("\n".join(lines))
     pillars_block = "\n".join(pillar_lines)
 
     return f"""You are a financial news classifier. Your job is to classify a news headline against the investment thesis pillars defined below.
@@ -145,7 +150,7 @@ def _build_system_prompt(thesis: Thesis) -> str:
 Given a headline wrapped in <headline>...</headline> tags, determine:
 1. Which thesis pillar (if any) this headline is most relevant to.
 2. Whether the news is positive, negative, or neutral for that pillar.
-3. Your confidence level (0.0 to 1.0).
+3. Your confidence level (0.0 to 1.0). Set confidence >= 0.85 ONLY when the headline matches or approaches a threshold event for the relevant pillar.
 4. A one-sentence rationale.
 
 If the headline is NOT relevant to any pillar, set pillar_name to null.
@@ -195,6 +200,25 @@ def _severity_from_confidence(conf: float) -> str:
     if conf >= _INFORMATIONAL_THRESHOLD:
         return "INFORMATIONAL"
     return "MONITORING"
+
+
+def _weight_adjusted_severity(confidence: float, ticker: str, thesis: Thesis) -> str:
+    """Map confidence to severity with position-weight amplification.
+
+    Uses the highest weight_pct among holdings_exposed for the matched pillar's tickers.
+    Falls back to the ticker itself if not in any pillar's holdings_exposed.
+    """
+    weights = get_position_weights()
+    if not weights:
+        return _severity_from_confidence(confidence)
+
+    score_100 = confidence * 100.0
+    return adjusted_severity(
+        score=score_100,
+        ticker=ticker,
+        weights=weights,
+        base_thresholds=(_ACTION_REQUIRED_THRESHOLD * 100.0, _INFORMATIONAL_THRESHOLD * 100.0),
+    )
 
 
 def _fetch_price_snapshot(ticker: str) -> float | None:
@@ -357,7 +381,7 @@ def classify_headline(
     return Signal(
         ticker=ticker,
         score=parsed.confidence,
-        severity=_severity_from_confidence(parsed.confidence),
+        severity=_weight_adjusted_severity(parsed.confidence, ticker, thesis),
         agent=NEWS_CLASSIFIER_AGENT,
         timestamp=datetime.now(_ET),
         alert_id=alert_id,
