@@ -52,6 +52,8 @@ def _is_data_row(row: dict) -> bool:
 
 def get_core_holdings() -> list[str]:
     """Return core-holding tickers only, preserving CSV order and K-1 filtering."""
+    if not UNIVERSE_PATH.exists():
+        return []
     tickers: list[str] = []
 
     with UNIVERSE_PATH.open(newline="") as f:
@@ -82,6 +84,8 @@ def get_todays_universe() -> list[str]:
     Returns:
         List of uppercase ticker symbols in CSV input order.
     """
+    if not UNIVERSE_PATH.exists():
+        return []
     todays_bucket = _today_bucket()
     tickers: list[str] = []
 
@@ -108,7 +112,11 @@ def get_position_weights() -> dict[str, float]:
 
     Tickers with missing or empty weight_pct get 0.0.
     K-1 ETFs are excluded (they never reach any agent).
+    Returns {} when universe.csv is absent (operator hasn't populated it yet);
+    callers fall back to confidence-only severity in that case.
     """
+    if not UNIVERSE_PATH.exists():
+        return {}
     weights: dict[str, float] = {}
 
     with UNIVERSE_PATH.open(newline="") as f:

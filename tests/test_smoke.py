@@ -367,10 +367,14 @@ def test_load_thesis_happy_path(tmp_path):
         "pillars:\n"
         "  - name: monetary_policy\n"
         "    description: Fed policy\n"
-        "    positive_signals: [rate cut, FOMC]\n"
+        "    tickers: [TLT, SHY]\n"
+        "    positive_signals: [rate cut, dovish]\n"
+        "    negative_signals: [rate hike, hawkish]\n"
         "  - name: ai_capex\n"
         "    description: AI infrastructure spend\n"
-        "    positive_signals: [GPU, data center]\n"
+        "    tickers: [NVDA, AVGO]\n"
+        "    positive_signals: [GPU demand, data center buildout]\n"
+        "    negative_signals: [capex cut]\n"
     )
 
     thesis, version_hash = load_thesis(thesis_yaml)
@@ -389,7 +393,9 @@ def test_load_thesis_stale_raises(tmp_path):
         "pillars:\n"
         "  - name: old_pillar\n"
         "    description: Outdated\n"
-        "    positive_signals: [old]\n"
+        "    tickers: [SPY]\n"
+        "    positive_signals: [up]\n"
+        "    negative_signals: [down]\n"
     )
 
     assert issubclass(ThesisStaleError, RuntimeError)
@@ -484,10 +490,9 @@ def test_phase1_integration_imports(tmp_path, monkeypatch):
     monkeypatch.setattr(repository, "DB_PATH", tmp_path / "signals.db")
     init_db()
 
-    # get_todays_universe uses the committed universe.csv (not monkeypatched here)
+    # get_todays_universe uses operator-maintained universe.csv (gitignored — may be absent in CI)
     tickers = get_todays_universe()
     assert isinstance(tickers, list)
-    assert len(tickers) > 0, "Expected at least core holdings in universe"
     k1_etfs = {"USO", "UNG", "DBC", "GSG"}
     for k1 in k1_etfs:
         assert k1 not in tickers, f"{k1} (K-1 ETF) must not appear in universe"
@@ -745,7 +750,13 @@ def _make_test_thesis():
     return Thesis(
         review_due=date(2099, 1, 1),
         pillars=[
-            Pillar(name="growth", description="GDP-sensitive", positive_signals=["consumer", "spending"]),
+            Pillar(
+                name="growth",
+                description="GDP-sensitive",
+                tickers=["SPY"],
+                positive_signals=["consumer", "spending"],
+                negative_signals=["recession"],
+            ),
         ]
     )
 
@@ -986,8 +997,20 @@ def test_build_system_prompt_includes_all_pillars():
     thesis = Thesis(
         review_due=date(2099, 1, 1),
         pillars=[
-            Pillar(name="growth", description="GDP-sensitive", positive_signals=["consumer", "spending"]),
-            Pillar(name="rates", description="Rate-sensitive", positive_signals=["fed", "yield"]),
+            Pillar(
+                name="growth",
+                description="GDP-sensitive",
+                tickers=["SPY"],
+                positive_signals=["consumer", "spending"],
+                negative_signals=["layoffs"],
+            ),
+            Pillar(
+                name="rates",
+                description="Rate-sensitive",
+                tickers=["TLT"],
+                positive_signals=["fed", "yield"],
+                negative_signals=["inflation"],
+            ),
         ]
     )
     prompt = _build_system_prompt(thesis)
@@ -1007,7 +1030,15 @@ def test_build_system_prompt_is_deterministic():
     from datetime import date
     thesis = Thesis(
         review_due=date(2099, 1, 1),
-        pillars=[Pillar(name="growth", description="GDP-sensitive", positive_signals=["consumer"])]
+        pillars=[
+            Pillar(
+                name="growth",
+                description="GDP-sensitive",
+                tickers=["SPY"],
+                positive_signals=["consumer"],
+                negative_signals=["recession"],
+            )
+        ]
     )
     assert _build_system_prompt(thesis) == _build_system_prompt(thesis)
 

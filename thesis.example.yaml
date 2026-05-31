@@ -1,14 +1,20 @@
 # thesis.example.yaml — operator-maintained investment thesis
 #
-# Copy to thesis.yaml (gitignored) and customize before running news-morning.
-# Update review_due before each quarterly review — the classifier refuses to
-# run when this date is in the past (ThesisStaleError trips the /fail ping).
+# Copy this file to thesis.yaml (gitignored) and customize before running news-morning.
+# IMPORTANT: Update review_due before each quarterly review — the classifier refuses to
+# run when this date is in the past (ThesisStaleError trips the /fail heartbeat ping).
+#
+# Schema: review_due (ISO date), pillars (list of name/description/tickers/positive_signals/negative_signals)
+#   tickers: specific tickers this pillar monitors (empty list = macro pillar, no ticker filter)
+#   positive_signals: headline themes that are bullish for this pillar
+#   negative_signals: headline themes that are bearish for this pillar
 
 review_due: 2026-11-01
 
 pillars:
   - name: monetary_policy
     description: Federal Reserve policy and macro liquidity conditions
+    tickers: []
     positive_signals:
       - "rate cut announced or strongly signaled"
       - "balance sheet expansion or QE restart"
@@ -22,6 +28,13 @@ pillars:
 
   - name: ai_capex
     description: Capital expenditure cycle in AI infrastructure — chips, data centers, hyperscalers
+    tickers:
+      - NVDA
+      - AMD
+      - MSFT
+      - GOOGL
+      - META
+      - AMZN
     positive_signals:
       - "hyperscaler capex guidance raised"
       - "new datacenter build announced"

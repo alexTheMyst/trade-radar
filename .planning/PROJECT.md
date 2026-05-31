@@ -14,12 +14,12 @@ Never miss a material thesis-relevant event on a held position — silent failur
 
 **Target features:**
 - OPS-01: Windows Task Scheduler tasks imported and validated on the runner machine
-- OPS-02: Gmail SMTP + healthchecks.io live credential verification confirmed
+- OPS-02: Telegram + healthchecks.io live credential verification confirmed
 - JOBS-01: End-to-end credentialed live run of all 3 jobs against real Finnhub + Anthropic APIs
 - MEAS-01: Operator acted/user_note feedback workflow confirmed over first 7 days of live operation
 - DISCOVERY-B: Phase A → B transition criteria defined and switch procedure documented
 
-**Note:** No code changes in this milestone. All requirements are operational evidence items or runbooks.
+**Note:** v1.1 is primarily operational (evidence items/runbooks). Code changes, if any, are limited to go-live bug fixes.
 
 ## Current State
 
