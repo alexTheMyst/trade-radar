@@ -37,6 +37,19 @@ def _today_bucket() -> int:
     return datetime.now(ZoneInfo("America/New_York")).timetuple().tm_yday % 3
 
 
+def _is_truthy(value: str | None) -> bool:
+    """Parse boolean columns that may be '1'/'0', 'true'/'false', or absent."""
+    if value is None:
+        return False
+    return value.strip().lower() in ("1", "true", "yes")
+
+
+def _is_data_row(row: dict) -> bool:
+    """Return False for blank or comment rows emitted by DictReader from # lines."""
+    ticker = row.get("ticker", "") or ""
+    return bool(ticker.strip()) and not ticker.strip().startswith("#")
+
+
 def get_core_holdings() -> list[str]:
     """Return core-holding tickers only, preserving CSV order and K-1 filtering."""
     tickers: list[str] = []
@@ -44,9 +57,11 @@ def get_core_holdings() -> list[str]:
     with UNIVERSE_PATH.open(newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            if int(row["k1_etf"]):
+            if not _is_data_row(row):
                 continue
-            if not int(row["core_holding"]):
+            if _is_truthy(row.get("k1_etf")):
+                continue
+            if not _is_truthy(row.get("core_holding")):
                 continue
             tickers.append(row["ticker"].strip().upper())
 
@@ -57,11 +72,12 @@ def get_todays_universe() -> list[str]:
     """Return the list of tickers to scan today.
 
     Includes:
-    - All core holdings (core_holding=1) — always scanned every day.
+    - All core holdings (core_holding=true/1) — always scanned every day.
     - Non-core tickers whose md5 bucket matches today's bucket.
 
     Excludes:
-    - All K-1 ETFs (k1_etf=1) unconditionally — never passed to agents.
+    - All K-1 ETFs (k1_etf=true/1) unconditionally — never passed to agents.
+    - Comment rows and blank rows from the CSV.
 
     Returns:
         List of uppercase ticker symbols in CSV input order.
@@ -72,11 +88,13 @@ def get_todays_universe() -> list[str]:
     with UNIVERSE_PATH.open(newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            if int(row["k1_etf"]):
+            if not _is_data_row(row):
+                continue
+            if _is_truthy(row.get("k1_etf")):
                 continue  # exclude K-1 ETFs at load time, unconditionally
 
             ticker = row["ticker"].strip().upper()
-            is_core = bool(int(row["core_holding"]))
+            is_core = _is_truthy(row.get("core_holding"))
             in_partition = _md5_bucket(ticker) == todays_bucket
 
             if is_core or in_partition:

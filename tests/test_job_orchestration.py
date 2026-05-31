@@ -263,15 +263,71 @@ def test_news_morning_headline_cap_dedups_before_cap_and_persists_overflow(db):
     conn = sqlite3.connect(db)
     overflow_rows = conn.execute(
         """
-        SELECT title, routing_status
+        SELECT title, routing_status, timestamp
         FROM signals
-        WHERE agent = 'news_morning' AND routing_status = 'MONITORING'
+        WHERE agent = 'news_classifier' AND routing_status = 'MONITORING'
         ORDER BY title
         """
     ).fetchall()
+    # No signal should be written under the legacy 'news_morning' agent name.
+    legacy_count = sqlite3.connect(db).execute(
+        "SELECT COUNT(*) FROM signals WHERE agent = 'news_morning'"
+    ).fetchone()[0]
     conn.close()
     assert len(overflow_rows) == 3
     assert all("[volume_cap]" in row[0] for row in overflow_rows)
+    # timestamp is signal-generation time (the run), NOT article publication time
+    assert all(row[2] == fixed_now.isoformat() for row in overflow_rows)
+    assert legacy_count == 0
+
+
+def test_dedupe_collapses_same_headline_across_tickers():
+    """Same article surfaced under two tickers (no Finnhub id) is kept once."""
+    from signal_system.jobs import news_morning
+
+    dt = datetime(2026, 5, 20, 8, 0, tzinfo=ZoneInfo("America/New_York"))
+    headline = "Nvidia's $5.7 Trillion Market Cap Faces Its Toughest Test"
+    candidates = [
+        ("NVDA", {"headline": headline, "datetime": int(dt.timestamp())}, dt),
+        ("MSFT", {"headline": headline, "datetime": int(dt.timestamp())}, dt),
+    ]
+
+    kept, overflow = news_morning._dedupe_and_cap_headlines(candidates)
+
+    assert len(kept) == 1
+    assert kept[0][0] == "NVDA"  # first occurrence wins
+    assert overflow == []
+
+
+def test_dedupe_collapses_same_article_id_across_tickers():
+    """Same Finnhub article id across tickers collapses even if headlines differ."""
+    from signal_system.jobs import news_morning
+
+    dt = datetime(2026, 5, 20, 8, 0, tzinfo=ZoneInfo("America/New_York"))
+    candidates = [
+        ("NVDA", {"id": 999, "headline": "Nvidia leads AI rally", "datetime": int(dt.timestamp())}, dt),
+        ("MSFT", {"id": 999, "headline": "AI rally, Nvidia leads", "datetime": int(dt.timestamp())}, dt),
+    ]
+
+    kept, overflow = news_morning._dedupe_and_cap_headlines(candidates)
+
+    assert len(kept) == 1
+    assert overflow == []
+
+
+def test_dedupe_keeps_distinct_articles_for_same_ticker():
+    """Two genuinely different articles for one ticker are both kept."""
+    from signal_system.jobs import news_morning
+
+    dt = datetime(2026, 5, 20, 8, 0, tzinfo=ZoneInfo("America/New_York"))
+    candidates = [
+        ("NVDA", {"id": 1, "headline": "Nvidia earnings beat", "datetime": int(dt.timestamp())}, dt),
+        ("NVDA", {"id": 2, "headline": "Nvidia new chip launch", "datetime": int(dt.timestamp())}, dt),
+    ]
+
+    kept, overflow = news_morning._dedupe_and_cap_headlines(candidates)
+
+    assert len(kept) == 2
 
 
 def test_news_morning_parse_failure_monitoring_bypasses_router_and_persists(db):

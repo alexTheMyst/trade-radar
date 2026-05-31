@@ -84,6 +84,62 @@ def test_score_floor_invalid_quote():
 
 
 # ---------------------------------------------------------------------------
+# T-02b: test_quote_accepted_without_volume (Finnhub free-tier /quote has no 'v')
+# ---------------------------------------------------------------------------
+
+def test_quote_accepted_without_volume():
+    """fetch_quote accepts a real free-tier quote that omits 'v' (volume).
+
+    Finnhub /quote returns c, d, dp, h, l, o, pc, t — never volume. Requiring 'v'
+    rejected every ticker, so Discovery emitted zero signals on every run.
+    """
+    with patch(
+        "signal_system.data.finnhub_client._fetch_single_quote",
+        return_value={"c": 50.0, "d": 1.0, "dp": 2.0, "h": 60.0, "l": 40.0, "o": 48.0, "pc": 49.0, "t": 0},
+    ):
+        result = fetch_quote("AAPL")
+    assert result is not None
+    assert "v" not in result
+
+
+# ---------------------------------------------------------------------------
+# T-02c: test_score_universe_without_volume_emits_signal (regression for 0-signal bug)
+# ---------------------------------------------------------------------------
+
+def test_score_universe_without_volume_emits_signal(db, monkeypatch):
+    """With volume-less quotes, the composite renormalizes over the 3 available
+    factors and still emits signals (the production bug produced zero)."""
+    monkeypatch.setattr(config, "DISCOVERY_PHASE", "B")
+
+    # No 'v' key — mirrors the real Finnhub /quote payload.
+    quotes = {
+        "HIGH": {"c": 55.0, "dp": 10.0, "h": 60.0, "l": 40.0, "o": 48.0, "pc": 49.0},
+        "LOW": {"c": 41.0, "dp": 1.0, "h": 50.0, "l": 40.0, "o": 48.0, "pc": 49.0},
+    }
+    news_counts = {"HIGH": 2, "LOW": 0}
+
+    def fq_side(ticker):
+        return quotes[ticker]
+
+    def fcn_side(ticker, from_date, to_date):
+        return _news(news_counts[ticker])
+
+    run_id = repository.insert_run("discovery")
+
+    with patch("signal_system.discovery.discovery_agent.fetch_quote", side_effect=fq_side), \
+         patch("signal_system.discovery.discovery_agent.fetch_company_news", side_effect=fcn_side):
+        result = score_universe(["HIGH", "LOW"], run_id, DATE_ISO)
+
+    high = next(s for s in result if s.ticker == "HIGH")
+    # Top on all 3 available factors → renormalized composite = 100.0
+    assert high.score == pytest.approx(100.0)
+    # Volume factor is dropped, not faked
+    assert "volume_rank" not in high.sub_scores
+    assert set(high.sub_scores.keys()) == {"price_momentum", "range_position", "news_activity"}
+    assert "LOW" not in [s.ticker for s in result]
+
+
+# ---------------------------------------------------------------------------
 # T-03: test_score_floor_null_quote
 # ---------------------------------------------------------------------------
 

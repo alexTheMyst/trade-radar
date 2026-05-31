@@ -4,32 +4,48 @@
 # IMPORTANT: Update review_due before each quarterly review — the classifier refuses to
 # run when this date is in the past (ThesisStaleError trips the /fail heartbeat ping).
 #
-# Schema: review_due (ISO date), pillars (list of name/description/keywords)
+# Schema: review_due (ISO date), pillars (list of name/description/tickers/positive_signals/negative_signals)
+#   tickers: specific tickers this pillar monitors (empty list = macro pillar, no ticker filter)
+#   positive_signals: headline themes that are bullish for this pillar
+#   negative_signals: headline themes that are bearish for this pillar
 
 review_due: 2026-11-01
 
 pillars:
   - name: monetary_policy
     description: Federal Reserve policy and macro liquidity conditions
-    keywords:
+    tickers: []
+    positive_signals:
       - rate cut
-      - rate hike
-      - FOMC
       - quantitative easing
+      - dovish pivot
+      - liquidity injection
+      - FOMC pause
+    negative_signals:
+      - rate hike
       - quantitative tightening
-      - liquidity
-      - federal funds rate
-      - pivot
+      - hawkish surprise
+      - federal funds rate increase
+      - balance sheet reduction
 
   - name: ai_capex
     description: Capital expenditure cycle in AI infrastructure — chips, data centers, hyperscalers
-    keywords:
-      - GPU
-      - data center
-      - capex
-      - hyperscaler
-      - inference
-      - training cluster
-      - NVIDIA
-      - semiconductor
-      - AI spending
+    tickers:
+      - NVDA
+      - AMD
+      - MSFT
+      - GOOGL
+      - META
+      - AMZN
+    positive_signals:
+      - capex increase
+      - GPU demand
+      - data center expansion
+      - AI spending increase
+      - inference buildout
+    negative_signals:
+      - capex freeze
+      - chip export ban
+      - AI spending pullback
+      - data center moratorium
+      - GPU oversupply

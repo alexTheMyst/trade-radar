@@ -25,6 +25,14 @@ _W_NEWS: float = 10.0
 SCORE_THRESHOLD_ACTION: float = 80.0
 SCORE_THRESHOLD_INFORM: float = 60.0
 
+# Short labels for the body string, keyed by sub_score name.
+_FACTOR_LABELS: dict[str, str] = {
+    "price_momentum": "momentum",
+    "volume_rank": "volume",
+    "range_position": "range",
+    "news_activity": "news",
+}
+
 
 def _rank_values(values: dict[str, float]) -> dict[str, float]:
     """Rank tickers 1.0 (top) to 0.0 (bottom), alphabetical tiebreak for equal values."""
@@ -77,9 +85,21 @@ def score_universe(tickers: list[str], run_id: str, date_iso: str) -> list[Signa
         range_raw[t] = (c - l) / (h - l) if h != l else 0.0
 
     momentum_ranks = _rank_values({t: q["dp"] for t, q in raw_quotes.items()})
-    volume_ranks = _rank_values({t: float(q["v"]) for t, q in raw_quotes.items()})
     range_ranks = _rank_values(range_raw)
     news_ranks = _rank_values({t: float(raw_news_counts.get(t, 0)) for t in raw_quotes})
+
+    # Volume is unavailable on Finnhub free-tier /quote. Include the volume
+    # factor only when every scanned quote carries a numeric volume (e.g. a paid
+    # tier); otherwise drop it and renormalise the surviving weights so the
+    # composite stays on a 0-100 scale and the thresholds remain meaningful.
+    volume_available = all(
+        isinstance(q.get("v"), (int, float)) for q in raw_quotes.values()
+    )
+    volume_ranks = (
+        _rank_values({t: float(q["v"]) for t, q in raw_quotes.items()})
+        if volume_available
+        else None
+    )
 
     # Pass 3 — Score and emit
     results: list[Signal] = []
@@ -87,16 +107,19 @@ def score_universe(tickers: list[str], run_id: str, date_iso: str) -> list[Signa
     timestamp = datetime.now(_ET)
 
     for ticker in raw_quotes:
-        m_rank = momentum_ranks[ticker]
-        v_rank = volume_ranks[ticker]
-        r_rank = range_ranks[ticker]
-        n_rank = news_ranks[ticker]
+        # (sub_score name, weight, rank) for each available factor. Volume is
+        # inserted in its original position only when the data supports it.
+        factors: list[tuple[str, float, float]] = [
+            ("price_momentum", _W_MOMENTUM, momentum_ranks[ticker]),
+            ("range_position", _W_RANGE, range_ranks[ticker]),
+            ("news_activity", _W_NEWS, news_ranks[ticker]),
+        ]
+        if volume_ranks is not None:
+            factors.insert(1, ("volume_rank", _W_VOLUME, volume_ranks[ticker]))
 
+        weight_sum = sum(weight for _, weight, _ in factors)
         composite = (
-            _W_MOMENTUM * m_rank
-            + _W_VOLUME * v_rank
-            + _W_RANGE * r_rank
-            + _W_NEWS * n_rank
+            100.0 * sum(weight * rank for _, weight, rank in factors) / weight_sum
         )
 
         if composite < SCORE_THRESHOLD_INFORM:
@@ -108,6 +131,10 @@ def score_universe(tickers: list[str], run_id: str, date_iso: str) -> list[Signa
 
         alert_id = compute_alert_id(ticker, date_iso, "discovery", "discovery_agent")
 
+        weights_used = "/".join(str(int(weight)) for _, weight, _ in factors)
+        rank_str = " ".join(
+            f"{_FACTOR_LABELS[name]}={rank:.2f}" for name, _, rank in factors
+        )
         signal = Signal(
             ticker=ticker,
             score=composite,
@@ -116,17 +143,8 @@ def score_universe(tickers: list[str], run_id: str, date_iso: str) -> list[Signa
             timestamp=timestamp,
             alert_id=alert_id,
             title=f"{ticker}: Discovery score {composite:.0f}",
-            body=(
-                f"weights=35/30/25/10 "
-                f"momentum={m_rank:.2f} volume={v_rank:.2f} "
-                f"range={r_rank:.2f} news={n_rank:.2f}"
-            ),
-            sub_scores={
-                "price_momentum": m_rank,
-                "volume_rank": v_rank,
-                "range_position": r_rank,
-                "news_activity": n_rank,
-            },
+            body=f"weights={weights_used} {rank_str}",
+            sub_scores={name: rank for name, _, rank in factors},
             model_version=None,
             thesis_version_hash=None,
             signal_price_snapshot=raw_quotes[ticker]["c"],

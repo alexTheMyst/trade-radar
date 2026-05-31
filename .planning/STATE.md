@@ -1,15 +1,15 @@
 ---
 gsd_state_version: 1.0
 milestone: v1.1
-milestone_name: next milestone
-status: not_started
-stopped_at: v1.0 milestone archived
-last_updated: "2026-05-17"
-last_activity: 2026-05-17 -- v1.0 milestone complete and archived
+milestone_name: Go-Live & Calibration
+status: planned
+stopped_at: phase 7 planned
+last_updated: "2026-05-19"
+last_activity: 2026-05-19 -- Phase 7 planned (3 plans, 2 waves)
 progress:
-  total_phases: 0
+  total_phases: 2
   completed_phases: 0
-  total_plans: 0
+  total_plans: 3
   completed_plans: 0
   percent: 0
 ---
@@ -21,15 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-17)
 
 **Core value:** Never miss a material thesis-relevant event on a held position — silent failure is indistinguishable from "no alerts today."
-**Current focus:** v1.0 shipped — run `/gsd-new-milestone` to define v1.1
+**Current focus:** v1.1 Go-Live & Calibration — 2 phases, 5 requirements
 
 ## Current Position
 
-Phase: None (between milestones)
-Status: v1.0 complete and archived
-Last activity: 2026-05-17 -- v1.0 milestone archived with tag v1.0
+Phase: 7 — Deployment & Live Validation
+Plan: Ready to execute (3 plans, 2 waves)
+Status: Phase 7 planned — ready for execution
+Last activity: 2026-05-19 — Phase 7 planned
 
-Progress: [----------] awaiting v1.1 milestone definition
+Progress: [----------] Phase 7 ready to execute
 
 ## v1.0 Summary
 
@@ -51,8 +52,14 @@ Progress: [----------] awaiting v1.1 milestone definition
 | Validation | R-02-A1 to R-02-A5: Finnhub free-tier endpoint assumptions | Validate on first live run | Phase 2 risk register |
 | Tuning | Classifier confidence thresholds (0.85/0.60) | Confirm during quarterly review | Phase 3 |
 
+## Quick Tasks Completed
+
+| Date | Slug | Description |
+|------|------|-------------|
+| 2026-05-17 | write-e2e-test-plan | Write E2E test plan to E2E-TEST-PLAN.md |
+
 ## Session Continuity
 
-Last session: 2026-05-17
-Stopped at: v1.0 milestone archived
-Resume: Run `/gsd-new-milestone v1.1` to begin next milestone
+Last session: 2026-05-19
+Stopped at: Phase 7 planned — 3 plans ready
+Resume: Run `/gsd:execute-phase 7` after `/clear`

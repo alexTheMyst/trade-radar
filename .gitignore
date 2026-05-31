@@ -1,7 +1,9 @@
 .env
 /state/
+/ops/tasks/
 *.db
 thesis.yaml
+src/signal_system/data/universe.csv
 __pycache__/
 *.pyc
 *.pyo

@@ -10,6 +10,7 @@ import hashlib
 import logging
 import re
 import unicodedata
+from dataclasses import replace
 from datetime import datetime
 from typing import Literal
 from zoneinfo import ZoneInfo
@@ -19,6 +20,7 @@ from pydantic import BaseModel, Field, ValidationError
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
 
 from signal_system import config
+from signal_system.data.finnhub_client import fetch_quotes
 from signal_system.data.thesis_loader import Thesis
 from signal_system.models import Signal, compute_alert_id
 from signal_system.state import repository
@@ -30,6 +32,23 @@ _ACTION_REQUIRED_THRESHOLD: float = 0.85
 _INFORMATIONAL_THRESHOLD: float = 0.60
 _ET = ZoneInfo("America/New_York")
 _client: Anthropic | None = None
+
+# Single agent identity for every signal from the news pillar — classified,
+# parse-failure, and volume-cap overflow alike. Keeps the `agent` dimension
+# consistent for per-signal-type measurement (see signal-log-schema.md).
+NEWS_CLASSIFIER_AGENT: str = "news_classifier"
+
+# Map common typographic/smart-quote Unicode to ASCII equivalents.
+# Applied before storing in Signal.title and before sending to Claude.
+_TYPOGRAPHIC_TO_ASCII: dict[int, str] = {
+    ord("\u2018"): "'",   # LEFT SINGLE QUOTATION MARK
+    ord("\u2019"): "'",   # RIGHT SINGLE QUOTATION MARK
+    ord("\u201c"): '"',   # LEFT DOUBLE QUOTATION MARK
+    ord("\u201d"): '"',   # RIGHT DOUBLE QUOTATION MARK
+    ord("\u2013"): "-",   # EN DASH
+    ord("\u2014"): "-",   # EM DASH
+    ord("\u2026"): "...", # HORIZONTAL ELLIPSIS
+}
 
 
 class ClassificationResult(BaseModel):
@@ -47,6 +66,26 @@ def _get_client() -> Anthropic:
     return _client
 
 
+def _fix_encoding(text: str) -> str:
+    """Repair cp1252 mojibake and normalize typographic Unicode to ASCII equivalents.
+
+    News aggregators (including Finnhub sources) sometimes deliver headlines where
+    UTF-8 byte sequences were decoded as cp1252 (e.g. U+2019 RIGHT SINGLE QUOTATION
+    MARK becomes the three-char sequence â€™).  Attempting the reverse round-trip
+    (encode to cp1252, decode as UTF-8) transparently repairs this.  Any string that
+    is already correct Unicode or contains characters outside the cp1252 range will
+    fail one of the two steps and is left unchanged.
+
+    Typographic characters that survive (or were never mojibake) are then replaced
+    with their ASCII equivalents so stored signals and delivered alerts stay clean.
+    """
+    try:
+        text = text.encode("cp1252").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        pass  # not mojibake or outside cp1252 range — leave as-is
+    return text.translate(_TYPOGRAPHIC_TO_ASCII)
+
+
 def _sanitize_headline(raw: object) -> str:
     """Sanitize a raw headline string for safe embedding in a Claude prompt.
 
@@ -62,6 +101,8 @@ def _sanitize_headline(raw: object) -> str:
         raw = str(raw) if raw is not None else ""
     # Strip ANSI escape sequences (e.g. \x1b[31m) before per-char filtering
     cleaned = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", raw)
+    # Repair cp1252 mojibake and normalise typographic chars to ASCII
+    cleaned = _fix_encoding(cleaned)
     # Strip control chars (Cc category) except newline and tab
     cleaned = "".join(
         ch for ch in cleaned
@@ -84,9 +125,12 @@ def _build_system_prompt(thesis: Thesis) -> str:
     """
     pillar_lines = []
     for pillar in thesis.pillars:
-        keywords_str = ", ".join(pillar.keywords)
+        pos = ", ".join(pillar.positive_signals)
+        neg = ", ".join(pillar.negative_signals)
         pillar_lines.append(
-            f"  - **{pillar.name}**: {pillar.description} (keywords: {keywords_str})"
+            f"  - **{pillar.name}**: {pillar.description}"
+            f"\n    Positive signals: {pos}"
+            f"\n    Negative signals: {neg}"
         )
     pillars_block = "\n".join(pillar_lines)
 
@@ -125,6 +169,21 @@ def headline_dedup_key(ticker: str, headline: str) -> str:
     return hashlib.sha256(f"{ticker}:{et_date}:{norm}".encode("utf-8")).hexdigest()
 
 
+def article_dedup_key(item: dict) -> str:
+    """Ticker-independent identity for a news article, for cross-ticker dedup.
+
+    Finnhub returns the same story under every related ticker, so a headline that
+    mentions two holdings would otherwise be delivered (and counted against the
+    budget) twice. Prefer Finnhub's stable article id; fall back to the normalized
+    headline when no usable id is present.
+    """
+    article_id = item.get("id")
+    if article_id not in (None, "", 0):
+        return f"id:{article_id}"
+    norm = _normalize_headline_for_dedup(str(item.get("headline", "")))
+    return f"hl:{norm}"
+
+
 def _severity_from_confidence(conf: float) -> str:
     """Map confidence score to severity band.
 
@@ -136,6 +195,23 @@ def _severity_from_confidence(conf: float) -> str:
     if conf >= _INFORMATIONAL_THRESHOLD:
         return "INFORMATIONAL"
     return "MONITORING"
+
+
+def _fetch_price_snapshot(ticker: str) -> float | None:
+    """Best-effort unadjusted price at signal time for outcome measurement.
+
+    Uses fetch_quotes (never raises). Returns None if the quote is missing or the
+    close price is non-positive — the signal is still emitted, just without a
+    snapshot. Capturing this is required for outcome backfill / IC measurement
+    (CLAUDE.md): without it, outcome_price_30d/90d can never be computed.
+    """
+    quote = fetch_quotes([ticker]).get(ticker)
+    if not quote:
+        return None
+    close = quote.get("c")
+    if close is None or close <= 0:
+        return None
+    return float(close)
 
 
 def _classify_one_call(
@@ -205,7 +281,7 @@ def _make_parse_failure_signal(
         ticker=ticker,
         score=None,
         severity="MONITORING",
-        agent="news_classifier",
+        agent=NEWS_CLASSIFIER_AGENT,
         timestamp=datetime.now(_ET),
         alert_id=alert_id,
         title=f"[parse_failure] {headline_text[:200]}",
@@ -233,7 +309,7 @@ def classify_headline(
     # Compute alert_id up front — same value for happy-path and parse-failure signals
     headline_hash = headline_dedup_key(ticker, raw)
     date_iso = datetime.now(_ET).date().isoformat()
-    alert_id = compute_alert_id(ticker, date_iso, f"news:{headline_hash[:16]}", "news_classifier")
+    alert_id = compute_alert_id(ticker, date_iso, f"news:{headline_hash[:16]}", NEWS_CLASSIFIER_AGENT)
 
     try:
         parsed, usage = _call_with_retry(sanitized, system_prompt)
@@ -282,10 +358,10 @@ def classify_headline(
         ticker=ticker,
         score=parsed.confidence,
         severity=_severity_from_confidence(parsed.confidence),
-        agent="news_classifier",
+        agent=NEWS_CLASSIFIER_AGENT,
         timestamp=datetime.now(_ET),
         alert_id=alert_id,
-        title=f"{parsed.pillar_name}: {raw[:120]}",
+        title=f"{parsed.pillar_name}: {_fix_encoding(raw)[:120]}",
         body=parsed.rationale,
         model_version=config.ANTHROPIC_MODEL,
         thesis_version_hash=thesis_version_hash,
@@ -344,5 +420,20 @@ def classify_headlines(
         )
         if signal is not None:
             results.append(signal)
+
+    # Stamp price-at-signal on routable signals — required for outcome backfill /
+    # IC measurement (CLAUDE.md). Fetch once per ticker, and only when at least one
+    # routable signal was emitted, so off-thesis tickers don't waste a Finnhub call.
+    # MONITORING signals (off-thesis exhaust, parse failures) get no outcome
+    # measurement, so they are intentionally left without a snapshot.
+    if any(s.severity != "MONITORING" for s in results):
+        price = _fetch_price_snapshot(ticker)
+        if price is not None:
+            results = [
+                replace(s, signal_price_snapshot=price)
+                if s.severity != "MONITORING"
+                else s
+                for s in results
+            ]
 
     return results
