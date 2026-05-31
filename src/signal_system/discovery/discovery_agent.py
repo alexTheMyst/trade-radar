@@ -53,10 +53,15 @@ def _compute_factors(df: pd.DataFrame) -> dict[str, float] | None:
     """Compute momentum and range factors from a candle DataFrame.
 
     Returns None if fewer than _MIN_TRADING_DAYS of data.
+    Caps input to trailing 20 rows so momentum_20d measures exactly 20 trading
+    days regardless of how many rows yfinance returns.
     """
-    n = len(df)
-    if n < _MIN_TRADING_DAYS:
+    if len(df) < _MIN_TRADING_DAYS:
         return None
+
+    # Cap to trailing 20 trading days so the factor name matches the behavior
+    df = df.tail(20)
+    n = len(df)
 
     closes = df["Close"].values
     highs = df["High"].values
