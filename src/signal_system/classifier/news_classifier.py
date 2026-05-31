@@ -202,20 +202,37 @@ def _severity_from_confidence(conf: float) -> str:
     return "MONITORING"
 
 
-def _weight_adjusted_severity(confidence: float, ticker: str, thesis: Thesis) -> str:
+def _weight_adjusted_severity(
+    confidence: float,
+    ticker: str,
+    thesis: Thesis,
+    parsed_pillar: str | None,
+    weights: dict[str, float],
+) -> str:
     """Map confidence to severity with position-weight amplification.
 
-    Uses the highest weight_pct among holdings_exposed for the matched pillar's tickers.
+    Uses the highest weight_pct among holdings_exposed for the matched pillar.
     Falls back to the ticker itself if not in any pillar's holdings_exposed.
     """
-    weights = get_position_weights()
     if not weights:
         return _severity_from_confidence(confidence)
+
+    # Find the best ticker for weight lookup: use the highest-weight holding
+    # exposed to the matched pillar, so cross-ticker pillar hits (e.g. a macro
+    # headline classified under monetary_policy) use the most impactful position.
+    lookup_ticker = ticker
+    if parsed_pillar:
+        for pillar in thesis.pillars:
+            if pillar.name == parsed_pillar and pillar.holdings_exposed:
+                best = max(pillar.holdings_exposed, key=lambda t: weights.get(t, 0.0))
+                if weights.get(best, 0.0) > 0:
+                    lookup_ticker = best
+                break
 
     score_100 = confidence * 100.0
     return adjusted_severity(
         score=score_100,
-        ticker=ticker,
+        ticker=lookup_ticker,
         weights=weights,
         base_thresholds=(_ACTION_REQUIRED_THRESHOLD * 100.0, _INFORMATIONAL_THRESHOLD * 100.0),
     )
@@ -321,6 +338,7 @@ def classify_headline(
     thesis: Thesis,
     thesis_version_hash: str,
     system_prompt: str,
+    weights: dict[str, float] | None = None,
 ) -> Signal | None:
     """Classify a single headline dict against the thesis. Returns Signal or None (off-thesis).
 
@@ -381,7 +399,7 @@ def classify_headline(
     return Signal(
         ticker=ticker,
         score=parsed.confidence,
-        severity=_weight_adjusted_severity(parsed.confidence, ticker, thesis),
+        severity=_weight_adjusted_severity(parsed.confidence, ticker, thesis, parsed.pillar_name, weights or {}),
         agent=NEWS_CLASSIFIER_AGENT,
         timestamp=datetime.now(_ET),
         alert_id=alert_id,
@@ -399,6 +417,7 @@ def classify_headlines(
     thesis_version_hash: str,
     *,
     dedup_seen: set[str] | None = None,
+    weights: dict[str, float] | None = None,
 ) -> list[Signal]:
     """Classify a list of news items for one ticker against the loaded thesis.
 
@@ -412,12 +431,16 @@ def classify_headlines(
         dedup_seen: Optional shared dedup set; pass the same set across multiple
             classify_headlines calls to deduplicate across tickers. None = fresh set
             per call (suitable for tests and single-ticker runs).
+        weights: Optional position weights dict; pass the same dict across calls to
+            avoid re-reading universe.csv on every headline. None = load fresh.
 
     Returns:
         List of Signal objects (never raises on parse failure — MONITORING signals returned instead).
     """
     if dedup_seen is None:
         dedup_seen = set()
+    if weights is None:
+        weights = get_position_weights()
 
     # Build system prompt ONCE per batch — keeps caching efficient (RESEARCH §2/§3)
     system_prompt = _build_system_prompt(thesis)
@@ -441,6 +464,7 @@ def classify_headlines(
             thesis=thesis,
             thesis_version_hash=thesis_version_hash,
             system_prompt=system_prompt,
+            weights=weights,
         )
         if signal is not None:
             results.append(signal)

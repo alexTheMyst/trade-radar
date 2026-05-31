@@ -206,6 +206,7 @@ def test_news_morning_core_holdings_only_and_zero_alert_digest(db):
     with patch("signal_system.jobs.news_morning.heartbeat.heartbeat", _noop_heartbeat), \
          patch("signal_system.jobs.news_morning._now_et", return_value=fixed_now), \
          patch("signal_system.jobs.news_morning.get_core_holdings", return_value=["AAPL", "MSFT"]), \
+         patch("signal_system.jobs.news_morning.get_position_weights", return_value={"AAPL": 10.0, "MSFT": 10.0}), \
          patch("signal_system.jobs.news_morning.repository.get_latest_successful_run_date", return_value=date(2026, 5, 16)), \
          patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
          patch("signal_system.jobs.news_morning.fetch_company_news", side_effect=fetch_side_effect) as mock_fetch, \
@@ -241,13 +242,14 @@ def test_news_morning_headline_cap_dedups_before_cap_and_persists_overflow(db):
         ]
     )
 
-    def classify_side_effect(*, ticker, headlines, thesis, thesis_version_hash, dedup_seen):
+    def classify_side_effect(*, ticker, headlines, thesis, thesis_version_hash, dedup_seen, weights=None):
         captured_headlines.extend(headlines)
         return []
 
     with patch("signal_system.jobs.news_morning.heartbeat.heartbeat", _noop_heartbeat), \
          patch("signal_system.jobs.news_morning._now_et", return_value=fixed_now), \
          patch("signal_system.jobs.news_morning.get_core_holdings", return_value=["AAPL"]), \
+         patch("signal_system.jobs.news_morning.get_position_weights", return_value={"AAPL": 10.0}), \
          patch("signal_system.jobs.news_morning.repository.get_latest_successful_run_date", return_value=date(2026, 5, 16)), \
          patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
          patch("signal_system.jobs.news_morning.fetch_company_news", return_value=items), \
@@ -340,6 +342,7 @@ def test_news_morning_parse_failure_monitoring_bypasses_router_and_persists(db):
     with patch("signal_system.jobs.news_morning.heartbeat.heartbeat", _noop_heartbeat), \
          patch("signal_system.jobs.news_morning._now_et", return_value=fixed_now), \
          patch("signal_system.jobs.news_morning.get_core_holdings", return_value=["AAPL"]), \
+         patch("signal_system.jobs.news_morning.get_position_weights", return_value={"AAPL": 10.0}), \
          patch("signal_system.jobs.news_morning.repository.get_latest_successful_run_date", return_value=date(2026, 5, 16)), \
          patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
          patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[_news_item("AAPL event", fixed_now)]), \
@@ -370,6 +373,7 @@ def test_news_morning_digest_counts_zero_alert_and_mismatch_guard(db):
     with patch("signal_system.jobs.news_morning.heartbeat.heartbeat", _noop_heartbeat), \
          patch("signal_system.jobs.news_morning._now_et", return_value=fixed_now), \
          patch("signal_system.jobs.news_morning.get_core_holdings", return_value=["AAPL"]), \
+         patch("signal_system.jobs.news_morning.get_position_weights", return_value={"AAPL": 10.0}), \
          patch("signal_system.jobs.news_morning.repository.get_latest_successful_run_date", return_value=date(2026, 5, 16)), \
          patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
          patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[_news_item("AAPL event", fixed_now)]), \
@@ -386,6 +390,7 @@ def test_news_morning_digest_counts_zero_alert_and_mismatch_guard(db):
     with patch("signal_system.jobs.news_morning.heartbeat.heartbeat", _noop_heartbeat), \
          patch("signal_system.jobs.news_morning._now_et", return_value=fixed_now), \
          patch("signal_system.jobs.news_morning.get_core_holdings", return_value=["AAPL"]), \
+         patch("signal_system.jobs.news_morning.get_position_weights", return_value={"AAPL": 10.0}), \
          patch("signal_system.jobs.news_morning.repository.get_latest_successful_run_date", return_value=date(2026, 5, 16)), \
          patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
          patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[_news_item("AAPL event", fixed_now)]), \
