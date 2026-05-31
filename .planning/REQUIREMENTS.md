@@ -38,7 +38,7 @@
 
 ## Out of Scope (v1.1)
 
-- Code changes of any kind — implementation is complete at v1.0
+- New feature implementation — bug fixes required to unblock go-live are in scope
 - Automated trade execution — alert-only by design
 - Regime classifier, Portfolio Drift agent, Earnings Setup agent — excluded by design
 - GitHub Actions / Linux cron — Windows Task Scheduler only
