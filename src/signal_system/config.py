@@ -32,9 +32,3 @@ ANTHROPIC_API_KEY = _require("ANTHROPIC_API_KEY")
 # Phase 1 additions
 ANTHROPIC_MODEL: str = _require("ANTHROPIC_MODEL")  # e.g. "claude-sonnet-4-6"
 THESIS_PATH: str = _optional("THESIS_PATH", "thesis.yaml")
-DISCOVERY_PHASE: str = _optional("DISCOVERY_PHASE", "A")
-if DISCOVERY_PHASE not in ("A", "B"):
-    raise RuntimeError(
-        f"DISCOVERY_PHASE must be 'A' or 'B', got {DISCOVERY_PHASE!r}. "
-        "Check your .env file."
-    )

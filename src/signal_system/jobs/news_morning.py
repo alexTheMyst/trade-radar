@@ -14,7 +14,7 @@ from signal_system.classifier.news_classifier import (
 )
 from signal_system.data.finnhub_client import fetch_company_news
 from signal_system.data.thesis_loader import load_thesis
-from signal_system.data.universe import get_core_holdings
+from signal_system.data.universe import get_core_holdings, get_position_weights
 from signal_system.delivery import telegram_sender
 from signal_system.jobs.common import (
     PersistenceSummary,
@@ -146,6 +146,7 @@ def _classify_kept_headlines(
     *,
     thesis: object,
     thesis_version_hash: str,
+    weights: dict[str, float],
 ) -> tuple[list[Signal], int]:
     headlines_by_ticker: dict[str, list[dict]] = defaultdict(list)
     for ticker, item, _ in kept_items:
@@ -162,6 +163,7 @@ def _classify_kept_headlines(
             thesis=thesis,
             thesis_version_hash=thesis_version_hash,
             dedup_seen=dedup_seen,
+            weights=weights,
         ):
             if signal.severity == "MONITORING":
                 _persist_monitoring_signal(signal)
@@ -209,10 +211,12 @@ def run() -> None:
                     )
                 )
 
+            weights = get_position_weights()
             routable, classifier_monitoring_count = _classify_kept_headlines(
                 kept_items,
                 thesis=thesis,
                 thesis_version_hash=thesis_version_hash,
+                weights=weights,
             )
             persistence_summary: PersistenceSummary = persist_routed_signals(route_signals(routable))
             status_counts = dict(persistence_summary.status_counts)

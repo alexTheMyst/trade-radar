@@ -211,19 +211,10 @@ def test_telegram_sender_failure_propagates(monkeypatch):
         ts.send_message("will fail")
 
 
-def test_config_optional_fallback_and_phase_validation(monkeypatch):
-    """DISCOVERY_PHASE=invalid must raise RuntimeError; THESIS_PATH defaults to 'thesis.yaml'."""
+def test_config_optional_fallback(monkeypatch):
+    """THESIS_PATH defaults to 'thesis.yaml'."""
     import importlib
     import signal_system.config as config_module
-
-    # Test invalid DISCOVERY_PHASE raises RuntimeError on reload
-    monkeypatch.setenv("DISCOVERY_PHASE", "invalid")
-    with pytest.raises(RuntimeError, match="DISCOVERY_PHASE"):
-        importlib.reload(config_module)
-
-    # Restore valid state
-    monkeypatch.setenv("DISCOVERY_PHASE", "A")
-    importlib.reload(config_module)
 
     # THESIS_PATH defaults to 'thesis.yaml' when env is unset
     monkeypatch.delenv("THESIS_PATH", raising=False)
@@ -499,10 +490,9 @@ def test_phase1_integration_imports(tmp_path, monkeypatch):
     monkeypatch.setattr(repository, "DB_PATH", tmp_path / "signals.db")
     init_db()
 
-    # get_todays_universe uses the committed universe.csv (not monkeypatched here)
+    # get_todays_universe uses operator-maintained universe.csv (gitignored — may be absent in CI)
     tickers = get_todays_universe()
     assert isinstance(tickers, list)
-    assert len(tickers) > 0, "Expected at least core holdings in universe"
     k1_etfs = {"USO", "UNG", "DBC", "GSG"}
     for k1 in k1_etfs:
         assert k1 not in tickers, f"{k1} (K-1 ETF) must not appear in universe"
@@ -511,10 +501,9 @@ def test_phase1_integration_imports(tmp_path, monkeypatch):
     result = count_delivered_today()
     assert isinstance(result, dict)
 
-    # config exports all three new Phase 1 vars
+    # config exports all Phase 1 vars
     assert config.ANTHROPIC_MODEL
     assert config.THESIS_PATH
-    assert config.DISCOVERY_PHASE in ("A", "B")
 
 
 # ---------------------------------------------------------------------------

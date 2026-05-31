@@ -1,4 +1,4 @@
-# thesis.example.yaml — operator-maintained investment thesis TEMPLATE
+# thesis.example.yaml — operator-maintained investment thesis
 #
 # Copy this file to thesis.yaml (gitignored) and customize before running news-morning.
 # IMPORTANT: Update review_due before each quarterly review — the classifier refuses to
@@ -16,17 +16,15 @@ pillars:
     description: Federal Reserve policy and macro liquidity conditions
     tickers: []
     positive_signals:
-      - rate cut
-      - quantitative easing
-      - dovish pivot
-      - liquidity injection
-      - FOMC pause
+      - "rate cut announced or strongly signaled"
+      - "balance sheet expansion or QE restart"
+      - "dovish pivot language from Fed officials"
     negative_signals:
-      - rate hike
-      - quantitative tightening
-      - hawkish surprise
-      - federal funds rate increase
-      - balance sheet reduction
+      - "rate hike or hawkish hold"
+      - "quantitative tightening acceleration"
+      - "inflation surprise upward"
+    holdings_exposed: [SPY, QQQ, VTI]
+    threshold_event: "unscheduled FOMC action or >50bp surprise vs expectations"
 
   - name: ai_capex
     description: Capital expenditure cycle in AI infrastructure — chips, data centers, hyperscalers
@@ -38,14 +36,12 @@ pillars:
       - META
       - AMZN
     positive_signals:
-      - capex increase
-      - GPU demand
-      - data center expansion
-      - AI spending increase
-      - inference buildout
+      - "hyperscaler capex guidance raised"
+      - "new datacenter build announced"
+      - "GPU demand exceeding supply signals"
     negative_signals:
-      - capex freeze
-      - chip export ban
-      - AI spending pullback
-      - data center moratorium
-      - GPU oversupply
+      - "capex cuts or deferrals announced"
+      - "GPU oversupply or inventory build"
+      - "AI spending pullback guidance"
+    holdings_exposed: [NVDA, MSFT, GOOGL, AMZN, META]
+    threshold_event: "any single hyperscaler cutting forward capex guidance by >10%"
