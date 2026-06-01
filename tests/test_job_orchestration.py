@@ -525,6 +525,60 @@ def test_discovery_fails_on_digest_count_mismatch(db):
     assert status == ("failed",)
 
 
+def test_require_non_empty_universe_raises_on_empty_and_passes_through():
+    from signal_system.data.universe import EmptyUniverseError, require_non_empty_universe
+
+    assert require_non_empty_universe(["AAPL"], job="discovery") == ["AAPL"]
+    with pytest.raises(EmptyUniverseError, match="empty ticker universe"):
+        require_non_empty_universe([], job="discovery")
+
+
+def test_discovery_fails_loudly_on_empty_universe(db):
+    from signal_system.jobs import discovery
+
+    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
+
+    with patch("signal_system.jobs.discovery._now_et", return_value=fixed_now), \
+         patch("signal_system.jobs.discovery.heartbeat.heartbeat", _noop_heartbeat), \
+         patch("signal_system.jobs.discovery.get_todays_universe", return_value=[]), \
+         patch("signal_system.jobs.discovery.score_universe", side_effect=AssertionError("should not score")) as mock_score, \
+         patch("signal_system.jobs.discovery.telegram_sender.send_message") as mock_send:
+        with pytest.raises(RuntimeError, match="empty ticker universe"):
+            discovery.run()
+
+    mock_score.assert_not_called()
+    mock_send.assert_not_called()
+
+    conn = sqlite3.connect(db)
+    status = conn.execute("SELECT status FROM runs WHERE job = 'discovery'").fetchone()
+    conn.close()
+    assert status == ("failed",)
+
+
+def test_news_morning_fails_loudly_on_empty_universe(db):
+    from signal_system.jobs import news_morning
+
+    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
+
+    with patch("signal_system.jobs.news_morning.heartbeat.heartbeat", _noop_heartbeat), \
+         patch("signal_system.jobs.news_morning._now_et", return_value=fixed_now), \
+         patch("signal_system.jobs.news_morning.repository.get_latest_successful_run_date", return_value=date(2026, 5, 16)), \
+         patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
+         patch("signal_system.jobs.news_morning.get_core_holdings", return_value=[]), \
+         patch("signal_system.jobs.news_morning.fetch_company_news", side_effect=AssertionError("should not fetch")) as mock_fetch, \
+         patch("signal_system.jobs.news_morning.telegram_sender.send_message") as mock_send:
+        with pytest.raises(RuntimeError, match="empty ticker universe"):
+            news_morning.run()
+
+    mock_fetch.assert_not_called()
+    mock_send.assert_not_called()
+
+    conn = sqlite3.connect(db)
+    status = conn.execute("SELECT status FROM runs WHERE job = 'news-morning'").fetchone()
+    conn.close()
+    assert status == ("failed",)
+
+
 def test_dispatcher_registers_news_morning():
     from signal_system import __main__
     from signal_system.jobs import discovery, news_morning

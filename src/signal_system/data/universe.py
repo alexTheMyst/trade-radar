@@ -19,6 +19,40 @@ from zoneinfo import ZoneInfo
 UNIVERSE_PATH = Path(__file__).parent / "universe.csv"
 
 
+class EmptyUniverseError(RuntimeError):
+    """Raised when the ticker universe is empty or universe.csv is missing.
+
+    Core holdings are scanned unconditionally, so a populated universe.csv
+    always yields at least them. An empty result therefore means the file is
+    missing or has no usable rows — an operator-data outage, never a normal
+    scan day. Surfacing it loudly (heartbeat /fail) is required by the
+    project's no-silent-failure principle: a green "Scanned 0 tickers, 0
+    alerts" digest would hide a real outage (the exact failure that occurred
+    when universe.csv went missing from the production checkout).
+    """
+
+
+def require_non_empty_universe(tickers: list[str], *, job: str) -> list[str]:
+    """Return *tickers* unchanged, raising EmptyUniverseError when it is empty.
+
+    Call this in scheduled jobs right after loading the universe so a missing
+    or empty universe.csv fails the run loudly instead of delivering a
+    misleading empty digest.
+    """
+    if tickers:
+        return tickers
+    reason = (
+        f"universe.csv is missing at {UNIVERSE_PATH}"
+        if not UNIVERSE_PATH.exists()
+        else f"universe.csv at {UNIVERSE_PATH} has no usable tickers"
+    )
+    raise EmptyUniverseError(
+        f"{job} aborted: empty ticker universe ({reason}). "
+        "Refusing to deliver a misleading 'Scanned 0 tickers' digest — "
+        "restore universe.csv and re-run."
+    )
+
+
 def _md5_bucket(ticker: str) -> int:
     """Return deterministic 0/1/2 partition for *ticker*.
 
