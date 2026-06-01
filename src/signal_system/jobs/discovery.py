@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from signal_system.data.universe import get_todays_universe
+from signal_system.data.universe import get_todays_universe, require_non_empty_universe
 from signal_system.delivery import telegram_sender
 from signal_system.discovery.discovery_agent import score_universe
 from signal_system.jobs.common import (
@@ -32,7 +32,7 @@ def run() -> None:
     try:
         with heartbeat.heartbeat():
             now_et = _now_et()
-            tickers = get_todays_universe()
+            tickers = require_non_empty_universe(get_todays_universe(), job="discovery")
             discovered_signals = score_universe(tickers, run_id, now_et.date().isoformat())
 
             persistence_summary: PersistenceSummary = persist_routed_signals(

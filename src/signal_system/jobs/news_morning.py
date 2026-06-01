@@ -14,7 +14,11 @@ from signal_system.classifier.news_classifier import (
 )
 from signal_system.data.finnhub_client import fetch_company_news
 from signal_system.data.thesis_loader import load_thesis
-from signal_system.data.universe import get_core_holdings, get_position_weights
+from signal_system.data.universe import (
+    get_core_holdings,
+    get_position_weights,
+    require_non_empty_universe,
+)
 from signal_system.delivery import telegram_sender
 from signal_system.jobs.common import (
     PersistenceSummary,
@@ -191,7 +195,7 @@ def run() -> None:
             thesis, thesis_version_hash = load_thesis(config.THESIS_PATH)
             now_et = _now_et()
             previous_close = _previous_close_datetime(previous_close_date)
-            tickers = get_core_holdings()
+            tickers = require_non_empty_universe(get_core_holdings(), job="news-morning")
 
             candidates = _collect_windowed_headlines(
                 tickers,
