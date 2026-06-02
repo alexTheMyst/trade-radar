@@ -147,3 +147,43 @@ def test_outcome_backfill_is_idempotent_and_does_not_overwrite_existing_values(t
     assert second_result.filled_90d == 0
     second_fetch.assert_not_called()
     assert _read_outcomes(str(db_path))["existing-30d"] == (55.0, 88.0)
+
+
+def test_backfill_advice_outcomes_fills_due_rows(tmp_path, monkeypatch):
+    from signal_system.jobs import outcome_backfill
+
+    _ET2 = ZoneInfo("America/New_York")
+    db_path = tmp_path / "test_advice_backfill.db"
+    monkeypatch.setattr(repository, "DB_PATH", db_path)
+    repository.init_db()
+
+    now_et = datetime(2026, 9, 1, 9, 0, tzinfo=_ET2)
+    ts_31d_ago = (now_et - timedelta(days=31)).isoformat()
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("""
+        INSERT INTO advice (
+            advice_id, run_id, timestamp, ticker, account, held,
+            verdict, confidence, mom_axis, news_axis, factors_json, flags,
+            shadow_mode, acted, acted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        "adv-1", "run-1", ts_31d_ago, "FCX", "schwab_main", 1,
+        "SELL", 0.8, "bearish", "bearish", "{}", "",
+        1, 1, ts_31d_ago,
+    ))
+    conn.commit()
+    conn.close()
+
+    fetch_quote = MagicMock(return_value={"c": 35.5})
+    result = outcome_backfill.backfill_advice_outcomes(now_et=now_et, fetch_quote=fetch_quote)
+
+    assert result.filled_30d == 1
+    assert result.filled_90d == 0
+
+    conn = sqlite3.connect(db_path)
+    row = conn.execute(
+        "SELECT outcome_price_30d FROM advice WHERE advice_id = 'adv-1'"
+    ).fetchone()
+    conn.close()
+    assert row[0] == 35.5
