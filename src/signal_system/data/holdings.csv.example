@@ -1,0 +1,9 @@
+# holdings.csv -- operator-maintained, gitignored.
+# Copy this file to holdings.csv (same directory) and populate with your actual positions.
+# thesis_pillar is optional -- ties a holding to a thesis.yaml pillar for HOLD/SELL reasoning.
+# account must be one of: schwab_main, schwab_secondary, roth_ira, hsa
+#
+ticker,shares,cost_basis,account,thesis_pillar
+FCX,40,38.10,schwab_main,commodities
+NVDA,10,850.00,roth_ira,ai_semi
+NVDA,5,900.00,hsa,ai_semi
