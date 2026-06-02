@@ -36,6 +36,35 @@ def test_fetch_history_returns_dict_of_dataframes():
     assert list(result["AAPL"].columns) == ["Close", "High", "Low"]
 
 
+def test_fetch_history_single_ticker_multiindex():
+    """Single-ticker download still returns MultiIndex columns (group_by='ticker').
+
+    Regression: a single-ticker special case using raw[["Close","High","Low"]]
+    raised KeyError because the columns are MultiIndex keyed by ticker.
+    """
+    from signal_system.data.yahoo_client import fetch_history
+
+    dates = pd.date_range("2026-05-01", periods=20, freq="B")
+    mock_df = pd.DataFrame(
+        {
+            ("NVDA", "Open"): range(148, 168),
+            ("NVDA", "High"): range(155, 175),
+            ("NVDA", "Low"): range(145, 165),
+            ("NVDA", "Close"): range(150, 170),
+            ("NVDA", "Volume"): [1000000] * 20,
+        },
+        index=dates,
+    )
+    mock_df.columns = pd.MultiIndex.from_tuples(mock_df.columns)
+
+    with patch("signal_system.data.yahoo_client.yf.download", return_value=mock_df):
+        result = fetch_history(["NVDA"], days=25)
+
+    assert set(result.keys()) == {"NVDA"}
+    assert len(result["NVDA"]) == 20
+    assert list(result["NVDA"].columns) == ["Close", "High", "Low"]
+
+
 def test_fetch_history_empty_ticker_skipped():
     """Tickers with no data in the response are excluded from the result."""
     from signal_system.data.yahoo_client import fetch_history

@@ -47,19 +47,17 @@ def fetch_history(tickers: list[str], days: int = 25) -> dict[str, pd.DataFrame]
 
     result: dict[str, pd.DataFrame] = {}
 
-    if len(tickers) == 1:
-        ticker = tickers[0]
-        df = raw[["Close", "High", "Low"]].dropna()
-        if not df.empty:
-            result[ticker] = df
-    else:
-        for ticker in tickers:
-            try:
-                df = raw[ticker][["Close", "High", "Low"]].dropna()
-                if not df.empty:
-                    result[ticker] = df
-            except (KeyError, TypeError):
-                logger.debug("No data for %r in yfinance response", ticker)
-                continue
+    # With group_by="ticker", yfinance returns MultiIndex columns keyed by
+    # ticker for both single- and multi-ticker downloads, so access each
+    # ticker's frame the same way. (A single-ticker special case using
+    # raw[["Close","High","Low"]] breaks on the MultiIndex.)
+    for ticker in tickers:
+        try:
+            df = raw[ticker][["Close", "High", "Low"]].dropna()
+            if not df.empty:
+                result[ticker] = df
+        except (KeyError, TypeError):
+            logger.debug("No data for %r in yfinance response", ticker)
+            continue
 
     return result

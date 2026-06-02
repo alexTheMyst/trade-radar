@@ -79,3 +79,42 @@ def backfill_due_outcomes(
         filled_90d += int(fill_90d)
 
     return BackfillResult(filled_30d=filled_30d, filled_90d=filled_90d)
+
+
+def backfill_advice_outcomes(
+    *,
+    now_et: datetime | None = None,
+    fetch_quote: OutcomeFetcher = finnhub_client.fetch_quote,
+) -> BackfillResult:
+    """Fill due 30d/90d outcome prices for acted-on advice rows.
+
+    Mirrors backfill_due_outcomes() but operates on the advice table.
+    Only backfills rows where acted IS NOT NULL (operator confirmed the decision).
+    """
+    effective_now = _normalize_et(now_et or datetime.now(_ET))
+    filled_30d = 0
+    filled_90d = 0
+
+    for candidate in repository.list_advice_backfill_candidates():
+        fill_30d = candidate.outcome_price_30d is None and _is_due(
+            candidate.timestamp, now_et=effective_now, days=30
+        )
+        fill_90d = candidate.outcome_price_90d is None and _is_due(
+            candidate.timestamp, now_et=effective_now, days=90
+        )
+        if not fill_30d and not fill_90d:
+            continue
+
+        close_price = _extract_close_price(fetch_quote(candidate.ticker))
+        if close_price is None:
+            continue
+
+        repository.update_advice_outcomes(
+            candidate.advice_id,
+            outcome_price_30d=close_price if fill_30d else None,
+            outcome_price_90d=close_price if fill_90d else None,
+        )
+        filled_30d += int(fill_30d)
+        filled_90d += int(fill_90d)
+
+    return BackfillResult(filled_30d=filled_30d, filled_90d=filled_90d)

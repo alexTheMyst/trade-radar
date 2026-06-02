@@ -34,6 +34,7 @@ class Signal:
     model_version: str | None = None
     thesis_version_hash: str | None = None
     signal_price_snapshot: float | None = None
+    direction: str | None = None  # "positive" | "negative" | "neutral" from ClassificationResult
 
 
 def compute_alert_id(ticker: str | None, date_iso: str, rule: str, agent: str) -> str:

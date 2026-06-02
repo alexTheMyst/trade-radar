@@ -32,3 +32,6 @@ ANTHROPIC_API_KEY = _require("ANTHROPIC_API_KEY")
 # Phase 1 additions
 ANTHROPIC_MODEL: str = _require("ANTHROPIC_MODEL")  # e.g. "claude-sonnet-4-6"
 THESIS_PATH: str = _optional("THESIS_PATH", "thesis.yaml")
+
+# Advisor phase -- set ADVISOR_SHADOW_MODE=false after IC review validates the matrix
+ADVISOR_SHADOW_MODE: bool = _optional("ADVISOR_SHADOW_MODE", "true").lower() != "false"

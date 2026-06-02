@@ -407,6 +407,7 @@ def classify_headline(
         body=parsed.rationale,
         model_version=config.ANTHROPIC_MODEL,
         thesis_version_hash=thesis_version_hash,
+        direction=parsed.direction,
     )
 
 
