@@ -26,6 +26,15 @@ class OutcomeBackfillCandidate:
     outcome_price_90d: float | None
 
 
+@dataclass(frozen=True, slots=True)
+class AdviceBackfillCandidate:
+    advice_id: str
+    ticker: str
+    timestamp: datetime
+    outcome_price_30d: float | None
+    outcome_price_90d: float | None
+
+
 def _connect() -> sqlite3.Connection:
     """Open a SQLite connection with busy_timeout to handle concurrent writes."""
     conn = sqlite3.connect(DB_PATH)
@@ -102,6 +111,37 @@ def init_db() -> None:
         # Idempotent column additions to signals (Phase 5 schema extensions)
         _ensure_column(cursor, "signals", "demoted_from", "TEXT")
 
+        # Advisor phase additions
+        _ensure_column(cursor, "signals", "direction", "TEXT")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS advice (
+                advice_id TEXT PRIMARY KEY,
+                run_id TEXT,
+                timestamp TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                account TEXT,
+                held INTEGER NOT NULL DEFAULT 1,
+                verdict TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                mom_axis TEXT NOT NULL,
+                news_axis TEXT NOT NULL,
+                factors_json TEXT NOT NULL DEFAULT '{}',
+                flags TEXT NOT NULL DEFAULT '',
+                rationale TEXT,
+                rationale_source TEXT,
+                model_version TEXT,
+                thesis_version_hash TEXT,
+                signal_price_snapshot REAL,
+                shadow_mode INTEGER NOT NULL DEFAULT 1,
+                outcome_price_30d REAL,
+                outcome_price_90d REAL,
+                acted INTEGER,
+                acted_at TEXT,
+                user_note TEXT
+            )
+        """)
+
         # New tables (Phase 1)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS wash_sale (
@@ -153,8 +193,8 @@ def insert_signal(
             INSERT OR IGNORE INTO signals (
                 alert_id, timestamp, agent, severity, ticker, title, body,
                 score, routing_status, signal_price_snapshot, model_version,
-                thesis_version_hash, demoted_from
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                thesis_version_hash, demoted_from, direction
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             signal.alert_id,
             signal.timestamp.isoformat(),
@@ -168,7 +208,8 @@ def insert_signal(
             signal.signal_price_snapshot,
             signal.model_version,
             signal.thesis_version_hash,
-            demoted_from,               # Phase 5 addition (D-11)
+            demoted_from,
+            signal.direction,
         ))
         conn.commit()
         return cursor.rowcount == 1
@@ -379,6 +420,182 @@ def update_signal_outcomes(
                 outcome_price_90d,
                 outcome_price_90d,
                 alert_id,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def insert_advice(row: dict) -> bool:
+    """Insert one advice row using INSERT OR IGNORE. Returns True if newly inserted."""
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR IGNORE INTO advice (
+                advice_id, run_id, timestamp, ticker, account, held,
+                verdict, confidence, mom_axis, news_axis, factors_json, flags,
+                rationale, rationale_source, model_version, thesis_version_hash,
+                signal_price_snapshot, shadow_mode
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            row["advice_id"],
+            row.get("run_id"),
+            row["timestamp"],
+            row["ticker"],
+            row.get("account"),
+            int(bool(row.get("held", True))),
+            row["verdict"],
+            row["confidence"],
+            row["mom_axis"],
+            row["news_axis"],
+            row.get("factors_json", "{}"),
+            row.get("flags", ""),
+            row.get("rationale"),
+            row.get("rationale_source"),
+            row.get("model_version"),
+            row.get("thesis_version_hash"),
+            row.get("signal_price_snapshot"),
+            int(bool(row.get("shadow_mode", True))),
+        ))
+        conn.commit()
+        return cursor.rowcount == 1
+    finally:
+        conn.close()
+
+
+def get_recent_signals(
+    ticker: str,
+    since: date,
+    agent: str | None = None,
+) -> list[tuple[float, float]]:
+    """Return (direction_scalar, confidence) pairs for recent on-thesis signals.
+
+    direction_scalar: +1.0 (positive), -1.0 (negative), 0.0 (neutral or unknown).
+    Excludes MONITORING signals (parse failures, off-thesis exhaust).
+    """
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        query = """
+            SELECT score, direction
+            FROM signals
+            WHERE ticker = ?
+              AND timestamp >= ?
+              AND severity != 'MONITORING'
+        """
+        params: list = [ticker, since.isoformat()]
+        if agent is not None:
+            query += " AND agent = ?"
+            params.append(agent)
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+    finally:
+        conn.close()
+
+    _DIR = {"positive": 1.0, "negative": -1.0}
+    results = []
+    for score, direction in rows:
+        if score is None:
+            continue
+        dir_scalar = _DIR.get(direction or "", 0.0)
+        results.append((dir_scalar, float(score)))
+    return results
+
+
+def get_delivered_discovery_signals(
+    since: date,
+    *,
+    excluded_tickers: set[str] | None = None,
+    limit: int = 20,
+) -> list[dict]:
+    """Return recent DELIVERED discovery_agent signals ordered by score desc.
+
+    Used by the advisor to find new-buy candidates not already held.
+    """
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT ticker, score, timestamp
+            FROM signals
+            WHERE agent = 'discovery_agent'
+              AND routing_status = 'DELIVERED'
+              AND timestamp >= ?
+            ORDER BY score DESC, timestamp DESC
+            LIMIT ?
+        """, (since.isoformat(), limit))
+        rows = cursor.fetchall()
+    finally:
+        conn.close()
+
+    excluded = excluded_tickers or set()
+    return [
+        {"ticker": row[0], "score": row[1]}
+        for row in rows
+        if row[0] and row[0] not in excluded
+    ]
+
+
+def list_advice_backfill_candidates() -> list[AdviceBackfillCandidate]:
+    """Return advice rows still missing at least one deferred outcome price."""
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT advice_id, ticker, timestamp, outcome_price_30d, outcome_price_90d
+            FROM advice
+            WHERE acted IS NOT NULL
+              AND ticker IS NOT NULL
+              AND ticker != ''
+              AND (outcome_price_30d IS NULL OR outcome_price_90d IS NULL)
+            ORDER BY timestamp ASC
+        """)
+        return [
+            AdviceBackfillCandidate(
+                advice_id=row[0],
+                ticker=row[1],
+                timestamp=datetime.fromisoformat(row[2]),
+                outcome_price_30d=row[3],
+                outcome_price_90d=row[4],
+            )
+            for row in cursor.fetchall()
+        ]
+    finally:
+        conn.close()
+
+
+def update_advice_outcomes(
+    advice_id: str,
+    *,
+    outcome_price_30d: float | None = None,
+    outcome_price_90d: float | None = None,
+) -> None:
+    """Persist deferred outcome prices for an advice row without overwriting existing values."""
+    if outcome_price_30d is None and outcome_price_90d is None:
+        return
+
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE advice
+            SET outcome_price_30d = CASE
+                    WHEN ? IS NOT NULL AND outcome_price_30d IS NULL THEN ?
+                    ELSE outcome_price_30d
+                END,
+                outcome_price_90d = CASE
+                    WHEN ? IS NOT NULL AND outcome_price_90d IS NULL THEN ?
+                    ELSE outcome_price_90d
+                END
+            WHERE advice_id = ?
+            """,
+            (
+                outcome_price_30d, outcome_price_30d,
+                outcome_price_90d, outcome_price_90d,
+                advice_id,
             ),
         )
         conn.commit()
