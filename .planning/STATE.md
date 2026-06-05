@@ -57,6 +57,7 @@ Progress: [----------] Phase 7 ready to execute
 | Date | Slug | Description |
 |------|------|-------------|
 | 2026-05-17 | write-e2e-test-plan | Write E2E test plan to E2E-TEST-PLAN.md |
+| 2026-06-05 | news-classifier-direction-reconciliation | Add same-day direction reconciliation — prevents contradictory same-pillar signals from both being DELIVERED |
 
 ## Session Continuity
 
