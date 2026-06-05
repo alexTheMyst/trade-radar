@@ -114,6 +114,9 @@ def init_db() -> None:
         # Advisor phase additions
         _ensure_column(cursor, "signals", "direction", "TEXT")
 
+        # Reconciliation phase additions
+        _ensure_column(cursor, "signals", "pillar", "TEXT")
+
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS advice (
                 advice_id TEXT PRIMARY KEY,
@@ -193,8 +196,8 @@ def insert_signal(
             INSERT OR IGNORE INTO signals (
                 alert_id, timestamp, agent, severity, ticker, title, body,
                 score, routing_status, signal_price_snapshot, model_version,
-                thesis_version_hash, demoted_from, direction
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                thesis_version_hash, demoted_from, direction, pillar
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             signal.alert_id,
             signal.timestamp.isoformat(),
@@ -210,6 +213,7 @@ def insert_signal(
             signal.thesis_version_hash,
             demoted_from,
             signal.direction,
+            signal.pillar,
         ))
         conn.commit()
         return cursor.rowcount == 1

@@ -28,6 +28,7 @@ from signal_system.jobs.common import (
 )
 from signal_system.models import Signal, compute_alert_id
 from signal_system.monitoring import heartbeat
+from signal_system.reconciler import reconcile_directions
 from signal_system.router import route_signals
 from signal_system.state import repository
 
@@ -222,9 +223,12 @@ def run() -> None:
                 thesis_version_hash=thesis_version_hash,
                 weights=weights,
             )
+            routable, reconciled_losers = reconcile_directions(routable)
+            for loser in reconciled_losers:
+                repository.insert_signal(loser, routing_status="MONITORING", demoted_from="reconciled")
             persistence_summary: PersistenceSummary = persist_routed_signals(route_signals(routable))
             status_counts = dict(persistence_summary.status_counts)
-            status_counts["MONITORING"] += classifier_monitoring_count + len(overflow_items)
+            status_counts["MONITORING"] += classifier_monitoring_count + len(overflow_items) + len(reconciled_losers)
 
             digest = render_digest(
                 job_name="news-morning",

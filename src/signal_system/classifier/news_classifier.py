@@ -408,6 +408,7 @@ def classify_headline(
         model_version=config.ANTHROPIC_MODEL,
         thesis_version_hash=thesis_version_hash,
         direction=parsed.direction,
+        pillar=parsed.pillar_name,
     )
 
 
