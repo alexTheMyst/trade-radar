@@ -97,12 +97,8 @@ def fetch_quotes(tickers: list[str]) -> dict[str, dict | None]:
 def fetch_quote(ticker: str) -> dict | None:
     """Fetch and validate a single quote for Discovery Agent scoring.
 
-    Finnhub free-tier /quote returns c, d, dp, h, l, o, pc, t — it does NOT
-    include volume ('v'). We therefore require only the fields the scorer can
-    actually use: a percent-change (dp) for momentum and a sane high/low band
-    for range. Volume is optional; when absent the scorer drops the volume
-    factor and renormalises the remaining weights. (Requiring 'v' previously
-    rejected every ticker, so Discovery emitted zero signals on every run.)
+    Returns a dict with at least 'c' (close), 'h' (high), 'l' (low), 'dp' (percent change).
+    Returns None on paid-tier errors, missing data, or exhausted retries.
     """
     quote = _fetch_single_quote(ticker)
     if quote is None:
@@ -116,6 +112,7 @@ def fetch_quote(ticker: str) -> dict | None:
     return quote
 
 
+@_RETRY_DECORATOR
 def fetch_spy_close() -> float:
     """Return SPY close price; raises ValueError on missing or non-positive data."""
     _acquire_slot()

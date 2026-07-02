@@ -19,15 +19,14 @@ def test_high_weight_lowers_threshold():
 
 
 def test_low_weight_raises_threshold():
-    """A 1% position (well below median) has thresholds shifted up."""
+    """A 1% position (well below median) has thresholds shifted up by at most 10 points."""
     from signal_system.scoring.weight_amplifier import adjusted_severity
 
     weights = {"SPY": 25.0, "AAPL": 12.0, "NVDA": 4.0, "KO": 1.0}
-    # KO ratio = 1/8 = 0.125 → clamped to 0.25 → shift = 10*log2(0.25) = -20
-    # AR threshold = 80 - (-20) = 100
-    # INFO threshold = 60 - (-20) = 80
+    # KO ratio = 1/8 = 0.125 → clamped to 0.25 → raw shift = 10*log2(0.25) = -20
+    # capped at -10 → AR threshold = 80+10 = 90, INFO threshold = 60+10 = 70
     result = adjusted_severity(
-        score=75.0,
+        score=69.0,
         ticker="KO",
         weights=weights,
         base_thresholds=(80.0, 60.0),
@@ -78,19 +77,19 @@ def test_empty_weights_no_shift():
 
 
 def test_zero_weight_gets_max_penalty():
-    """A ticker with weight_pct=0 gets the maximum upward threshold shift."""
+    """A ticker with weight_pct=0 gets the max upward threshold shift capped at -10."""
     from signal_system.scoring.weight_amplifier import adjusted_severity
 
     weights = {"SPY": 25.0, "WATCHLIST": 0.0}
-    # ratio = 0/12.5 → clamped to 0.25 → shift = 10*log2(0.25) = -20
-    # AR threshold = 80+20 = 100, INFO threshold = 60+20 = 80
+    # ratio = 0/12.5 → clamped to 0.25 → raw shift = 10*log2(0.25) = -20
+    # capped at -10 → AR threshold = 80+10 = 90, INFO threshold = 60+10 = 70
     result = adjusted_severity(
         score=79.0,
         ticker="WATCHLIST",
         weights=weights,
         base_thresholds=(80.0, 60.0),
     )
-    assert result == "MONITORING"
+    assert result == "INFORMATIONAL"
 
 
 def test_amplifier_for_news_classifier_thresholds():

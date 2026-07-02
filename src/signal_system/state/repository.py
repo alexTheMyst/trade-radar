@@ -336,13 +336,17 @@ def insert_llm_call(
 
 
 def count_delivered_today() -> dict[str, int]:
-    """Return today's DELIVERED signal counts keyed by severity (ET timezone).
+    """Return today's signal counts keyed by severity (ET timezone).
+
+    Counts both PENDING and DELIVERED routing_status to stay conservative
+    across job re-runs — a PENDING row from a failed prior run still consumes
+    budget.
 
     Uses ISO date-prefix matching on the timestamp column — all timestamps are
     stored as ET ISO strings by convention, so LIKE 'YYYY-MM-DD%' is correct.
 
     Returns:
-        Dict mapping severity string to count of DELIVERED signals today.
+        Dict mapping severity string to count of signals today.
         Missing severities are absent from the dict (treat as 0).
         Example: {"INFORMATIONAL": 2, "ACTION_REQUIRED": 1}
     """
@@ -353,7 +357,7 @@ def count_delivered_today() -> dict[str, int]:
         cursor = conn.cursor()
         cursor.execute("""
             SELECT severity, COUNT(*) FROM signals
-            WHERE routing_status = 'DELIVERED'
+            WHERE routing_status IN ('PENDING', 'DELIVERED')
               AND timestamp LIKE ? || '%'
             GROUP BY severity
         """, (today_iso,))
@@ -363,7 +367,11 @@ def count_delivered_today() -> dict[str, int]:
 
 
 def list_outcome_backfill_candidates() -> list[OutcomeBackfillCandidate]:
-    """Return acted-on signals still missing at least one deferred outcome price."""
+    """Return routable signals (DELIVERED or SUPPRESSED) still missing outcome prices.
+
+    Measures all routable signals, not just operator-reviewed ones, so the
+    quarterly IC review can assess whether ignoring a signal was correct.
+    """
     conn = _connect()
     try:
         cursor = conn.cursor()
@@ -371,7 +379,7 @@ def list_outcome_backfill_candidates() -> list[OutcomeBackfillCandidate]:
             """
             SELECT alert_id, ticker, timestamp, outcome_price_30d, outcome_price_90d
             FROM signals
-            WHERE acted IS NOT NULL
+            WHERE routing_status IN ('DELIVERED', 'SUPPRESSED')
               AND ticker IS NOT NULL
               AND ticker != ''
               AND (outcome_price_30d IS NULL OR outcome_price_90d IS NULL)
@@ -477,7 +485,8 @@ def get_recent_signals(
     """Return (direction_scalar, confidence) pairs for recent on-thesis signals.
 
     direction_scalar: +1.0 (positive), -1.0 (negative), 0.0 (neutral or unknown).
-    Excludes MONITORING signals (parse failures, off-thesis exhaust).
+    Excludes signals with routing_status='MONITORING' (parse failures, off-thesis
+    exhaust, reconciled losers, margin-guard downgrades).
     """
     conn = _connect()
     try:
@@ -487,7 +496,7 @@ def get_recent_signals(
             FROM signals
             WHERE ticker = ?
               AND timestamp >= ?
-              AND severity != 'MONITORING'
+              AND routing_status != 'MONITORING'
         """
         params: list = [ticker, since.isoformat()]
         if agent is not None:
@@ -543,15 +552,18 @@ def get_delivered_discovery_signals(
 
 
 def list_advice_backfill_candidates() -> list[AdviceBackfillCandidate]:
-    """Return advice rows still missing at least one deferred outcome price."""
+    """Return advice rows still missing at least one deferred outcome price.
+
+    Measures all advice rows, not just operator-reviewed ones, so the
+    quarterly review can assess every verdict's outcome.
+    """
     conn = _connect()
     try:
         cursor = conn.cursor()
         cursor.execute("""
             SELECT advice_id, ticker, timestamp, outcome_price_30d, outcome_price_90d
             FROM advice
-            WHERE acted IS NOT NULL
-              AND ticker IS NOT NULL
+            WHERE ticker IS NOT NULL
               AND ticker != ''
               AND (outcome_price_30d IS NULL OR outcome_price_90d IS NULL)
             ORDER BY timestamp ASC
@@ -601,6 +613,24 @@ def update_advice_outcomes(
                 outcome_price_90d, outcome_price_90d,
                 advice_id,
             ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def update_routing_status(alert_id: str, routing_status: str) -> None:
+    """Flip the routing_status of an existing signal row.
+
+    Used to transition PENDING → DELIVERED after a successful Telegram send.
+    Only modifies rows where the alert_id exists — no error on missing rows.
+    """
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE signals SET routing_status = ? WHERE alert_id = ?",
+            (routing_status, alert_id),
         )
         conn.commit()
     finally:

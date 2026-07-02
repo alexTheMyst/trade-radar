@@ -79,3 +79,29 @@ def test_fetch_history_download_exception_returns_empty():
         result = fetch_history(["AAPL"], days=25)
 
     assert result == {}
+
+
+def test_fetch_history_flat_columns_single_ticker():
+    """Flat (non-MultiIndex) columns are handled — regression guard for yfinance <1.4 compat."""
+    from signal_system.data.yahoo_client import fetch_history
+
+    dates = pd.date_range("2026-05-01", periods=10, freq="B")
+    mock_df = pd.DataFrame(
+        {
+            "Close": range(150, 160),
+            "High": range(155, 165),
+            "Low": range(145, 155),
+            "Open": range(148, 158),
+            "Volume": [1_000_000] * 10,
+        },
+        index=dates,
+    )
+    # Flat columns — older yfinance behaviour for single-ticker downloads
+    assert not isinstance(mock_df.columns, pd.MultiIndex)
+
+    with patch("signal_system.data.yahoo_client.yf.download", return_value=mock_df):
+        result = fetch_history(["AAPL"], days=10)
+
+    assert "AAPL" in result
+    assert list(result["AAPL"].columns) == ["Close", "High", "Low"]
+    assert len(result["AAPL"]) == 10

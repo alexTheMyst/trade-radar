@@ -22,24 +22,39 @@ class DigestPayload:
 
 
 def persist_routed_signals(routed_signals: list[RoutedSignal]) -> PersistenceSummary:
-    """Persist routed tuples and return delivered signals plus normalized status counts."""
+    """Persist routed tuples and return to-be-delivered signals plus normalized counts.
+
+    Signals that should be DELIVERED are persisted with routing_status='PENDING'
+    so a failed Telegram send does not leave phantom DELIVERED rows in the DB.
+    Caller must call confirm_delivered_signals() after a successful send to flip
+    PENDING → DELIVERED.
+    """
     status_counts = {"DELIVERED": 0, "SUPPRESSED": 0, "MONITORING": 0}
-    delivered_signals: list[Signal] = []
+    pending_signals: list[Signal] = []
 
     for signal, routing_status, demoted_from in routed_signals:
-        repository.insert_signal(
+        db_status = routing_status
+        if routing_status == "DELIVERED":
+            db_status = "PENDING"
+        inserted = repository.insert_signal(
             signal,
-            routing_status=routing_status,
+            routing_status=db_status,
             demoted_from=demoted_from,
         )
         status_counts[routing_status] = status_counts.get(routing_status, 0) + 1
-        if routing_status == "DELIVERED":
-            delivered_signals.append(signal)
+        if routing_status == "DELIVERED" and inserted:
+            pending_signals.append(signal)
 
     return PersistenceSummary(
-        delivered_signals=delivered_signals,
+        delivered_signals=pending_signals,
         status_counts=status_counts,
     )
+
+
+def confirm_delivered_signals(signals: list[Signal]) -> None:
+    """Flip PENDING → DELIVERED for successfully sent signals."""
+    for sig in signals:
+        repository.update_routing_status(sig.alert_id, "DELIVERED")
 
 
 def render_digest(

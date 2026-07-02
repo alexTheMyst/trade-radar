@@ -167,9 +167,31 @@ def _normalize_headline_for_dedup(headline: str) -> str:
     return s.rstrip(".!?;:,")
 
 
-def headline_dedup_key(ticker: str, headline: str) -> str:
-    """Compute a deterministic dedup key for (ticker, ET date, normalized headline)."""
-    et_date = datetime.now(_ET).date().isoformat()
+def _article_date_iso(headline_dict: dict) -> str | None:
+    """Extract article published date as ISO string from a Finnhub news item.
+
+    Returns None if the datetime field is missing or unparseable.
+    """
+    raw_timestamp = headline_dict.get("datetime")
+    if raw_timestamp in (None, ""):
+        return None
+    try:
+        timestamp = float(raw_timestamp)
+    except (TypeError, ValueError):
+        return None
+    if timestamp > 10_000_000_000:
+        timestamp /= 1000.0
+    dt = datetime.fromtimestamp(timestamp, tz=ZoneInfo("UTC"))
+    return dt.astimezone(_ET).date().isoformat()
+
+
+def headline_dedup_key(ticker: str, headline: str, *, article_date: str | None = None) -> str:
+    """Compute a deterministic dedup key for (ticker, date, normalized headline).
+
+    Uses the article's published date when available; falls back to the current
+    ET run date so tests and edge cases don't break.
+    """
+    et_date = article_date or datetime.now(_ET).date().isoformat()
     norm = _normalize_headline_for_dedup(headline)
     return hashlib.sha256(f"{ticker}:{et_date}:{norm}".encode("utf-8")).hexdigest()
 
@@ -343,14 +365,18 @@ def classify_headline(
     """Classify a single headline dict against the thesis. Returns Signal or None (off-thesis).
 
     None means the headline was classified as off-thesis (pillar_name is None).
-    MONITORING signals are returned (not None) for parse failures.
+    Off-thesis classifications are not persisted — there is no audit trail for
+    headlines the classifier chose to ignore. MONITORING signals are returned
+    (not None) for parse failures.
     """
     raw = headline_dict.get("headline", "")
     sanitized = _sanitize_headline(raw)
 
+    article_date = _article_date_iso(headline_dict)
+    date_iso = article_date or datetime.now(_ET).date().isoformat()
+
     # Compute alert_id up front — same value for happy-path and parse-failure signals
-    headline_hash = headline_dedup_key(ticker, raw)
-    date_iso = datetime.now(_ET).date().isoformat()
+    headline_hash = headline_dedup_key(ticker, raw, article_date=article_date)
     alert_id = compute_alert_id(ticker, date_iso, f"news:{headline_hash[:16]}", NEWS_CLASSIFIER_AGENT)
 
     try:
@@ -396,10 +422,18 @@ def classify_headline(
     if parsed.pillar_name is None:
         return None  # off-thesis — no signal
 
+    severity = _weight_adjusted_severity(
+        parsed.confidence, ticker, thesis, parsed.pillar_name, weights or {}
+    )
+    # Thesis-break severity floor: a high-confidence negative signal on a
+    # held position is always ACTION_REQUIRED, regardless of weight penalty.
+    if parsed.direction == "negative" and parsed.confidence >= _ACTION_REQUIRED_THRESHOLD:
+        severity = "ACTION_REQUIRED"
+
     return Signal(
         ticker=ticker,
         score=parsed.confidence,
-        severity=_weight_adjusted_severity(parsed.confidence, ticker, thesis, parsed.pillar_name, weights or {}),
+        severity=severity,
         agent=NEWS_CLASSIFIER_AGENT,
         timestamp=datetime.now(_ET),
         alert_id=alert_id,
@@ -454,7 +488,8 @@ def classify_headlines(
             continue  # skip empty headlines
 
         # Layer 1: in-memory dedup — short-circuit before any API call
-        dedup_key = headline_dedup_key(ticker, str(raw))
+        article_date = _article_date_iso(item)
+        dedup_key = headline_dedup_key(ticker, str(raw), article_date=article_date)
         if dedup_key in dedup_seen:
             logger.debug("Skipping duplicate headline for %r (dedup hit)", ticker)
             continue

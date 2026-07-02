@@ -10,8 +10,9 @@ allows arbitrary Python object construction (threat T-01-01).
 from __future__ import annotations
 
 import hashlib
-from datetime import date
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import yaml
 from pydantic import BaseModel, ValidationError, model_validator  # noqa: F401 — re-exported for callers
@@ -75,7 +76,7 @@ def load_thesis(path: Path | str) -> tuple[Thesis, str]:
     data = yaml.safe_load(raw)  # safe_load only — never yaml.load
     thesis = Thesis.model_validate(data)  # Pydantic v2 API
 
-    today_et = date.today()
+    today_et = datetime.now(ZoneInfo("America/New_York")).date()
     if thesis.review_due < today_et:
         raise ThesisStaleError(
             f"thesis.yaml review_due is {thesis.review_due.isoformat()} "

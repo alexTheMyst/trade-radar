@@ -112,9 +112,10 @@ def test_routed_persistence_stores_every_tuple_with_demotions():
     assert summary.status_counts == {"DELIVERED": 1, "SUPPRESSED": 1, "MONITORING": 0}
     mock_insert.assert_has_calls(
         [
-            call(delivered, routing_status="DELIVERED", demoted_from=None),
+            call(delivered, routing_status="PENDING", demoted_from=None),
             call(suppressed, routing_status="SUPPRESSED", demoted_from="outscored"),
-        ]
+        ],
+        any_order=True,
     )
 
 

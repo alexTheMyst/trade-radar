@@ -8,6 +8,7 @@ from signal_system.delivery import telegram_sender
 from signal_system.discovery.discovery_agent import score_universe
 from signal_system.jobs.common import (
     PersistenceSummary,
+    confirm_delivered_signals,
     persist_routed_signals,
     render_digest,
     validate_digest_payload,
@@ -51,6 +52,7 @@ def run() -> None:
                 delivered_signals=persistence_summary.delivered_signals,
             )
             _send_digest_once(subject=digest.subject, body=digest.body)
+            confirm_delivered_signals(persistence_summary.delivered_signals)
             repository.update_run(run_id, "success")
     except Exception:
         repository.update_run(run_id, "failed")

@@ -9,7 +9,7 @@
 | State | SQLite (stdlib sqlite3, WAL mode) | Locked |
 | LLM | Anthropic Claude API (pinned Sonnet) via `anthropic` SDK | Locked |
 | Market data | Finnhub free-tier via `finnhub-python` | Locked |
-| Delivery | Gmail SMTP via stdlib `smtplib` | Locked |
+| Delivery | Telegram via custom sender (`delivery/telegram_sender.py`) | Locked |
 | Heartbeat | healthchecks.io | Locked |
 | Runner | Windows Task Scheduler | Locked |
 | DB access layer | `state/repository.py` — no raw SQL outside | Locked |
