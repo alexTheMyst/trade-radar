@@ -151,7 +151,7 @@ def test_advise_ticker_prints_to_stdout_and_does_not_write_advice(tmp_path, monk
         lambda tickers, days: {t: _make_df(250) for t in tickers},
     )
     monkeypatch.setattr(advisor_job, "_finnhub_close", lambda t: 110.0)
-    monkeypatch.setattr(repository, "get_recent_signals", lambda t, s: [])
+    monkeypatch.setattr(repository, "get_recent_signals", lambda t, s, agent=None: [])
     monkeypatch.setattr(
         rat_mod,
         "generate_rationale",

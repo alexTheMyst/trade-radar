@@ -53,14 +53,13 @@ def _compute_factors(df: pd.DataFrame) -> dict[str, float] | None:
     """Compute momentum and range factors from a candle DataFrame.
 
     Returns None if fewer than _MIN_TRADING_DAYS of data.
-    Caps input to trailing 20 rows so momentum_20d measures exactly 20 trading
-    days regardless of how many rows yfinance returns.
+    Caps input to trailing 21 rows so momentum_20d uses closes[0] (20 true
+    returns) and momentum_5d uses closes[n-6] (5 true returns).
     """
     if len(df) < _MIN_TRADING_DAYS:
         return None
 
-    # Cap to trailing 20 trading days so the factor name matches the behavior
-    df = df.tail(20)
+    df = df.tail(21)
     n = len(df)
 
     closes = df["Close"].values
@@ -74,7 +73,7 @@ def _compute_factors(df: pd.DataFrame) -> dict[str, float] | None:
     start_close_20d = float(closes[0])
     momentum_20d = (current_close - start_close_20d) / start_close_20d if start_close_20d > 0 else 0.0
 
-    idx_5d = max(0, n - 5)
+    idx_5d = max(0, n - 6)
     start_close_5d = float(closes[idx_5d])
     momentum_5d = (current_close - start_close_5d) / start_close_5d if start_close_5d > 0 else 0.0
 
@@ -100,7 +99,7 @@ def score_universe(tickers: list[str], run_id: str, date_iso: str) -> list[Signa
         repository.update_run_counts(run_id, 0, 0)
         return []
 
-    history = fetch_history(tickers, days=25)
+    history = fetch_history(tickers, days=26)
     weights = get_position_weights()
 
     raw_factors: dict[str, dict[str, float]] = {}

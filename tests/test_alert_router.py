@@ -98,7 +98,7 @@ def test_route_signals_is_pure_no_db_writes(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_ar_budget_one_winner(monkeypatch):
-    """AR cap=1: highest score wins, all others are 'outscored'."""
+    """AR cap=1: highest score wins AR, next 3 demoted to INFO (compete for INFO slots), lowest suppressed."""
     monkeypatch.setattr(repository, "count_delivered_today", lambda: {})
     signals = [
         _sig(ticker=f"T{i}", score=float(score), severity="ACTION_REQUIRED")
@@ -110,9 +110,21 @@ def test_ar_budget_one_winner(monkeypatch):
     delivered = [(s, rs, dmf) for s, rs, dmf in results if rs == "DELIVERED"]
     suppressed = [(s, rs, dmf) for s, rs, dmf in results if rs == "SUPPRESSED"]
 
-    assert len(delivered) == 1
-    assert delivered[0][0].score == 90.0
-    assert all(dmf == "outscored" for _, _, dmf in suppressed)
+    assert len(delivered) == 4  # 1 AR + 3 demoted-to-INFO
+    assert delivered[0][0].score == 90.0  # AR winner
+    assert delivered[0][0].severity == "ACTION_REQUIRED"
+    assert delivered[0][2] is None
+    # Top 3 demoted AR signals (80, 70, 60) win INFO slots
+    info_delivered = [s for s, rs, dmf in delivered if s.severity == "INFORMATIONAL"]
+    assert len(info_delivered) == 3
+    assert sorted(s.score for s in info_delivered) == [60.0, 70.0, 80.0]
+    assert all(
+        dmf == "ACTION_REQUIRED"
+        for _, _, dmf in delivered
+        if dmf is not None
+    )
+    assert len(suppressed) == 1
+    assert suppressed[0][0].score == 50.0
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +132,7 @@ def test_ar_budget_one_winner(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_tiebreak_alphabetical(monkeypatch):
-    """Equal-score AR signals: alphabetically first ticker wins."""
+    """Equal-score AR signals: alphabetically first (AAPL) wins AR, MSFT demoted to INFO."""
     monkeypatch.setattr(repository, "count_delivered_today", lambda: {})
     msft = _sig(ticker="MSFT", score=75.0, severity="ACTION_REQUIRED", agent="a1")
     aapl = Signal(
@@ -131,12 +143,16 @@ def test_tiebreak_alphabetical(monkeypatch):
     )
     results = route_signals([msft, aapl])
     delivered = [(s, rs, dmf) for s, rs, dmf in results if rs == "DELIVERED"]
-    suppressed = [(s, rs, dmf) for s, rs, dmf in results if rs == "SUPPRESSED"]
 
-    assert len(delivered) == 1
+    assert len(delivered) == 2  # AAPL AR + MSFT demoted to INFO
+    # AAPL wins AR (alphabetical)
     assert delivered[0][0].ticker == "AAPL"
-    assert suppressed[0][0].ticker == "MSFT"
-    assert suppressed[0][2] == "outscored"
+    assert delivered[0][0].severity == "ACTION_REQUIRED"
+    assert delivered[0][2] is None
+    # MSFT demoted to INFO
+    assert delivered[1][0].ticker == "MSFT"
+    assert delivered[1][0].severity == "INFORMATIONAL"
+    assert delivered[1][2] == "ACTION_REQUIRED"
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +160,7 @@ def test_tiebreak_alphabetical(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_mixed_batch_allocation(monkeypatch):
-    """Mixed severity batch: 1 AR slot + 3 INFO slots filled; rest suppressed."""
+    """Mixed severity batch: 1 AR + 3 INFO slots; demoted AR enters INFO pool."""
     monkeypatch.setattr(repository, "count_delivered_today", lambda: {})
 
     ar_signals = [
@@ -171,19 +187,26 @@ def test_mixed_batch_allocation(monkeypatch):
     delivered = [(s, rs, dmf) for s, rs, dmf in results if rs == "DELIVERED"]
     suppressed = [(s, rs, dmf) for s, rs, dmf in results if rs == "SUPPRESSED"]
 
-    assert len(delivered) == 4  # 1 AR + 3 INFO
-    assert len(suppressed) == 3
+    assert len(delivered) == 4  # 1 AR (AR1) + 3 INFO (I0:95, I1:88, AR2:75)
+    assert len(suppressed) == 3  # I2:70, I3:60, I4:50
 
     ar_delivered = [s for s, rs, _ in delivered if s.severity == "ACTION_REQUIRED"]
     info_delivered = [s for s, rs, _ in delivered if s.severity == "INFORMATIONAL"]
     assert len(ar_delivered) == 1
     assert ar_delivered[0].score == 85.0
     assert len(info_delivered) == 3
-    assert sorted(s.score for s in info_delivered) == [70.0, 88.0, 95.0]
+    assert sorted(s.score for s in info_delivered) == [75.0, 88.0, 95.0]
 
-    # Suppressed INFO had available slots but lost to higher-scored peers (not budget_cap_info)
-    suppressed_info = [(s, rs, dmf) for s, rs, dmf in suppressed if s.severity == "INFORMATIONAL"]
+    # AR2 got demoted to INFO and delivered with demoted_from
+    demoted_delivered = [(s, rs, dmf) for s, rs, dmf in delivered if dmf == "ACTION_REQUIRED"]
+    assert len(demoted_delivered) == 1
+    assert demoted_delivered[0][0].ticker == "AR2"
+    assert demoted_delivered[0][0].score == 75.0
+
+    suppressed_info = [(s, rs, dmf) for s, rs, dmf in suppressed
+                       if s.severity == "INFORMATIONAL"]
     assert all(dmf == "outscored" for _, _, dmf in suppressed_info)
+    assert sorted(s.score for s, _, _ in suppressed_info) == [50.0, 60.0, 70.0]
 
 
 # ---------------------------------------------------------------------------

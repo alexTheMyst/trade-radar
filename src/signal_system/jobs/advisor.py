@@ -17,6 +17,7 @@ from signal_system.advisor.advisor_agent import (
     has_thesis_break,
     produce_advice,
 )
+from signal_system.classifier.news_classifier import NEWS_CLASSIFIER_AGENT
 from signal_system.advisor.rationale import generate_rationale
 from signal_system.advisor.verdict_engine import NEWS_LOOKBACK_DAYS, compute_verdict
 from signal_system.data.holdings import EmptyHoldingsError, require_non_empty_holdings
@@ -93,7 +94,9 @@ def run() -> None:
                 holdings=holdings,
                 fetch_history=fetch_history,
                 fetch_quote=_finnhub_close,
-                get_recent_signals=lambda ticker, since: repository.get_recent_signals(ticker, since),
+                get_recent_signals=lambda ticker, since: repository.get_recent_signals(
+                ticker, since, agent=NEWS_CLASSIFIER_AGENT
+            ),
                 get_discovery_candidates=lambda since, excl: repository.get_delivered_discovery_signals(
                     since, excluded_tickers=excl
                 ),
@@ -152,7 +155,7 @@ def advise_ticker(ticker: str) -> None:
     close_low_20d = min(closes[-20:])
 
     since = datetime.now(_ET).date() - timedelta(days=NEWS_LOOKBACK_DAYS)
-    news_sigs = repository.get_recent_signals(ticker, since)
+    news_sigs = repository.get_recent_signals(ticker, since, agent=NEWS_CLASSIFIER_AGENT)
     net = compute_news_net(news_sigs)
     t_break = has_thesis_break(news_sigs)
 

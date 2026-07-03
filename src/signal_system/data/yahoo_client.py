@@ -47,19 +47,19 @@ def fetch_history(tickers: list[str], days: int = 25) -> dict[str, pd.DataFrame]
 
     result: dict[str, pd.DataFrame] = {}
 
-    if len(tickers) == 1:
-        ticker = tickers[0]
-        df = raw[["Close", "High", "Low"]].dropna()
-        if not df.empty:
-            result[ticker] = df
-    else:
-        for ticker in tickers:
-            try:
+    for ticker in tickers:
+        try:
+            # group_by="ticker" yields MultiIndex (ticker, field) columns even
+            # for single-ticker requests on current yfinance; older versions
+            # returned flat columns for a single ticker.
+            if isinstance(raw.columns, pd.MultiIndex):
                 df = raw[ticker][["Close", "High", "Low"]].dropna()
-                if not df.empty:
-                    result[ticker] = df
-            except (KeyError, TypeError):
-                logger.debug("No data for %r in yfinance response", ticker)
-                continue
+            else:
+                df = raw[["Close", "High", "Low"]].dropna()
+            if not df.empty:
+                result[ticker] = df
+        except (KeyError, TypeError):
+            logger.debug("No data for %r in yfinance response", ticker)
+            continue
 
     return result

@@ -13,7 +13,7 @@ A rules-based, **alert-only** investment signal system. Two agents (Discovery Ag
 - **State:** SQLite (`./state/signals.db`) via stdlib `sqlite3`, WAL mode
 - **LLM:** Anthropic Claude API via `anthropic` SDK — use current Sonnet model
 - **Data:** Finnhub free tier via `finnhub-python` SDK (60 calls/min limit)
-- **Delivery:** Gmail SMTP via stdlib `smtplib`
+- **Delivery:** Telegram via custom sender (`delivery/telegram_sender.py`)
 - **Heartbeat:** healthchecks.io (silent failure is the main risk)
 
 ## Project Layout
@@ -30,7 +30,7 @@ signal-system/
 │   ├── jobs/daily_close.py     # MVP job; news + discovery jobs come later
 │   ├── data/finnhub_client.py
 │   ├── state/repository.py     # all SQLite access
-│   ├── delivery/email_sender.py
+│   ├── delivery/telegram_sender.py
 │   └── monitoring/heartbeat.py # healthchecks.io context manager
 └── tests/
 ```
@@ -58,13 +58,13 @@ sqlite3 state/signals.db "SELECT * FROM runs ORDER BY started_at DESC LIMIT 5;"
 
 **Heartbeat wraps every job.** The `heartbeat()` context manager (in `monitoring/heartbeat.py`) pings healthchecks.io `/start`, `/success`, and `/fail`. This is non-negotiable — silent failure is indistinguishable from "no alerts today."
 
-**Alert Router enforces a daily budget.** All signals from both agents funnel through the router before delivery. Hard caps: 1 `ACTION_REQUIRED`, 3 `INFORMATIONAL` per day. Slot competition: if two agents compete for `ACTION_REQUIRED`, higher-scored wins, others demote. The router writes suppressed signals to SQLite tagged `MONITORING`.
+**Alert Router enforces a daily budget.** All signals from both agents funnel through the router before delivery. Hard caps: 1 `ACTION_REQUIRED`, 3 `INFORMATIONAL` per day. Slot competition: if two agents compete for `ACTION_REQUIRED`, higher-scored wins, others demote to INFORMATIONAL and compete for INFO slots. The router writes suppressed signals to SQLite tagged `SUPPRESSED`.
 
 **No-signal days are explicit.** The daily digest email is always sent, even with zero alerts. "Scanned N tickers, 0 alerts" text is required — silence with confirmation, not silence with ambiguity.
 
 **News Classifier taxonomy is `thesis.yaml`-driven, not hardcoded.** The classifier reads `thesis.yaml` at runtime. Operator updates the thesis; classifier adapts without code changes. If `review_due` date in `thesis.yaml` is past, the classifier should refuse to run (or alert loudly).
 
-**Discovery Agent rotates the universe.** ~1,500 tickers, free tier rate limit means 1/3 scanned per day (full coverage every 3 days). Core holdings always scanned daily. Scoring weights `35/30/25/10` are initial guesses — Phase A logs only (no alerts) for two weeks to build intuition before connecting to the router.
+**Discovery Agent rotates the universe.** ~1,500 tickers, free tier rate limit means 1/3 scanned per day (full coverage every 3 days). Core holdings always scanned daily. Scoring weights `50/30/20` (momentum_20d / momentum_5d / range_vs_20d) are initial guesses — Phase A logs only (no alerts) for two weeks to build intuition before connecting to the router.
 
 **SQLite WAL mode** handles any concurrent job writes. All DB access goes through `state/repository.py` — no raw SQL outside that module.
 
@@ -73,8 +73,7 @@ sqlite3 state/signals.db "SELECT * FROM runs ORDER BY started_at DESC LIMIT 5;"
 Required environment variables (see `.env.example`):
 - `FINNHUB_API_KEY`
 - `HEALTHCHECKS_UUID`
-- `GMAIL_USERNAME` / `GMAIL_APP_PASSWORD`
-- `ALERT_RECIPIENT_EMAIL`
+- `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`
 - `ANTHROPIC_API_KEY`
 
 On Windows, secrets can also live in Windows Credential Manager; `.env` is the fallback.
@@ -130,7 +129,7 @@ A rules-based, **alert-only** investment signal system for a solo operator with 
 | State | SQLite (stdlib sqlite3, WAL mode) | Locked |
 | LLM | Anthropic Claude API (pinned Sonnet) via `anthropic` SDK | Locked |
 | Market data | Finnhub free-tier via `finnhub-python` | Locked |
-| Delivery | Gmail SMTP via stdlib `smtplib` | Locked |
+| Delivery | Telegram via custom sender (`delivery/telegram_sender.py`) | Locked |
 | Heartbeat | healthchecks.io | Locked |
 | Runner | Windows Task Scheduler | Locked |
 | DB access layer | `state/repository.py` — no raw SQL outside | Locked |

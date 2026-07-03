@@ -16,6 +16,7 @@ Severity = Literal["ACTION_REQUIRED", "INFORMATIONAL", "MONITORING"]
 _CLAMP_MIN: float = 0.25
 _CLAMP_MAX: float = 4.0
 _SHIFT_SCALE: float = 10.0
+_MAX_NEGATIVE_SHIFT: float = 10.0
 
 
 def _compute_shift(weight: float, median_weight: float) -> float:
@@ -72,6 +73,8 @@ def adjusted_severity(
             shift = _SHIFT_SCALE * math.log2(_CLAMP_MIN)
         else:
             shift = _compute_shift(weight, median_weight)
+
+    shift = max(shift, -_MAX_NEGATIVE_SHIFT)
 
     ar_threshold = ar_base - shift
     info_threshold = info_base - shift
