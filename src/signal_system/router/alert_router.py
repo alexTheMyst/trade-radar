@@ -1,8 +1,9 @@
 """Alert Router — enforces daily budget caps and slot competition.
 
 Pure logic: reads count_delivered_today() once, runs severity-first slot competition
-with deterministic tiebreak, returns (signal, routing_status, demoted_from) tuples.
-Does NOT write to DB. Caller (Phase 6 job) handles insert_signal() and email.
+with deterministic tiebreak, returns (signal, routing_status, demoted_from,
+suppression_reason) tuples. Does NOT write to DB. Caller (Phase 6 job) handles
+insert_signal() and email.
 """
 from __future__ import annotations
 
@@ -15,17 +16,23 @@ from signal_system.state import repository
 logger = logging.getLogger(__name__)
 
 # Hard-coded daily budget caps (ROUT-01 / D-01)
-_BUDGET_AR: int = 1
-_BUDGET_INFO: int = 3
+BUDGET_AR: int = 1
+BUDGET_INFO: int = 3
 
 
-def route_signals(signals: list[Signal]) -> list[tuple[Signal, str, str | None]]:
+def route_signals(signals: list[Signal]) -> list[tuple[Signal, str, str | None, str | None]]:
     """Route a batch of signals against today's delivery budget.
 
-    Returns a list of (signal, routing_status, demoted_from) tuples,
-    one per input signal. routing_status is 'DELIVERED' or 'SUPPRESSED'.
-    demoted_from is None for DELIVERED signals, unless they were demoted
-    from ACTION_REQUIRED to INFORMATIONAL (then it is 'ACTION_REQUIRED').
+    Returns a list of (signal, routing_status, demoted_from, suppression_reason)
+    tuples, one per input signal. routing_status is 'DELIVERED' or 'SUPPRESSED'.
+
+    demoted_from is set only for DELIVERED signals that were demoted from a
+    higher severity (currently only ACTION_REQUIRED -> INFORMATIONAL).
+    suppression_reason is set only for SUPPRESSED signals, to 'outscored'
+    (lost a head-to-head slot competition within this batch) or
+    'cap_exhausted' (the severity's daily budget was already full — either
+    from earlier today or after in-batch demotion still left no room). The
+    two fields are mutually exclusive.
 
     Outscored ACTION_REQUIRED signals are demoted to INFORMATIONAL and
     compete for INFO slots, consistent with the core design: "others demote."
@@ -44,10 +51,10 @@ def route_signals(signals: list[Signal]) -> list[tuple[Signal, str, str | None]]
     delivered = repository.count_delivered_today()
     ar_used = delivered.get("ACTION_REQUIRED", 0)
     info_used = delivered.get("INFORMATIONAL", 0)
-    ar_remaining = max(0, _BUDGET_AR - ar_used)
-    info_remaining = max(0, _BUDGET_INFO - info_used)
+    ar_remaining = max(0, BUDGET_AR - ar_used)
+    info_remaining = max(0, BUDGET_INFO - info_used)
 
-    results: list[tuple[Signal, str, str | None]] = []
+    results: list[tuple[Signal, str, str | None, str | None]] = []
 
     # --- Severity-first slot competition (D-04) ---
     ar_signals = sorted(
@@ -65,9 +72,9 @@ def route_signals(signals: list[Signal]) -> list[tuple[Signal, str, str | None]]
 
     for i, sig in enumerate(ar_signals):
         if i < ar_remaining:
-            results.append((sig, "DELIVERED", None))
-        elif ar_remaining == 0 and ar_used >= _BUDGET_AR:
-            results.append((sig, "SUPPRESSED", "budget_cap_ar"))
+            results.append((sig, "DELIVERED", None, None))
+        elif ar_remaining == 0 and ar_used >= BUDGET_AR:
+            results.append((sig, "SUPPRESSED", None, "cap_exhausted"))
         else:
             demoted = dataclasses.replace(sig, severity="INFORMATIONAL")
             demoted_ids.add(demoted.alert_id)
@@ -84,10 +91,10 @@ def route_signals(signals: list[Signal]) -> list[tuple[Signal, str, str | None]]
         is_demoted = sig.alert_id in demoted_ids
         if i < info_remaining:
             dmf = "ACTION_REQUIRED" if is_demoted else None
-            results.append((sig, "DELIVERED", dmf))
-        elif info_remaining == 0 and info_used >= _BUDGET_INFO:
-            results.append((sig, "SUPPRESSED", "budget_cap_info"))
+            results.append((sig, "DELIVERED", dmf, None))
+        elif info_remaining == 0 and info_used >= BUDGET_INFO:
+            results.append((sig, "SUPPRESSED", None, "cap_exhausted"))
         else:
-            results.append((sig, "SUPPRESSED", "outscored"))
+            results.append((sig, "SUPPRESSED", None, "outscored"))
 
     return results

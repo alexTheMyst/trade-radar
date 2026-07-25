@@ -8,6 +8,7 @@ import pytest
 
 from signal_system.models import Signal, compute_alert_id
 from signal_system.router import route_signals
+from signal_system.router.alert_router import BUDGET_AR, BUDGET_INFO
 from signal_system.state import repository
 
 DATE_ISO = "2026-05-16"
@@ -39,6 +40,12 @@ def db(tmp_path, monkeypatch):
     return tmp_path / "test.db"
 
 
+def test_budget_constants_are_public():
+    """BUDGET_AR/BUDGET_INFO are public so jobs/common.py can render cap fractions."""
+    assert BUDGET_AR == 1
+    assert BUDGET_INFO == 3
+
+
 # ---------------------------------------------------------------------------
 # T-AR-07: empty input
 # ---------------------------------------------------------------------------
@@ -61,17 +68,18 @@ def test_monitoring_raises():
 
 
 # ---------------------------------------------------------------------------
-# T-AR-08: DELIVERED signals always have demoted_from=None
+# T-AR-08: DELIVERED signals always have demoted_from=None and suppression_reason=None
 # ---------------------------------------------------------------------------
 
-def test_delivered_demoted_from_is_none(monkeypatch):
+def test_delivered_demoted_from_and_suppression_reason_are_none(monkeypatch):
     monkeypatch.setattr(repository, "count_delivered_today", lambda: {})
     sig = _sig(ticker="AAPL", score=80.0, severity="INFORMATIONAL")
     results = route_signals([sig])
     assert len(results) == 1
-    _, rs, dmf = results[0]
+    _, rs, dmf, reason = results[0]
     assert rs == "DELIVERED"
     assert dmf is None
+    assert reason is None
 
 
 # ---------------------------------------------------------------------------
@@ -90,7 +98,7 @@ def test_route_signals_is_pure_no_db_writes(monkeypatch):
     sig = _sig(ticker="AAPL", score=80.0, severity="INFORMATIONAL")
     results = route_signals([sig])
 
-    assert results == [(sig, "DELIVERED", None)]
+    assert results == [(sig, "DELIVERED", None, None)]
 
 
 # ---------------------------------------------------------------------------
@@ -107,24 +115,32 @@ def test_ar_budget_one_winner(monkeypatch):
     results = route_signals(signals)
     assert len(results) == 5
 
-    delivered = [(s, rs, dmf) for s, rs, dmf in results if rs == "DELIVERED"]
-    suppressed = [(s, rs, dmf) for s, rs, dmf in results if rs == "SUPPRESSED"]
+    delivered = [t for t in results if t[1] == "DELIVERED"]
+    suppressed = [t for t in results if t[1] == "SUPPRESSED"]
 
     assert len(delivered) == 4  # 1 AR + 3 demoted-to-INFO
     assert delivered[0][0].score == 90.0  # AR winner
     assert delivered[0][0].severity == "ACTION_REQUIRED"
-    assert delivered[0][2] is None
+    assert delivered[0][2] is None  # demoted_from
+    assert delivered[0][3] is None  # suppression_reason
     # Top 3 demoted AR signals (80, 70, 60) win INFO slots
-    info_delivered = [s for s, rs, dmf in delivered if s.severity == "INFORMATIONAL"]
+    info_delivered = [s for s, rs, dmf, reason in delivered if s.severity == "INFORMATIONAL"]
     assert len(info_delivered) == 3
     assert sorted(s.score for s in info_delivered) == [60.0, 70.0, 80.0]
     assert all(
-        dmf == "ACTION_REQUIRED"
-        for _, _, dmf in delivered
+        dmf == "ACTION_REQUIRED" and reason is None
+        for _, _, dmf, reason in delivered
         if dmf is not None
     )
     assert len(suppressed) == 1
     assert suppressed[0][0].score == 50.0
+    assert suppressed[0][2] is None  # demoted_from
+    # All 4 non-winning AR signals (80/70/60/50) get demoted into the INFO pool
+    # (ar_remaining=1 > 0, so the cap_exhausted branch never fires here). The
+    # lowest of those 4 then loses the 3-slot INFO competition to the other 3 —
+    # a genuine head-to-head loss against real, contested INFO slots, so it's
+    # "outscored", not "cap_exhausted" (same principle as test_mixed_batch_allocation).
+    assert suppressed[0][3] == "outscored"
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +158,7 @@ def test_tiebreak_alphabetical(monkeypatch):
         title="AAPL: test signal",
     )
     results = route_signals([msft, aapl])
-    delivered = [(s, rs, dmf) for s, rs, dmf in results if rs == "DELIVERED"]
+    delivered = [t for t in results if t[1] == "DELIVERED"]
 
     assert len(delivered) == 2  # AAPL AR + MSFT demoted to INFO
     # AAPL wins AR (alphabetical)
@@ -153,6 +169,7 @@ def test_tiebreak_alphabetical(monkeypatch):
     assert delivered[1][0].ticker == "MSFT"
     assert delivered[1][0].severity == "INFORMATIONAL"
     assert delivered[1][2] == "ACTION_REQUIRED"
+    assert delivered[1][3] is None
 
 
 # ---------------------------------------------------------------------------
@@ -184,37 +201,40 @@ def test_mixed_batch_allocation(monkeypatch):
     results = route_signals(ar_signals + info_signals)
     assert len(results) == 7
 
-    delivered = [(s, rs, dmf) for s, rs, dmf in results if rs == "DELIVERED"]
-    suppressed = [(s, rs, dmf) for s, rs, dmf in results if rs == "SUPPRESSED"]
+    delivered = [t for t in results if t[1] == "DELIVERED"]
+    suppressed = [t for t in results if t[1] == "SUPPRESSED"]
 
     assert len(delivered) == 4  # 1 AR (AR1) + 3 INFO (I0:95, I1:88, AR2:75)
     assert len(suppressed) == 3  # I2:70, I3:60, I4:50
 
-    ar_delivered = [s for s, rs, _ in delivered if s.severity == "ACTION_REQUIRED"]
-    info_delivered = [s for s, rs, _ in delivered if s.severity == "INFORMATIONAL"]
+    ar_delivered = [s for s, rs, dmf, reason in delivered if s.severity == "ACTION_REQUIRED"]
+    info_delivered = [s for s, rs, dmf, reason in delivered if s.severity == "INFORMATIONAL"]
     assert len(ar_delivered) == 1
     assert ar_delivered[0].score == 85.0
     assert len(info_delivered) == 3
     assert sorted(s.score for s in info_delivered) == [75.0, 88.0, 95.0]
 
-    # AR2 got demoted to INFO and delivered with demoted_from
-    demoted_delivered = [(s, rs, dmf) for s, rs, dmf in delivered if dmf == "ACTION_REQUIRED"]
+    # AR2 got demoted to INFO and delivered with demoted_from, no suppression_reason
+    demoted_delivered = [t for t in delivered if t[2] == "ACTION_REQUIRED"]
     assert len(demoted_delivered) == 1
     assert demoted_delivered[0][0].ticker == "AR2"
     assert demoted_delivered[0][0].score == 75.0
+    assert demoted_delivered[0][3] is None
 
-    suppressed_info = [(s, rs, dmf) for s, rs, dmf in suppressed
-                       if s.severity == "INFORMATIONAL"]
-    assert all(dmf == "outscored" for _, _, dmf in suppressed_info)
-    assert sorted(s.score for s, _, _ in suppressed_info) == [50.0, 60.0, 70.0]
+    # Suppressed INFO signals lost the head-to-head competition for the 3 INFO
+    # slots that DID exist this batch — that's "outscored", not "cap_exhausted".
+    suppressed_info = [t for t in suppressed if t[0].severity == "INFORMATIONAL"]
+    assert all(dmf is None for _, _, dmf, _reason in suppressed_info)
+    assert all(reason == "outscored" for _, _, _dmf, reason in suppressed_info)
+    assert sorted(s.score for s, _, _, _ in suppressed_info) == [50.0, 60.0, 70.0]
 
 
 # ---------------------------------------------------------------------------
-# T-AR-03: cross-run — DB already has 1 AR DELIVERED → new AR → budget_cap_ar
+# T-AR-03: cross-run — DB already has 1 AR DELIVERED → new AR → cap_exhausted
 # ---------------------------------------------------------------------------
 
 def test_cross_run_ar_full(db, monkeypatch):
-    """No eviction: if DB has 1 AR DELIVERED today, new AR gets budget_cap_ar."""
+    """No eviction: if DB has 1 AR DELIVERED today, new AR gets cap_exhausted."""
     from zoneinfo import ZoneInfo
     today_et = datetime.now(ZoneInfo("America/New_York"))
     prior_sig = Signal(
@@ -233,24 +253,26 @@ def test_cross_run_ar_full(db, monkeypatch):
     )
     results = route_signals([new_sig])
     assert len(results) == 1
-    _, rs, dmf = results[0]
+    _, rs, dmf, reason = results[0]
     assert rs == "SUPPRESSED"
-    assert dmf == "budget_cap_ar"
+    assert dmf is None
+    assert reason == "cap_exhausted"
 
 
 # ---------------------------------------------------------------------------
-# T-AR-05: cross-run — INFO budget full → budget_cap_info
+# T-AR-05: cross-run — INFO budget full → cap_exhausted
 # ---------------------------------------------------------------------------
 
 def test_cross_run_info_full(monkeypatch):
-    """If DB has 3 INFO DELIVERED, new INFO gets budget_cap_info."""
+    """If DB has 3 INFO DELIVERED, new INFO gets cap_exhausted."""
     monkeypatch.setattr(repository, "count_delivered_today", lambda: {"INFORMATIONAL": 3})
     sig = _sig(ticker="LATE", score=99.0, severity="INFORMATIONAL")
     results = route_signals([sig])
     assert len(results) == 1
-    _, rs, dmf = results[0]
+    _, rs, dmf, reason = results[0]
     assert rs == "SUPPRESSED"
-    assert dmf == "budget_cap_info"
+    assert dmf is None
+    assert reason == "cap_exhausted"
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +308,7 @@ def test_et_midnight_reset(db):
     )
     results = route_signals([today_sig])
     assert len(results) == 1
-    _, rs, dmf = results[0]
-    assert rs == "DELIVERED", f"Expected DELIVERED but got {rs} (dmf={dmf})"
+    _, rs, dmf, reason = results[0]
+    assert rs == "DELIVERED", f"Expected DELIVERED but got {rs} (dmf={dmf}, reason={reason})"
     assert dmf is None
+    assert reason is None
