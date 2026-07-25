@@ -239,6 +239,7 @@ def test_init_db_idempotent_and_new_schema(tmp_path, monkeypatch):
         "model_version",
         "thesis_version_hash",
         "demoted_from",
+        "suppression_reason",
     ):
         assert col in col_names, f"Column {col!r} missing from signals"
 
@@ -287,6 +288,42 @@ def test_insert_signal_persists_demoted_from(tmp_path, monkeypatch):
     conn.close()
 
     assert row == ("SUPPRESSED", "budget_cap_ar")
+
+
+def test_insert_signal_persists_suppression_reason(tmp_path, monkeypatch):
+    """insert_signal() persists suppression_reason distinctly from demoted_from."""
+    from datetime import datetime, timezone
+    from signal_system.models import Signal, compute_alert_id
+
+    monkeypatch.setattr(repository, "DB_PATH", tmp_path / "test.db")
+    repository.init_db()
+
+    alert_id = compute_alert_id("NVDA", "2026-05-15", "router_test", "TEST")
+    signal = Signal(
+        ticker="NVDA",
+        score=74.0,
+        severity="INFORMATIONAL",
+        agent="TEST",
+        timestamp=datetime.now(timezone.utc),
+        alert_id=alert_id,
+        title="Suppression persistence test",
+    )
+
+    inserted = repository.insert_signal(
+        signal,
+        routing_status="SUPPRESSED",
+        suppression_reason="cap_exhausted",
+    )
+
+    assert inserted is True
+    conn = sqlite3.connect(tmp_path / "test.db")
+    row = conn.execute(
+        "SELECT routing_status, demoted_from, suppression_reason FROM signals WHERE alert_id=?",
+        (alert_id,),
+    ).fetchone()
+    conn.close()
+
+    assert row == ("SUPPRESSED", None, "cap_exhausted")
 
 
 def test_insert_signal_idempotent(tmp_path, monkeypatch):

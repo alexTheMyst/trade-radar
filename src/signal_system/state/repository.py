@@ -110,6 +110,7 @@ def init_db() -> None:
 
         # Idempotent column additions to signals (Phase 5 schema extensions)
         _ensure_column(cursor, "signals", "demoted_from", "TEXT")
+        _ensure_column(cursor, "signals", "suppression_reason", "TEXT")
 
         # Advisor phase additions
         _ensure_column(cursor, "signals", "direction", "TEXT")
@@ -182,6 +183,7 @@ def insert_signal(
     signal: Signal,
     routing_status: str | None = None,
     demoted_from: str | None = None,
+    suppression_reason: str | None = None,
 ) -> bool:
     """Insert a Signal into the database using INSERT OR IGNORE semantics.
 
@@ -196,8 +198,8 @@ def insert_signal(
             INSERT OR IGNORE INTO signals (
                 alert_id, timestamp, agent, severity, ticker, title, body,
                 score, routing_status, signal_price_snapshot, model_version,
-                thesis_version_hash, demoted_from, direction, pillar
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                thesis_version_hash, demoted_from, direction, pillar, suppression_reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             signal.alert_id,
             signal.timestamp.isoformat(),
@@ -214,6 +216,7 @@ def insert_signal(
             demoted_from,
             signal.direction,
             signal.pillar,
+            suppression_reason,
         ))
         conn.commit()
         return cursor.rowcount == 1
