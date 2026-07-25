@@ -383,7 +383,7 @@ def get_previous_score(ticker: str, agent: str, before: datetime) -> float | Non
             """
             SELECT score FROM signals
             WHERE ticker = ? AND agent = ? AND timestamp < ?
-              AND routing_status IN ('DELIVERED', 'SUPPRESSED')
+              AND routing_status != 'MONITORING'
               AND score IS NOT NULL
             ORDER BY timestamp DESC
             LIMIT 1

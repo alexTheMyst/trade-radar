@@ -1616,3 +1616,28 @@ def test_get_previous_score_ignores_monitoring_and_other_ticker_or_agent(tmp_pat
     )
 
     assert repository.get_previous_score("AAPL", "discovery_agent", today) is None
+
+
+def test_get_previous_score_includes_pending_rows(tmp_path, monkeypatch):
+    """A PENDING row (delivery not yet confirmed, or stuck after a failed
+    Telegram send) still counts as the most recent prior scan."""
+    from datetime import datetime, timezone
+    from signal_system.models import Signal, compute_alert_id
+
+    monkeypatch.setattr(repository, "DB_PATH", tmp_path / "test.db")
+    repository.init_db()
+
+    earlier = datetime(2026, 5, 18, 16, 0, tzinfo=timezone.utc)
+    today = datetime(2026, 5, 19, 16, 0, tzinfo=timezone.utc)
+
+    repository.insert_signal(
+        Signal(
+            ticker="AAPL", score=55.0, severity="ACTION_REQUIRED", agent="discovery_agent",
+            timestamp=earlier,
+            alert_id=compute_alert_id("AAPL", "2026-05-18", "discovery", "discovery_agent"),
+            title="AAPL: Discovery score 55",
+        ),
+        routing_status="PENDING",
+    )
+
+    assert repository.get_previous_score("AAPL", "discovery_agent", today) == 55.0
