@@ -369,6 +369,33 @@ def count_delivered_today() -> dict[str, int]:
         conn.close()
 
 
+def get_previous_score(ticker: str, agent: str, before: datetime) -> float | None:
+    """Return the most recent score for (ticker, agent) strictly before *before*.
+
+    Looks back across any gap — Discovery's ~3-day rotation means the "prior
+    scan" is often not literally yesterday. Excludes MONITORING rows (no
+    comparable score, mirrors get_recent_signals()'s exclusion).
+    """
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT score FROM signals
+            WHERE ticker = ? AND agent = ? AND timestamp < ?
+              AND routing_status IN ('DELIVERED', 'SUPPRESSED')
+              AND score IS NOT NULL
+            ORDER BY timestamp DESC
+            LIMIT 1
+            """,
+            (ticker, agent, before.isoformat()),
+        )
+        row = cursor.fetchone()
+        return float(row[0]) if row is not None else None
+    finally:
+        conn.close()
+
+
 def list_outcome_backfill_candidates() -> list[OutcomeBackfillCandidate]:
     """Return routable signals (DELIVERED or SUPPRESSED) still missing outcome prices.
 

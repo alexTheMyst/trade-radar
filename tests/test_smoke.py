@@ -1527,3 +1527,92 @@ def test_phase3_end_to_end_parse_failure_persists(tmp_path, monkeypatch):
     assert "{unparseable" in row[2]
     assert row[3] is not None    # model_version stamped
     assert row[4] == "h"          # thesis_version_hash stamped
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: T2 — get_previous_score() for score-delta lookups (RED)
+# ---------------------------------------------------------------------------
+
+def test_get_previous_score_returns_none_when_no_prior_row(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+
+    monkeypatch.setattr(repository, "DB_PATH", tmp_path / "test.db")
+    repository.init_db()
+
+    assert repository.get_previous_score("AAPL", "discovery_agent", datetime.now(timezone.utc)) is None
+
+
+def test_get_previous_score_finds_most_recent_row_across_any_gap(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    from signal_system.models import Signal, compute_alert_id
+
+    monkeypatch.setattr(repository, "DB_PATH", tmp_path / "test.db")
+    repository.init_db()
+
+    three_days_ago = datetime(2026, 5, 16, 16, 0, tzinfo=timezone.utc)
+    yesterday = datetime(2026, 5, 18, 16, 0, tzinfo=timezone.utc)
+    today = datetime(2026, 5, 19, 16, 0, tzinfo=timezone.utc)
+
+    repository.insert_signal(
+        Signal(
+            ticker="AAPL", score=40.0, severity="INFORMATIONAL", agent="discovery_agent",
+            timestamp=three_days_ago,
+            alert_id=compute_alert_id("AAPL", "2026-05-16", "discovery", "discovery_agent"),
+            title="AAPL: Discovery score 40",
+        ),
+        routing_status="DELIVERED",
+    )
+    repository.insert_signal(
+        Signal(
+            ticker="AAPL", score=45.0, severity="INFORMATIONAL", agent="discovery_agent",
+            timestamp=yesterday,
+            alert_id=compute_alert_id("AAPL", "2026-05-18", "discovery", "discovery_agent"),
+            title="AAPL: Discovery score 45",
+        ),
+        routing_status="SUPPRESSED",
+    )
+
+    # Most recent prior row wins (45.0, not 40.0), even though the gap is 1 day
+    # here and would be 3 days for a rotated non-core ticker.
+    assert repository.get_previous_score("AAPL", "discovery_agent", today) == 45.0
+
+
+def test_get_previous_score_ignores_monitoring_and_other_ticker_or_agent(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    from signal_system.models import Signal, compute_alert_id
+
+    monkeypatch.setattr(repository, "DB_PATH", tmp_path / "test.db")
+    repository.init_db()
+
+    earlier = datetime(2026, 5, 18, 16, 0, tzinfo=timezone.utc)
+    today = datetime(2026, 5, 19, 16, 0, tzinfo=timezone.utc)
+
+    repository.insert_signal(
+        Signal(
+            ticker="AAPL", score=None, severity="MONITORING", agent="discovery_agent",
+            timestamp=earlier,
+            alert_id=compute_alert_id("AAPL", "2026-05-18", "monitoring", "discovery_agent"),
+            title="[parse_failure] AAPL",
+        ),
+        routing_status="MONITORING",
+    )
+    repository.insert_signal(
+        Signal(
+            ticker="MSFT", score=99.0, severity="INFORMATIONAL", agent="discovery_agent",
+            timestamp=earlier,
+            alert_id=compute_alert_id("MSFT", "2026-05-18", "discovery", "discovery_agent"),
+            title="MSFT: Discovery score 99",
+        ),
+        routing_status="DELIVERED",
+    )
+    repository.insert_signal(
+        Signal(
+            ticker="AAPL", score=88.0, severity="INFORMATIONAL", agent="news_classifier",
+            timestamp=earlier,
+            alert_id=compute_alert_id("AAPL", "2026-05-18", "news", "news_classifier"),
+            title="AAPL: news",
+        ),
+        routing_status="DELIVERED",
+    )
+
+    assert repository.get_previous_score("AAPL", "discovery_agent", today) is None
