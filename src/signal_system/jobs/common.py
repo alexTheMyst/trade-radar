@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from signal_system.models import Signal
+from signal_system.router import BUDGET_AR, BUDGET_INFO
 from signal_system.state import repository
 
 RoutedSignal = tuple[Signal, str, str | None, str | None]
@@ -83,18 +84,22 @@ def render_digest(
     scanned_tickers: int,
     routed_signals: list[RoutedSignal],
     held_tickers: set[str],
+    score_deltas: dict[str, str],
     status_counts: dict[str, int],
 ) -> DigestPayload:
     """Render the plain-text digest required by the live jobs."""
     delivered = [
         (s, dmf) for s, rs, dmf, _reason in routed_signals if rs == "DELIVERED"
     ]
+    suppressed = [
+        (s, reason) for s, rs, _dmf, reason in routed_signals if rs == "SUPPRESSED"
+    ]
     ar_winner = next(
         (s for s, _dmf in delivered if s.severity == "ACTION_REQUIRED"), None
     )
 
     delivered_count = status_counts.get("DELIVERED", len(delivered))
-    suppressed_count = status_counts.get("SUPPRESSED", 0)
+    suppressed_count = status_counts.get("SUPPRESSED", len(suppressed))
     monitoring_count = status_counts.get("MONITORING", 0)
     title = job_name.replace("-", " ").title()
     alert_label = "alert" if delivered_count == 1 else "alerts"
@@ -118,6 +123,14 @@ def render_digest(
     else:
         lines.append("")
         lines.append(f"Scanned {scanned_tickers} tickers, 0 alerts")
+
+    if suppressed:
+        header = f"Suppressed ({len(suppressed)})"
+        lines.append("")
+        lines.append(header)
+        lines.append("-" * len(header))
+        for signal, reason in sorted(suppressed, key=lambda item: -(item[0].score or 0.0)):
+            lines.append(_suppressed_line(signal, reason, held_tickers, score_deltas))
 
     subject = f"{title} Digest — {delivered_count} {alert_label}"
     return DigestPayload(
@@ -152,6 +165,31 @@ def _delivered_header_line(
     if (signal.ticker or "") in held_tickers:
         header += " — HELD"
     return header
+
+
+def _suppressed_line(
+    signal: Signal,
+    reason: str | None,
+    held_tickers: set[str],
+    score_deltas: dict[str, str],
+) -> str:
+    ticker = signal.ticker or "UNKNOWN"
+    score_str = f"{signal.score:.0f}" if signal.score is not None else "N/A"
+    delta = score_deltas.get(signal.alert_id)
+    if delta:
+        score_str += f" ({delta})"
+
+    if reason == "cap_exhausted":
+        cap_label = "AR" if signal.severity == "ACTION_REQUIRED" else "INFO"
+        cap_value = BUDGET_AR if signal.severity == "ACTION_REQUIRED" else BUDGET_INFO
+        reason_display = f"cap_exhausted ({cap_label} {cap_value}/{cap_value})"
+    else:
+        reason_display = reason or "unknown"
+
+    line = f"{ticker} — {score_str} — {signal.severity} — {reason_display}"
+    if ticker in held_tickers:
+        line += " — HELD"
+    return line
 
 
 def validate_digest_payload(

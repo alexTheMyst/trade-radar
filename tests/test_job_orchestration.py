@@ -131,6 +131,7 @@ def test_shared_digest_details_only_delivered_and_counts_non_delivered():
         scanned_tickers=3,
         routed_signals=[(delivered, "DELIVERED", None, None)],
         held_tickers=set(),
+        score_deltas={},
         status_counts={"DELIVERED": 1, "SUPPRESSED": 2, "MONITORING": 1},
     )
 
@@ -150,6 +151,7 @@ def test_shared_digest_zero_alert_confirmation():
         scanned_tickers=4,
         routed_signals=[],
         held_tickers=set(),
+        score_deltas={},
         status_counts={"DELIVERED": 0, "SUPPRESSED": 2, "MONITORING": 3},
     )
 
@@ -171,6 +173,7 @@ def test_render_digest_surfaces_demotion_with_outscored_winner():
             (demoted, "DELIVERED", "ACTION_REQUIRED", None),
         ],
         held_tickers=set(),
+        score_deltas={},
         status_counts={"DELIVERED": 2, "SUPPRESSED": 0, "MONITORING": 0},
     )
 
@@ -189,6 +192,7 @@ def test_render_digest_demotion_without_batch_winner_omits_outscored_detail():
         scanned_tickers=23,
         routed_signals=[(demoted, "DELIVERED", "ACTION_REQUIRED", None)],
         held_tickers=set(),
+        score_deltas={},
         status_counts={"DELIVERED": 1, "SUPPRESSED": 0, "MONITORING": 0},
     )
 
@@ -205,10 +209,109 @@ def test_render_digest_tags_held_tickers_on_delivered_lines():
         scanned_tickers=10,
         routed_signals=[(delivered, "DELIVERED", None, None)],
         held_tickers={"NVDA"},
+        score_deltas={},
         status_counts={"DELIVERED": 1, "SUPPRESSED": 0, "MONITORING": 0},
     )
 
     assert "NVDA — ACTION_REQUIRED — HELD" in payload.body
+
+
+def test_render_digest_suppressed_section_cap_exhausted_with_held_and_delta(db):
+    from signal_system.jobs.common import render_digest
+
+    nvda = Signal(
+        ticker="NVDA", score=74.0, severity="INFORMATIONAL", agent="discovery_agent",
+        timestamp=datetime(2026, 5, 19, 16, 0, tzinfo=ZoneInfo("America/New_York")),
+        alert_id=compute_alert_id("NVDA", "2026-05-19", "discovery", "discovery_agent"),
+        title="NVDA: Discovery score 74",
+    )
+    payload = render_digest(
+        job_name="discovery",
+        scanned_tickers=23,
+        routed_signals=[(nvda, "SUPPRESSED", None, "cap_exhausted")],
+        held_tickers={"NVDA"},
+        score_deltas={nvda.alert_id: "+12"},
+        status_counts={"DELIVERED": 0, "SUPPRESSED": 1, "MONITORING": 0},
+    )
+
+    assert "Suppressed (1)" in payload.body
+    assert "-" * len("Suppressed (1)") in payload.body
+    assert "NVDA — 74 (+12) — INFORMATIONAL — cap_exhausted (INFO 3/3) — HELD" in payload.body
+
+
+def test_render_digest_suppressed_section_ar_cap_exhausted_fraction():
+    from signal_system.jobs.common import render_digest
+
+    sig = _sig(ticker="XOM", severity="ACTION_REQUIRED", score=91.0)
+    payload = render_digest(
+        job_name="discovery",
+        scanned_tickers=5,
+        routed_signals=[(sig, "SUPPRESSED", None, "cap_exhausted")],
+        held_tickers=set(),
+        score_deltas={sig.alert_id: "NEW"},
+        status_counts={"DELIVERED": 0, "SUPPRESSED": 1, "MONITORING": 0},
+    )
+
+    assert "XOM — 91 (NEW) — ACTION_REQUIRED — cap_exhausted (AR 1/1)" in payload.body
+
+
+def test_render_digest_suppressed_section_outscored_no_cap_suffix():
+    from signal_system.jobs.common import render_digest
+
+    rtx = Signal(
+        ticker="RTX", score=69.0, severity="INFORMATIONAL", agent="discovery_agent",
+        timestamp=datetime(2026, 5, 19, 16, 0, tzinfo=ZoneInfo("America/New_York")),
+        alert_id=compute_alert_id("RTX", "2026-05-19", "discovery", "discovery_agent"),
+        title="RTX: Discovery score 69",
+    )
+    payload = render_digest(
+        job_name="discovery",
+        scanned_tickers=23,
+        routed_signals=[(rtx, "SUPPRESSED", None, "outscored")],
+        held_tickers=set(),
+        score_deltas={rtx.alert_id: "NEW"},
+        status_counts={"DELIVERED": 0, "SUPPRESSED": 1, "MONITORING": 0},
+    )
+
+    assert "RTX — 69 (NEW) — INFORMATIONAL — outscored" in payload.body
+    assert "cap_exhausted" not in payload.body
+
+
+def test_render_digest_omits_suppressed_section_when_none():
+    from signal_system.jobs.common import render_digest
+
+    payload = render_digest(
+        job_name="discovery",
+        scanned_tickers=5,
+        routed_signals=[],
+        held_tickers=set(),
+        score_deltas={},
+        status_counts={"DELIVERED": 0, "SUPPRESSED": 0, "MONITORING": 0},
+    )
+
+    assert "Suppressed (" not in payload.body
+
+
+def test_render_digest_suppressed_section_sorted_by_score_descending():
+    from signal_system.jobs.common import render_digest
+
+    low = _sig(ticker="CDE", severity="INFORMATIONAL", score=61.0)
+    high = _sig(ticker="NVDA", severity="INFORMATIONAL", score=74.0)
+    payload = render_digest(
+        job_name="discovery",
+        scanned_tickers=23,
+        routed_signals=[
+            (low, "SUPPRESSED", None, "cap_exhausted"),
+            (high, "SUPPRESSED", None, "cap_exhausted"),
+        ],
+        held_tickers=set(),
+        score_deltas={},
+        status_counts={"DELIVERED": 0, "SUPPRESSED": 2, "MONITORING": 0},
+    )
+
+    nvda_pos = payload.body.index("NVDA")
+    cde_pos = payload.body.index("CDE")
+    assert nvda_pos < cde_pos
 
 
 def test_news_morning_requires_previous_daily_close_before_fetch_or_delivery(db):
