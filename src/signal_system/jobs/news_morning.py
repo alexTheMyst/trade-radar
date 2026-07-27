@@ -229,12 +229,16 @@ def run() -> None:
             for loser in reconciled_losers:
                 repository.insert_signal(loser, routing_status="MONITORING", demoted_from="reconciled")
             routed = route_signals(routable)
+            # Deltas MUST be computed before persistence — the classifier stamps a
+            # per-signal timestamp, so several same-run signals can share a ticker;
+            # persisting first lets get_previous_score() compare against one of them.
+            score_deltas = compute_score_deltas(routed)
             persistence_summary: PersistenceSummary = persist_routed_signals(routed)
             status_counts = dict(persistence_summary.status_counts)
             status_counts["MONITORING"] += classifier_monitoring_count + len(overflow_items) + len(reconciled_losers)
 
-            held_tickers = set(get_core_holdings())
-            score_deltas = compute_score_deltas(routed)
+            # news-morning only ever scans core holdings, so `tickers` IS the held set.
+            held_tickers = set(tickers)
             digest = render_digest(
                 job_name="news-morning",
                 scanned_tickers=len(tickers),

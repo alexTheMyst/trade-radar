@@ -370,11 +370,22 @@ def count_delivered_today() -> dict[str, int]:
 
 
 def get_previous_score(ticker: str, agent: str, before: datetime) -> float | None:
-    """Return the most recent score for (ticker, agent) strictly before *before*.
+    """Return the most recent score for (ticker, agent) from a *prior calendar day*.
 
     Looks back across any gap — Discovery's ~3-day rotation means the "prior
     scan" is often not literally yesterday. Excludes MONITORING rows (no
     comparable score, mirrors get_recent_signals()'s exclusion).
+
+    Rows sharing *before*'s own ET calendar date are excluded, not just rows at
+    a later timestamp. Discovery's alert_id is date-stable, so a same-day rerun
+    (e.g. after a crash) leaves the first attempt's row in place while the rerun
+    carries a strictly later timestamp — without the date exclusion the delta
+    would compare a signal against its own earlier attempt rather than against a
+    genuine prior scan.
+
+    Uses ISO date-prefix comparison on the timestamp column — all timestamps are
+    stored as ET ISO strings by convention, so substr(timestamp, 1, 10) is the
+    ET calendar date (same idiom as count_delivered_today()).
     """
     conn = _connect()
     try:
@@ -382,13 +393,15 @@ def get_previous_score(ticker: str, agent: str, before: datetime) -> float | Non
         cursor.execute(
             """
             SELECT score FROM signals
-            WHERE ticker = ? AND agent = ? AND timestamp < ?
+            WHERE ticker = ? AND agent = ?
+              AND timestamp < ?
+              AND substr(timestamp, 1, 10) < substr(?, 1, 10)
               AND routing_status != 'MONITORING'
               AND score IS NOT NULL
             ORDER BY timestamp DESC
             LIMIT 1
             """,
-            (ticker, agent, before.isoformat()),
+            (ticker, agent, before.isoformat(), before.isoformat()),
         )
         row = cursor.fetchone()
         return float(row[0]) if row is not None else None

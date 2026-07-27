@@ -276,7 +276,7 @@ def test_insert_signal_persists_demoted_from(tmp_path, monkeypatch):
     inserted = repository.insert_signal(
         signal,
         routing_status="SUPPRESSED",
-        demoted_from="budget_cap_ar",
+        demoted_from="ACTION_REQUIRED",
     )
 
     assert inserted is True
@@ -287,7 +287,7 @@ def test_insert_signal_persists_demoted_from(tmp_path, monkeypatch):
     ).fetchone()
     conn.close()
 
-    assert row == ("SUPPRESSED", "budget_cap_ar")
+    assert row == ("SUPPRESSED", "ACTION_REQUIRED")
 
 
 def test_insert_signal_persists_suppression_reason(tmp_path, monkeypatch):
@@ -1616,6 +1616,52 @@ def test_get_previous_score_ignores_monitoring_and_other_ticker_or_agent(tmp_pat
     )
 
     assert repository.get_previous_score("AAPL", "discovery_agent", today) is None
+
+
+def test_get_previous_score_excludes_same_calendar_day_rerun(tmp_path, monkeypatch):
+    """A same-day rerun must not be treated as the "prior scan".
+
+    Discovery's alert_id is date-stable, so INSERT OR IGNORE leaves the first
+    attempt's row untouched on a rerun while the rerun's in-memory signal
+    carries a strictly later timestamp. Without a calendar-date exclusion the
+    delta would compare a signal against its own earlier attempt that same day.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from signal_system.models import Signal, compute_alert_id
+
+    monkeypatch.setattr(repository, "DB_PATH", tmp_path / "test.db")
+    repository.init_db()
+
+    et = ZoneInfo("America/New_York")
+    first_attempt = datetime(2026, 5, 19, 16, 5, tzinfo=et)
+    rerun = datetime(2026, 5, 19, 17, 40, tzinfo=et)
+
+    repository.insert_signal(
+        Signal(
+            ticker="AAPL", score=61.0, severity="INFORMATIONAL", agent="discovery_agent",
+            timestamp=first_attempt,
+            alert_id=compute_alert_id("AAPL", "2026-05-19", "discovery", "discovery_agent"),
+            title="AAPL: Discovery score 61 (first attempt)",
+        ),
+        routing_status="SUPPRESSED",
+    )
+
+    # Only a same-day row exists → no genuine prior scan.
+    assert repository.get_previous_score("AAPL", "discovery_agent", rerun) is None
+
+    # With a real prior-day row present, that one wins — never the same-day row.
+    repository.insert_signal(
+        Signal(
+            ticker="AAPL", score=45.0, severity="INFORMATIONAL", agent="discovery_agent",
+            timestamp=datetime(2026, 5, 18, 16, 0, tzinfo=et),
+            alert_id=compute_alert_id("AAPL", "2026-05-18", "discovery", "discovery_agent"),
+            title="AAPL: Discovery score 45",
+        ),
+        routing_status="DELIVERED",
+    )
+
+    assert repository.get_previous_score("AAPL", "discovery_agent", rerun) == 45.0
 
 
 def test_get_previous_score_includes_pending_rows(tmp_path, monkeypatch):

@@ -42,9 +42,13 @@ def run() -> None:
             discovered_signals = score_universe(tickers, run_id, now_et.date().isoformat())
 
             routed = route_signals(discovered_signals)
-            persistence_summary: PersistenceSummary = persist_routed_signals(routed)
-            held_tickers = set(get_core_holdings())
+            # Deltas MUST be computed before persistence — persisting first lets
+            # get_previous_score() find this run's own rows instead of a prior scan.
             score_deltas = compute_score_deltas(routed)
+            persistence_summary: PersistenceSummary = persist_routed_signals(routed)
+            # Discovery scans a rotating universe wider than core holdings, so the
+            # HELD set is a separate lookup — not derivable from `tickers`.
+            held_tickers = set(get_core_holdings())
             digest = render_digest(
                 job_name="discovery",
                 scanned_tickers=len(tickers),
