@@ -188,9 +188,11 @@ def _delivered_header_line(
     header = f"{signal.ticker or 'UNKNOWN'} — {signal.severity}"
     if demoted_from is not None:
         if ar_winner is not None and ar_winner.alert_id != signal.alert_id:
-            winner_score = (
-                f"{ar_winner.score:.0f}" if ar_winner.score is not None else "N/A"
-            )
+            # Reachable with News Classifier confidences: a batch is never mixed
+            # across agents, but news-morning can route two ACTION_REQUIRED
+            # news_classifier signals in one run — one wins AR, the other is
+            # delivered demoted and names the winner's score here.
+            winner_score = format_score(ar_winner.agent, ar_winner.score)
             header += (
                 f" (demoted from {demoted_from}, outscored by "
                 f"{ar_winner.ticker or 'UNKNOWN'} {winner_score})"

@@ -163,8 +163,11 @@ def test_shared_digest_zero_alert_confirmation():
 def test_render_digest_surfaces_demotion_with_outscored_winner():
     from signal_system.jobs.common import render_digest
 
-    winner = _sig(ticker="SCHD", severity="ACTION_REQUIRED", score=83.0)
-    demoted = _sig(ticker="AAPL", severity="INFORMATIONAL", score=81.0)
+    # 83.0/81.0 are Discovery composites, so the agent must be discovery_agent —
+    # see test_news_classifier_demoted_delivery_names_winner_confidence for the
+    # confidence-scaled counterpart of this same rendering path.
+    winner = _sig(ticker="SCHD", severity="ACTION_REQUIRED", agent="discovery_agent", score=83.0)
+    demoted = _sig(ticker="AAPL", severity="INFORMATIONAL", agent="discovery_agent", score=81.0)
     payload = render_digest(
         job_name="discovery",
         scanned_tickers=23,
@@ -1130,3 +1133,43 @@ def test_news_morning_reads_core_holdings_once(db):
     assert mock_holdings.call_count == 1
     # HELD still tagged from that single read
     assert "AAPL — 75% (NEW) — INFORMATIONAL — outscored — HELD" in mock_send.call_args.args[0]
+
+
+def test_news_classifier_demoted_delivery_names_winner_confidence(db):
+    """The motivating news-morning case, end-to-end through the real router.
+
+    A batch is never mixed across agents, but news-morning can classify two
+    held tickers as ACTION_REQUIRED in one run. One wins the single AR slot;
+    the other is delivered demoted, and its header names the winner's score.
+    That score is a confidence in [0.0, 1.0], so a bare ":.0f" would render
+    the winner's 0.91 as "1" in the very digest this feature is about.
+    """
+    from signal_system.jobs.common import render_digest
+    from signal_system.router import route_signals
+
+    winner = _sig(ticker="NVDA", severity="ACTION_REQUIRED", score=0.91)
+    runner_up = _sig(ticker="AAPL", severity="ACTION_REQUIRED", score=0.88)
+    assert winner.agent == "news_classifier"  # _sig()'s default; the point of this test
+
+    routed = route_signals([winner, runner_up])
+
+    # AR cap is 1: NVDA takes it, AAPL demotes into the (empty) INFO pool.
+    statuses = {t[0].ticker: (t[1], t[0].severity, t[2]) for t in routed}
+    assert statuses["NVDA"] == ("DELIVERED", "ACTION_REQUIRED", None)
+    assert statuses["AAPL"] == ("DELIVERED", "INFORMATIONAL", "ACTION_REQUIRED")
+
+    payload = render_digest(
+        job_name="news-morning",
+        scanned_tickers=6,
+        routed_signals=routed,
+        held_tickers={"NVDA", "AAPL"},
+        score_deltas={},
+        status_counts={"DELIVERED": 2, "SUPPRESSED": 0, "MONITORING": 0},
+    )
+
+    assert (
+        "AAPL — INFORMATIONAL (demoted from ACTION_REQUIRED, outscored by NVDA 91%) — HELD"
+        in payload.body
+    )
+    # The pre-fix rendering must not survive anywhere in the digest.
+    assert "outscored by NVDA 1)" not in payload.body
