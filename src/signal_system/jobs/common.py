@@ -81,11 +81,19 @@ def render_digest(
     *,
     job_name: str,
     scanned_tickers: int,
-    delivered_signals: list[Signal],
+    routed_signals: list[RoutedSignal],
+    held_tickers: set[str],
     status_counts: dict[str, int],
 ) -> DigestPayload:
     """Render the plain-text digest required by the live jobs."""
-    delivered_count = status_counts.get("DELIVERED", len(delivered_signals))
+    delivered = [
+        (s, dmf) for s, rs, dmf, _reason in routed_signals if rs == "DELIVERED"
+    ]
+    ar_winner = next(
+        (s for s, _dmf in delivered if s.severity == "ACTION_REQUIRED"), None
+    )
+
+    delivered_count = status_counts.get("DELIVERED", len(delivered))
     suppressed_count = status_counts.get("SUPPRESSED", 0)
     monitoring_count = status_counts.get("MONITORING", 0)
     title = job_name.replace("-", " ").title()
@@ -97,12 +105,12 @@ def render_digest(
         f"Monitoring: {monitoring_count}",
     ]
 
-    if delivered_signals:
+    if delivered:
         lines.append("")
         lines.append("Delivered Alerts")
         lines.append("----------------")
-        for signal in delivered_signals:
-            lines.append(f"{signal.ticker or 'UNKNOWN'} — {signal.severity}")
+        for signal, demoted_from in delivered:
+            lines.append(_delivered_header_line(signal, demoted_from, ar_winner, held_tickers))
             lines.append(signal.title)
             if signal.body:
                 lines.append(signal.body)
@@ -121,6 +129,29 @@ def render_digest(
             "MONITORING": monitoring_count,
         },
     )
+
+
+def _delivered_header_line(
+    signal: Signal,
+    demoted_from: str | None,
+    ar_winner: Signal | None,
+    held_tickers: set[str],
+) -> str:
+    header = f"{signal.ticker or 'UNKNOWN'} — {signal.severity}"
+    if demoted_from is not None:
+        if ar_winner is not None and ar_winner.alert_id != signal.alert_id:
+            winner_score = (
+                f"{ar_winner.score:.0f}" if ar_winner.score is not None else "N/A"
+            )
+            header += (
+                f" (demoted from {demoted_from}, outscored by "
+                f"{ar_winner.ticker or 'UNKNOWN'} {winner_score})"
+            )
+        else:
+            header += f" (demoted from {demoted_from})"
+    if (signal.ticker or "") in held_tickers:
+        header += " — HELD"
+    return header
 
 
 def validate_digest_payload(

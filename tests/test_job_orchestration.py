@@ -129,7 +129,8 @@ def test_shared_digest_details_only_delivered_and_counts_non_delivered():
     payload = render_digest(
         job_name="news-morning",
         scanned_tickers=3,
-        delivered_signals=[delivered],
+        routed_signals=[(delivered, "DELIVERED", None, None)],
+        held_tickers=set(),
         status_counts={"DELIVERED": 1, "SUPPRESSED": 2, "MONITORING": 1},
     )
 
@@ -147,13 +148,67 @@ def test_shared_digest_zero_alert_confirmation():
     payload = render_digest(
         job_name="news-morning",
         scanned_tickers=4,
-        delivered_signals=[],
+        routed_signals=[],
+        held_tickers=set(),
         status_counts={"DELIVERED": 0, "SUPPRESSED": 2, "MONITORING": 3},
     )
 
     assert "Scanned 4 tickers, 0 alerts" in payload.body
     assert "Suppressed: 2" in payload.body
     assert "Monitoring: 3" in payload.body
+
+
+def test_render_digest_surfaces_demotion_with_outscored_winner():
+    from signal_system.jobs.common import render_digest
+
+    winner = _sig(ticker="SCHD", severity="ACTION_REQUIRED", score=83.0)
+    demoted = _sig(ticker="AAPL", severity="INFORMATIONAL", score=81.0)
+    payload = render_digest(
+        job_name="discovery",
+        scanned_tickers=23,
+        routed_signals=[
+            (winner, "DELIVERED", None, None),
+            (demoted, "DELIVERED", "ACTION_REQUIRED", None),
+        ],
+        held_tickers=set(),
+        status_counts={"DELIVERED": 2, "SUPPRESSED": 0, "MONITORING": 0},
+    )
+
+    assert (
+        "AAPL — INFORMATIONAL (demoted from ACTION_REQUIRED, outscored by SCHD 83)"
+        in payload.body
+    )
+
+
+def test_render_digest_demotion_without_batch_winner_omits_outscored_detail():
+    from signal_system.jobs.common import render_digest
+
+    demoted = _sig(ticker="AAPL", severity="INFORMATIONAL", score=81.0)
+    payload = render_digest(
+        job_name="discovery",
+        scanned_tickers=23,
+        routed_signals=[(demoted, "DELIVERED", "ACTION_REQUIRED", None)],
+        held_tickers=set(),
+        status_counts={"DELIVERED": 1, "SUPPRESSED": 0, "MONITORING": 0},
+    )
+
+    assert "AAPL — INFORMATIONAL (demoted from ACTION_REQUIRED)" in payload.body
+    assert "outscored by" not in payload.body
+
+
+def test_render_digest_tags_held_tickers_on_delivered_lines():
+    from signal_system.jobs.common import render_digest
+
+    delivered = _sig(ticker="NVDA", severity="ACTION_REQUIRED", score=88.0)
+    payload = render_digest(
+        job_name="discovery",
+        scanned_tickers=10,
+        routed_signals=[(delivered, "DELIVERED", None, None)],
+        held_tickers={"NVDA"},
+        status_counts={"DELIVERED": 1, "SUPPRESSED": 0, "MONITORING": 0},
+    )
+
+    assert "NVDA — ACTION_REQUIRED — HELD" in payload.body
 
 
 def test_news_morning_requires_previous_daily_close_before_fetch_or_delivery(db):
