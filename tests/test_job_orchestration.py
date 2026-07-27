@@ -549,6 +549,10 @@ def test_news_morning_digest_counts_zero_alert_and_mismatch_guard(db):
     assert "Suppressed: 1" in mock_send.call_args.args[0]
     assert "Monitoring: 1" in mock_send.call_args.args[0]
 
+    body = mock_send.call_args.args[0]
+    assert "Suppressed (1)" in body
+    assert "AAPL — 1 (NEW) — INFORMATIONAL — outscored — HELD" in body
+
     with patch("signal_system.jobs.news_morning.heartbeat.heartbeat", _noop_heartbeat), \
          patch("signal_system.jobs.news_morning._now_et", return_value=fixed_now), \
          patch("signal_system.jobs.news_morning.get_core_holdings", return_value=["AAPL"]), \
@@ -631,6 +635,31 @@ def test_discovery_routes_persists_and_sends_digest(db):
         ("MSFT", "SUPPRESSED", None, "cap_exhausted"),
     ]
     assert status == ("success",)
+
+
+def test_news_morning_suppressed_signal_shows_held_flag_end_to_end(db):
+    from signal_system.jobs import news_morning
+
+    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
+    suppressed_signal = _sig(ticker="AAPL", severity="INFORMATIONAL", score=0.76)
+
+    with patch("signal_system.jobs.news_morning.heartbeat.heartbeat", _noop_heartbeat), \
+         patch("signal_system.jobs.news_morning._now_et", return_value=fixed_now), \
+         patch("signal_system.jobs.news_morning.get_core_holdings", return_value=["AAPL"]), \
+         patch("signal_system.jobs.news_morning.get_position_weights", return_value={"AAPL": 10.0}), \
+         patch("signal_system.jobs.news_morning.repository.get_latest_successful_run_date", return_value=date(2026, 5, 16)), \
+         patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
+         patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[_news_item("AAPL event", fixed_now)]), \
+         patch("signal_system.jobs.news_morning.classify_headlines", return_value=[suppressed_signal]), \
+         patch("signal_system.jobs.news_morning.route_signals", return_value=[(suppressed_signal, "SUPPRESSED", None, "cap_exhausted")]), \
+         patch("signal_system.jobs.news_morning.telegram_sender.send_message") as mock_send:
+        news_morning.run()
+
+    body = mock_send.call_args.args[0]
+    assert "Suppressed (1)" in body
+    assert "cap_exhausted (INFO 3/3)" in body
+    assert "AAPL" in body.split("Suppressed (1)")[1]
+    assert "— HELD" in body.split("Suppressed (1)")[1]
 
 
 def test_discovery_zero_alert_digest_even_when_score_returns_empty(db):
