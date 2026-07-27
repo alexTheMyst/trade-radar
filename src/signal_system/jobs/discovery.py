@@ -3,11 +3,16 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from signal_system.data.universe import get_todays_universe, require_non_empty_universe
+from signal_system.data.universe import (
+    get_core_holdings,
+    get_todays_universe,
+    require_non_empty_universe,
+)
 from signal_system.delivery import telegram_sender
 from signal_system.discovery.discovery_agent import score_universe
 from signal_system.jobs.common import (
     PersistenceSummary,
+    compute_score_deltas,
     confirm_delivered_signals,
     persist_routed_signals,
     render_digest,
@@ -36,13 +41,16 @@ def run() -> None:
             tickers = require_non_empty_universe(get_todays_universe(), job="discovery")
             discovered_signals = score_universe(tickers, run_id, now_et.date().isoformat())
 
-            persistence_summary: PersistenceSummary = persist_routed_signals(
-                route_signals(discovered_signals)
-            )
+            routed = route_signals(discovered_signals)
+            persistence_summary: PersistenceSummary = persist_routed_signals(routed)
+            held_tickers = set(get_core_holdings())
+            score_deltas = compute_score_deltas(routed)
             digest = render_digest(
                 job_name="discovery",
                 scanned_tickers=len(tickers),
-                delivered_signals=persistence_summary.delivered_signals,
+                routed_signals=routed,
+                held_tickers=held_tickers,
+                score_deltas=score_deltas,
                 status_counts=persistence_summary.status_counts,
             )
             validate_digest_payload(

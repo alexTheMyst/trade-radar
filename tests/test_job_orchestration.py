@@ -593,6 +593,7 @@ def test_discovery_routes_persists_and_sends_digest(db):
     with patch("signal_system.jobs.discovery._now_et", return_value=fixed_now), \
          patch("signal_system.jobs.discovery.heartbeat.heartbeat", _noop_heartbeat), \
          patch("signal_system.jobs.discovery.get_todays_universe", return_value=["AAPL", "MSFT"]), \
+         patch("signal_system.jobs.discovery.get_core_holdings", return_value=["MSFT"]), \
          patch(
              "signal_system.jobs.discovery.score_universe",
              return_value=[delivered_signal, suppressed_signal],
@@ -601,7 +602,7 @@ def test_discovery_routes_persists_and_sends_digest(db):
              "signal_system.jobs.discovery.route_signals",
              return_value=[
                  (delivered_signal, "DELIVERED", None, None),
-                 (suppressed_signal, "SUPPRESSED", None, "outscored"),
+                 (suppressed_signal, "SUPPRESSED", None, "cap_exhausted"),
              ],
          ) as mock_route, \
          patch("signal_system.jobs.discovery.telegram_sender.send_message") as mock_send:
@@ -609,10 +610,15 @@ def test_discovery_routes_persists_and_sends_digest(db):
 
     mock_route.assert_called_once_with([delivered_signal, suppressed_signal])
     assert mock_send.call_count == 1
-    assert "Scanned 2 tickers, 1 alert" in mock_send.call_args.args[0]
-    assert "AAPL: important update" in mock_send.call_args.args[0]
-    assert "Suppressed: 1" in mock_send.call_args.args[0]
-    assert "Monitoring: 0" in mock_send.call_args.args[0]
+    body = mock_send.call_args.args[0]
+    assert "Scanned 2 tickers, 1 alert" in body
+    assert "AAPL: important update" in body
+    assert "Suppressed: 1" in body
+    assert "Monitoring: 0" in body
+    assert "Suppressed (1)" in body
+    assert "cap_exhausted (INFO 3/3)" in body
+    assert "MSFT — 71" in body.split("Suppressed (1)")[1]
+    assert "— HELD" in body.split("Suppressed (1)")[1]
 
     conn = sqlite3.connect(db)
     rows = conn.execute(
@@ -622,7 +628,7 @@ def test_discovery_routes_persists_and_sends_digest(db):
     conn.close()
     assert rows == [
         ("AAPL", "DELIVERED", None, None),
-        ("MSFT", "SUPPRESSED", None, "outscored"),
+        ("MSFT", "SUPPRESSED", None, "cap_exhausted"),
     ]
     assert status == ("success",)
 
@@ -635,6 +641,7 @@ def test_discovery_zero_alert_digest_even_when_score_returns_empty(db):
     with patch("signal_system.jobs.discovery._now_et", return_value=fixed_now), \
          patch("signal_system.jobs.discovery.heartbeat.heartbeat", _noop_heartbeat), \
          patch("signal_system.jobs.discovery.get_todays_universe", return_value=["AAPL"]), \
+         patch("signal_system.jobs.discovery.get_core_holdings", return_value=[]), \
          patch("signal_system.jobs.discovery.score_universe", return_value=[]), \
          patch("signal_system.jobs.discovery.route_signals", return_value=[]) as mock_route, \
          patch("signal_system.jobs.discovery.telegram_sender.send_message") as mock_send:
@@ -662,6 +669,7 @@ def test_discovery_fails_on_digest_count_mismatch(db):
     with patch("signal_system.jobs.discovery._now_et", return_value=fixed_now), \
          patch("signal_system.jobs.discovery.heartbeat.heartbeat", _noop_heartbeat), \
          patch("signal_system.jobs.discovery.get_todays_universe", return_value=["AAPL"]), \
+         patch("signal_system.jobs.discovery.get_core_holdings", return_value=[]), \
          patch("signal_system.jobs.discovery.score_universe", return_value=[routed_signal]), \
          patch(
              "signal_system.jobs.discovery.route_signals",
