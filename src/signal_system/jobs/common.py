@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from signal_system.models import Signal
 from signal_system.state import repository
 
-RoutedSignal = tuple[Signal, str, str | None]
+RoutedSignal = tuple[Signal, str, str | None, str | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,7 +32,7 @@ def persist_routed_signals(routed_signals: list[RoutedSignal]) -> PersistenceSum
     status_counts = {"DELIVERED": 0, "SUPPRESSED": 0, "MONITORING": 0}
     pending_signals: list[Signal] = []
 
-    for signal, routing_status, demoted_from in routed_signals:
+    for signal, routing_status, demoted_from, suppression_reason in routed_signals:
         db_status = routing_status
         if routing_status == "DELIVERED":
             db_status = "PENDING"
@@ -40,6 +40,7 @@ def persist_routed_signals(routed_signals: list[RoutedSignal]) -> PersistenceSum
             signal,
             routing_status=db_status,
             demoted_from=demoted_from,
+            suppression_reason=suppression_reason,
         )
         status_counts[routing_status] = status_counts.get(routing_status, 0) + 1
         if routing_status == "DELIVERED" and inserted:

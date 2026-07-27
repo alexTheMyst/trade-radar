@@ -94,26 +94,29 @@ def _noop_heartbeat():
     yield
 
 
-def test_routed_persistence_stores_every_tuple_with_demotions():
+def test_routed_persistence_stores_every_tuple_with_demotions_and_suppression_reasons():
     from signal_system.jobs.common import persist_routed_signals
 
     delivered = _sig(ticker="AAPL", severity="ACTION_REQUIRED", score=0.91)
-    suppressed = _sig(ticker="MSFT", severity="INFORMATIONAL", score=0.71)
+    demoted = _sig(ticker="MSFT", severity="INFORMATIONAL", score=0.71)
+    suppressed = _sig(ticker="SNOW", severity="INFORMATIONAL", score=0.60)
 
     with patch("signal_system.state.repository.insert_signal") as mock_insert:
         summary = persist_routed_signals(
             [
-                (delivered, "DELIVERED", None),
-                (suppressed, "SUPPRESSED", "outscored"),
+                (delivered, "DELIVERED", None, None),
+                (demoted, "DELIVERED", "ACTION_REQUIRED", None),
+                (suppressed, "SUPPRESSED", None, "outscored"),
             ]
         )
 
-    assert summary.delivered_signals == [delivered]
-    assert summary.status_counts == {"DELIVERED": 1, "SUPPRESSED": 1, "MONITORING": 0}
+    assert summary.delivered_signals == [delivered, demoted]
+    assert summary.status_counts == {"DELIVERED": 2, "SUPPRESSED": 1, "MONITORING": 0}
     mock_insert.assert_has_calls(
         [
-            call(delivered, routing_status="PENDING", demoted_from=None),
-            call(suppressed, routing_status="SUPPRESSED", demoted_from="outscored"),
+            call(delivered, routing_status="PENDING", demoted_from=None, suppression_reason=None),
+            call(demoted, routing_status="PENDING", demoted_from="ACTION_REQUIRED", suppression_reason=None),
+            call(suppressed, routing_status="SUPPRESSED", demoted_from=None, suppression_reason="outscored"),
         ],
         any_order=True,
     )
