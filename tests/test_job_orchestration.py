@@ -242,7 +242,10 @@ def test_render_digest_suppressed_section_cap_exhausted_with_held_and_delta(db):
 def test_render_digest_suppressed_section_ar_cap_exhausted_fraction():
     from signal_system.jobs.common import render_digest
 
-    sig = _sig(ticker="XOM", severity="ACTION_REQUIRED", score=91.0)
+    # score=91.0 is a Discovery composite, so the agent must be discovery_agent —
+    # a news_classifier score is a confidence in [0.0, 1.0] and renders as a
+    # percentage. The subject of this test is the "AR 1/1" cap fraction.
+    sig = _sig(ticker="XOM", severity="ACTION_REQUIRED", agent="discovery_agent", score=91.0)
     payload = render_digest(
         job_name="discovery",
         scanned_tickers=5,
@@ -551,7 +554,9 @@ def test_news_morning_digest_counts_zero_alert_and_mismatch_guard(db):
 
     body = mock_send.call_args.args[0]
     assert "Suppressed (1)" in body
-    assert "AAPL — 1 (NEW) — INFORMATIONAL — outscored — HELD" in body
+    # News Classifier scores are confidences in [0.0, 1.0] and render as
+    # percentages — a bare ":.0f" would collapse 0.75 to "1".
+    assert "AAPL — 75% (NEW) — INFORMATIONAL — outscored — HELD" in body
 
     with patch("signal_system.jobs.news_morning.heartbeat.heartbeat", _noop_heartbeat), \
          patch("signal_system.jobs.news_morning._now_et", return_value=fixed_now), \
@@ -863,3 +868,265 @@ def test_compute_score_deltas_skips_signals_without_ticker_or_score(db):
     ])
 
     assert deltas == {}
+
+
+# ---------------------------------------------------------------------------
+# Agent-native score scales: Discovery composites are 0-100, News Classifier
+# scores are confidences in [0.0, 1.0]. A shared ":.0f" collapses every
+# classifier score to "0"/"1" and every delta to "+0"/"-0".
+# ---------------------------------------------------------------------------
+
+def test_news_classifier_score_and_delta_render_as_percentages(db):
+    """A confidence-scaled signal renders as "76%" with a "+12pp" delta."""
+    from signal_system.jobs.common import compute_score_deltas, render_digest
+
+    earlier = Signal(
+        ticker="AAPL", score=0.64, severity="INFORMATIONAL", agent="news_classifier",
+        timestamp=datetime(2026, 5, 18, 8, 30, tzinfo=ZoneInfo("America/New_York")),
+        alert_id=compute_alert_id("AAPL", "2026-05-18", "news:a", "news_classifier"),
+        title="AAPL: prior-day headline",
+    )
+    repository.insert_signal(earlier, routing_status="DELIVERED")
+
+    later = Signal(
+        ticker="AAPL", score=0.76, severity="INFORMATIONAL", agent="news_classifier",
+        timestamp=datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York")),
+        alert_id=compute_alert_id("AAPL", "2026-05-19", "news:b", "news_classifier"),
+        title="AAPL: today's headline",
+    )
+    routed = [(later, "SUPPRESSED", None, "cap_exhausted")]
+
+    deltas = compute_score_deltas(routed)
+    assert deltas == {later.alert_id: "+12pp"}
+
+    payload = render_digest(
+        job_name="news-morning",
+        scanned_tickers=6,
+        routed_signals=routed,
+        held_tickers={"AAPL"},
+        score_deltas=deltas,
+        status_counts={"DELIVERED": 0, "SUPPRESSED": 1, "MONITORING": 0},
+    )
+
+    assert (
+        "AAPL — 76% (+12pp) — INFORMATIONAL — cap_exhausted (INFO 3/3) — HELD"
+        in payload.body
+    )
+
+
+def test_news_classifier_negative_delta_renders_as_percentage_points(db):
+    from signal_system.jobs.common import compute_score_deltas
+
+    earlier = Signal(
+        ticker="MSFT", score=0.88, severity="INFORMATIONAL", agent="news_classifier",
+        timestamp=datetime(2026, 5, 18, 8, 30, tzinfo=ZoneInfo("America/New_York")),
+        alert_id=compute_alert_id("MSFT", "2026-05-18", "news:a", "news_classifier"),
+        title="MSFT: prior-day headline",
+    )
+    repository.insert_signal(earlier, routing_status="SUPPRESSED")
+
+    later = Signal(
+        ticker="MSFT", score=0.65, severity="INFORMATIONAL", agent="news_classifier",
+        timestamp=datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York")),
+        alert_id=compute_alert_id("MSFT", "2026-05-19", "news:b", "news_classifier"),
+        title="MSFT: today's headline",
+    )
+
+    assert compute_score_deltas([(later, "SUPPRESSED", None, "outscored")]) == {
+        later.alert_id: "-23pp"
+    }
+
+
+def test_discovery_scale_score_and_delta_formatting_is_unchanged(db):
+    """Guard the non-news-classifier branch: bare integers, no % or pp suffix."""
+    from signal_system.jobs.common import compute_score_deltas, render_digest
+
+    earlier = Signal(
+        ticker="NVDA", score=62.0, severity="INFORMATIONAL", agent="discovery_agent",
+        timestamp=datetime(2026, 5, 17, 16, 0, tzinfo=ZoneInfo("America/New_York")),
+        alert_id=compute_alert_id("NVDA", "2026-05-17", "discovery", "discovery_agent"),
+        title="NVDA: Discovery score 62",
+    )
+    repository.insert_signal(earlier, routing_status="DELIVERED")
+
+    later = Signal(
+        ticker="NVDA", score=74.0, severity="INFORMATIONAL", agent="discovery_agent",
+        timestamp=datetime(2026, 5, 19, 16, 0, tzinfo=ZoneInfo("America/New_York")),
+        alert_id=compute_alert_id("NVDA", "2026-05-19", "discovery", "discovery_agent"),
+        title="NVDA: Discovery score 74",
+    )
+    routed = [(later, "SUPPRESSED", None, "cap_exhausted")]
+
+    deltas = compute_score_deltas(routed)
+    assert deltas == {later.alert_id: "+12"}
+
+    payload = render_digest(
+        job_name="discovery",
+        scanned_tickers=23,
+        routed_signals=routed,
+        held_tickers={"NVDA"},
+        score_deltas=deltas,
+        status_counts={"DELIVERED": 0, "SUPPRESSED": 1, "MONITORING": 0},
+    )
+
+    assert (
+        "NVDA — 74 (+12) — INFORMATIONAL — cap_exhausted (INFO 3/3) — HELD"
+        in payload.body
+    )
+    # No percentage/percentage-point suffixes leak onto a 0-100-scale line.
+    # (Checked on the line itself — the word "Suppressed" contains "pp".)
+    suppressed_line = next(
+        line for line in payload.body.splitlines() if line.startswith("NVDA")
+    )
+    assert "%" not in suppressed_line
+    assert "pp" not in suppressed_line
+
+
+def test_render_digest_suppressed_line_surfaces_demotion(db):
+    """An AR signal demoted then suppressed shows BOTH facts on its line."""
+    from signal_system.jobs.common import render_digest
+
+    demoted_and_cut = Signal(
+        ticker="AAPL", score=81.0, severity="INFORMATIONAL", agent="discovery_agent",
+        timestamp=datetime(2026, 5, 19, 16, 0, tzinfo=ZoneInfo("America/New_York")),
+        alert_id=compute_alert_id("AAPL", "2026-05-19", "discovery", "discovery_agent"),
+        title="AAPL: Discovery score 81",
+    )
+    payload = render_digest(
+        job_name="discovery",
+        scanned_tickers=23,
+        routed_signals=[(demoted_and_cut, "SUPPRESSED", "ACTION_REQUIRED", "cap_exhausted")],
+        held_tickers={"AAPL"},
+        score_deltas={},
+        status_counts={"DELIVERED": 0, "SUPPRESSED": 1, "MONITORING": 0},
+    )
+
+    assert (
+        "AAPL — 81 — INFORMATIONAL (demoted from ACTION_REQUIRED) "
+        "— cap_exhausted (INFO 3/3) — HELD"
+    ) in payload.body
+
+
+def test_render_digest_suppressed_line_omits_demotion_when_absent(db):
+    """Never-demoted suppressed signals keep the original, unadorned line."""
+    from signal_system.jobs.common import render_digest
+
+    sig = Signal(
+        ticker="CDE", score=61.0, severity="INFORMATIONAL", agent="discovery_agent",
+        timestamp=datetime(2026, 5, 19, 16, 0, tzinfo=ZoneInfo("America/New_York")),
+        alert_id=compute_alert_id("CDE", "2026-05-19", "discovery", "discovery_agent"),
+        title="CDE: Discovery score 61",
+    )
+    payload = render_digest(
+        job_name="discovery",
+        scanned_tickers=23,
+        routed_signals=[(sig, "SUPPRESSED", None, "outscored")],
+        held_tickers=set(),
+        score_deltas={},
+        status_counts={"DELIVERED": 0, "SUPPRESSED": 1, "MONITORING": 0},
+    )
+
+    assert "CDE — 61 — INFORMATIONAL — outscored" in payload.body
+    assert "demoted from" not in payload.body
+
+
+# ---------------------------------------------------------------------------
+# Deltas must be computed BEFORE persistence, so get_previous_score() cannot
+# see this run's own rows. (get_previous_score() also excludes same-ET-day
+# rows, but a run that straddles ET midnight stamps two dates — belt and
+# braces, and the ordering is the invariant callers must not silently break.)
+# ---------------------------------------------------------------------------
+
+def _record_ordering_patches(module_path: str, status_counts: dict[str, int]):
+    from signal_system.jobs.common import PersistenceSummary
+
+    order: list[str] = []
+
+    def record_deltas(routed):
+        order.append("compute_score_deltas")
+        return {}
+
+    def record_persist(routed):
+        order.append("persist_routed_signals")
+        return PersistenceSummary(delivered_signals=[], status_counts=dict(status_counts))
+
+    return order, (
+        patch(f"{module_path}.compute_score_deltas", side_effect=record_deltas),
+        patch(f"{module_path}.persist_routed_signals", side_effect=record_persist),
+    )
+
+
+def test_news_morning_computes_deltas_before_persisting(db):
+    from signal_system.jobs import news_morning
+
+    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
+    suppressed_signal = _sig(ticker="AAPL", severity="INFORMATIONAL")
+    order, (patch_deltas, patch_persist) = _record_ordering_patches(
+        "signal_system.jobs.news_morning",
+        {"DELIVERED": 0, "SUPPRESSED": 1, "MONITORING": 0},
+    )
+
+    with patch("signal_system.jobs.news_morning.heartbeat.heartbeat", _noop_heartbeat), \
+         patch("signal_system.jobs.news_morning._now_et", return_value=fixed_now), \
+         patch("signal_system.jobs.news_morning.get_core_holdings", return_value=["AAPL"]), \
+         patch("signal_system.jobs.news_morning.get_position_weights", return_value={"AAPL": 10.0}), \
+         patch("signal_system.jobs.news_morning.repository.get_latest_successful_run_date", return_value=date(2026, 5, 16)), \
+         patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
+         patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[_news_item("AAPL event", fixed_now)]), \
+         patch("signal_system.jobs.news_morning.classify_headlines", return_value=[suppressed_signal]), \
+         patch("signal_system.jobs.news_morning.route_signals", return_value=[(suppressed_signal, "SUPPRESSED", None, "outscored")]), \
+         patch_deltas, patch_persist, \
+         patch("signal_system.jobs.news_morning.telegram_sender.send_message"):
+        news_morning.run()
+
+    assert order == ["compute_score_deltas", "persist_routed_signals"]
+
+
+def test_discovery_computes_deltas_before_persisting(db):
+    from signal_system.jobs import discovery
+
+    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
+    suppressed_signal = _sig(ticker="MSFT", severity="INFORMATIONAL", agent="discovery_agent", score=71.0)
+    order, (patch_deltas, patch_persist) = _record_ordering_patches(
+        "signal_system.jobs.discovery",
+        {"DELIVERED": 0, "SUPPRESSED": 1, "MONITORING": 0},
+    )
+
+    with patch("signal_system.jobs.discovery._now_et", return_value=fixed_now), \
+         patch("signal_system.jobs.discovery.heartbeat.heartbeat", _noop_heartbeat), \
+         patch("signal_system.jobs.discovery.get_todays_universe", return_value=["MSFT"]), \
+         patch("signal_system.jobs.discovery.get_core_holdings", return_value=["MSFT"]), \
+         patch("signal_system.jobs.discovery.score_universe", return_value=[suppressed_signal]), \
+         patch(
+             "signal_system.jobs.discovery.route_signals",
+             return_value=[(suppressed_signal, "SUPPRESSED", None, "cap_exhausted")],
+         ), \
+         patch_deltas, patch_persist, \
+         patch("signal_system.jobs.discovery.telegram_sender.send_message"):
+        discovery.run()
+
+    assert order == ["compute_score_deltas", "persist_routed_signals"]
+
+
+def test_news_morning_reads_core_holdings_once(db):
+    """news-morning scans only core holdings, so `tickers` IS the HELD set."""
+    from signal_system.jobs import news_morning
+
+    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
+    suppressed_signal = _sig(ticker="AAPL", severity="INFORMATIONAL")
+
+    with patch("signal_system.jobs.news_morning.heartbeat.heartbeat", _noop_heartbeat), \
+         patch("signal_system.jobs.news_morning._now_et", return_value=fixed_now), \
+         patch("signal_system.jobs.news_morning.get_core_holdings", return_value=["AAPL"]) as mock_holdings, \
+         patch("signal_system.jobs.news_morning.get_position_weights", return_value={"AAPL": 10.0}), \
+         patch("signal_system.jobs.news_morning.repository.get_latest_successful_run_date", return_value=date(2026, 5, 16)), \
+         patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
+         patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[_news_item("AAPL event", fixed_now)]), \
+         patch("signal_system.jobs.news_morning.classify_headlines", return_value=[suppressed_signal]), \
+         patch("signal_system.jobs.news_morning.route_signals", return_value=[(suppressed_signal, "SUPPRESSED", None, "outscored")]), \
+         patch("signal_system.jobs.news_morning.telegram_sender.send_message") as mock_send:
+        news_morning.run()
+
+    assert mock_holdings.call_count == 1
+    # HELD still tagged from that single read
+    assert "AAPL — 75% (NEW) — INFORMATIONAL — outscored — HELD" in mock_send.call_args.args[0]

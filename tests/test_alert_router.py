@@ -134,7 +134,10 @@ def test_ar_budget_one_winner(monkeypatch):
     )
     assert len(suppressed) == 1
     assert suppressed[0][0].score == 50.0
-    assert suppressed[0][2] is None  # demoted_from
+    # demoted_from survives suppression: this signal genuinely was demoted from
+    # ACTION_REQUIRED before losing the INFO competition, and the digest must
+    # surface that rather than render it as a plain INFORMATIONAL miss.
+    assert suppressed[0][2] == "ACTION_REQUIRED"  # demoted_from
     # All 4 non-winning AR signals (80/70/60/50) get demoted into the INFO pool
     # (ar_remaining=1 > 0, so the cap_exhausted branch never fires here). The
     # lowest of those 4 then loses the 3-slot INFO competition to the other 3 —
@@ -312,3 +315,50 @@ def test_et_midnight_reset(db):
     assert rs == "DELIVERED", f"Expected DELIVERED but got {rs} (dmf={dmf}, reason={reason})"
     assert dmf is None
     assert reason is None
+
+
+# ---------------------------------------------------------------------------
+# demoted_from and suppression_reason are NOT mutually exclusive: an AR signal
+# that loses the AR slot and then also loses the INFO competition must retain
+# the record of having been ACTION_REQUIRED.
+# ---------------------------------------------------------------------------
+
+def test_demoted_then_suppressed_carries_both_fields(monkeypatch):
+    """AR loser demoted into a cap-exhausted INFO pool keeps demoted_from."""
+    # INFO budget already fully consumed earlier today; one AR slot free.
+    monkeypatch.setattr(
+        repository, "count_delivered_today", lambda: {"INFORMATIONAL": BUDGET_INFO}
+    )
+    winner = _sig(ticker="SCHD", score=90.0, severity="ACTION_REQUIRED")
+    loser = _sig(ticker="AAPL", score=81.0, severity="ACTION_REQUIRED")
+
+    results = route_signals([winner, loser])
+
+    delivered = [t for t in results if t[1] == "DELIVERED"]
+    suppressed = [t for t in results if t[1] == "SUPPRESSED"]
+
+    assert [t[0].ticker for t in delivered] == ["SCHD"]
+    assert len(suppressed) == 1
+    sig, _rs, dmf, reason = suppressed[0]
+    assert sig.ticker == "AAPL"
+    assert sig.severity == "INFORMATIONAL"       # demoted out of AR
+    assert dmf == "ACTION_REQUIRED"              # ...and that fact survives
+    assert reason == "cap_exhausted"             # ...alongside why it was cut
+
+
+def test_demoted_then_outscored_carries_both_fields(monkeypatch):
+    """Same guarantee when the INFO loss is a head-to-head 'outscored'."""
+    monkeypatch.setattr(repository, "count_delivered_today", lambda: {})
+    signals = [
+        _sig(ticker=f"T{i}", score=float(score), severity="ACTION_REQUIRED")
+        for i, score in enumerate([55, 65, 75, 85, 95])
+    ]
+
+    results = route_signals(signals)
+    suppressed = [t for t in results if t[1] == "SUPPRESSED"]
+
+    assert len(suppressed) == 1
+    sig, _rs, dmf, reason = suppressed[0]
+    assert sig.score == 55.0
+    assert dmf == "ACTION_REQUIRED"
+    assert reason == "outscored"
