@@ -52,6 +52,25 @@ def persist_routed_signals(routed_signals: list[RoutedSignal]) -> PersistenceSum
     )
 
 
+def compute_score_deltas(routed_signals: list[RoutedSignal]) -> dict[str, str]:
+    """Return {alert_id: '+7' | '-3' | 'NEW'} vs each ticker+agent's prior scan.
+
+    "Prior scan" is the most recent earlier signal for the same (ticker, agent)
+    pair, regardless of gap — Discovery only rescans non-core tickers every
+    ~3 days, so a strict "yesterday" comparison would show NEW most of the time.
+    """
+    deltas: dict[str, str] = {}
+    for signal, _routing_status, _demoted_from, _reason in routed_signals:
+        if signal.score is None or not signal.ticker:
+            continue
+        previous = repository.get_previous_score(signal.ticker, signal.agent, signal.timestamp)
+        if previous is None:
+            deltas[signal.alert_id] = "NEW"
+        else:
+            deltas[signal.alert_id] = f"{signal.score - previous:+.0f}"
+    return deltas
+
+
 def confirm_delivered_signals(signals: list[Signal]) -> None:
     """Flip PENDING → DELIVERED for successfully sent signals."""
     for sig in signals:

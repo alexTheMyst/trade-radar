@@ -589,3 +589,82 @@ def test_dispatcher_registers_news_morning():
 
     assert __main__.JOBS["news-morning"] is news_morning.run
     assert __main__.JOBS["discovery"] is discovery.run
+
+
+def test_compute_score_deltas_new_when_no_prior_signal(db):
+    from signal_system.jobs.common import compute_score_deltas
+
+    sig = _sig(ticker="AAPL", agent="discovery_agent", score=76.0)
+    deltas = compute_score_deltas([(sig, "SUPPRESSED", None, "cap_exhausted")])
+
+    assert deltas == {sig.alert_id: "NEW"}
+
+
+def test_compute_score_deltas_formats_signed_difference(db):
+    from signal_system.jobs.common import compute_score_deltas
+
+    earlier = Signal(
+        ticker="AAPL", score=45.0, severity="INFORMATIONAL", agent="discovery_agent",
+        timestamp=datetime(2026, 5, 17, 16, 0, tzinfo=ZoneInfo("America/New_York")),
+        alert_id=compute_alert_id("AAPL", "2026-05-17", "discovery", "discovery_agent"),
+        title="AAPL: Discovery score 45",
+    )
+    repository.insert_signal(earlier, routing_status="DELIVERED")
+
+    later = Signal(
+        ticker="AAPL", score=76.0, severity="INFORMATIONAL", agent="discovery_agent",
+        timestamp=datetime(2026, 5, 19, 16, 0, tzinfo=ZoneInfo("America/New_York")),
+        alert_id=compute_alert_id("AAPL", "2026-05-19", "discovery", "discovery_agent"),
+        title="AAPL: Discovery score 76",
+    )
+
+    deltas = compute_score_deltas([(later, "DELIVERED", None, None)])
+
+    assert deltas == {later.alert_id: "+31"}
+
+
+def test_compute_score_deltas_formats_negative_difference(db):
+    from signal_system.jobs.common import compute_score_deltas
+
+    earlier = Signal(
+        ticker="RTX", score=78.0, severity="INFORMATIONAL", agent="discovery_agent",
+        timestamp=datetime(2026, 5, 17, 16, 0, tzinfo=ZoneInfo("America/New_York")),
+        alert_id=compute_alert_id("RTX", "2026-05-17", "discovery", "discovery_agent"),
+        title="RTX: Discovery score 78",
+    )
+    repository.insert_signal(earlier, routing_status="SUPPRESSED")
+
+    later = Signal(
+        ticker="RTX", score=69.0, severity="INFORMATIONAL", agent="discovery_agent",
+        timestamp=datetime(2026, 5, 19, 16, 0, tzinfo=ZoneInfo("America/New_York")),
+        alert_id=compute_alert_id("RTX", "2026-05-19", "discovery", "discovery_agent"),
+        title="RTX: Discovery score 69",
+    )
+
+    deltas = compute_score_deltas([(later, "SUPPRESSED", None, "outscored")])
+
+    assert deltas == {later.alert_id: "-9"}
+
+
+def test_compute_score_deltas_skips_signals_without_ticker_or_score(db):
+    from signal_system.jobs.common import compute_score_deltas
+
+    no_ticker = Signal(
+        ticker=None, score=50.0, severity="INFORMATIONAL", agent="news_classifier",
+        timestamp=datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York")),
+        alert_id=compute_alert_id(None, "2026-05-19", "r1", "news_classifier"),
+        title="untagged",
+    )
+    no_score = Signal(
+        ticker="MSFT", score=None, severity="MONITORING", agent="news_classifier",
+        timestamp=datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York")),
+        alert_id=compute_alert_id("MSFT", "2026-05-19", "r2", "news_classifier"),
+        title="no score",
+    )
+
+    deltas = compute_score_deltas([
+        (no_ticker, "DELIVERED", None, None),
+        (no_score, "MONITORING", None, None),
+    ])
+
+    assert deltas == {}
