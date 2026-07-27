@@ -351,7 +351,7 @@ def test_news_morning_parse_failure_monitoring_bypasses_router_and_persists(db):
          patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
          patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[_news_item("AAPL event", fixed_now)]), \
          patch("signal_system.jobs.news_morning.classify_headlines", return_value=[monitoring_signal, delivered_signal]), \
-         patch("signal_system.jobs.news_morning.route_signals", return_value=[(delivered_signal, "DELIVERED", None)]) as mock_route, \
+         patch("signal_system.jobs.news_morning.route_signals", return_value=[(delivered_signal, "DELIVERED", None, None)]) as mock_route, \
          patch("signal_system.jobs.news_morning.telegram_sender.send_message"):
         news_morning.run()
 
@@ -382,7 +382,7 @@ def test_news_morning_digest_counts_zero_alert_and_mismatch_guard(db):
          patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
          patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[_news_item("AAPL event", fixed_now)]), \
          patch("signal_system.jobs.news_morning.classify_headlines", return_value=[monitoring_signal, suppressed_signal]), \
-         patch("signal_system.jobs.news_morning.route_signals", return_value=[(suppressed_signal, "SUPPRESSED", "outscored")]), \
+         patch("signal_system.jobs.news_morning.route_signals", return_value=[(suppressed_signal, "SUPPRESSED", None, "outscored")]), \
          patch("signal_system.jobs.news_morning.telegram_sender.send_message") as mock_send:
         news_morning.run()
 
@@ -442,8 +442,8 @@ def test_discovery_routes_persists_and_sends_digest(db):
          patch(
              "signal_system.jobs.discovery.route_signals",
              return_value=[
-                 (delivered_signal, "DELIVERED", None),
-                 (suppressed_signal, "SUPPRESSED", "outscored"),
+                 (delivered_signal, "DELIVERED", None, None),
+                 (suppressed_signal, "SUPPRESSED", None, "outscored"),
              ],
          ) as mock_route, \
          patch("signal_system.jobs.discovery.telegram_sender.send_message") as mock_send:
@@ -458,13 +458,13 @@ def test_discovery_routes_persists_and_sends_digest(db):
 
     conn = sqlite3.connect(db)
     rows = conn.execute(
-        "SELECT ticker, routing_status, demoted_from FROM signals ORDER BY ticker"
+        "SELECT ticker, routing_status, demoted_from, suppression_reason FROM signals ORDER BY ticker"
     ).fetchall()
     status = conn.execute("SELECT status FROM runs WHERE job = 'discovery'").fetchone()
     conn.close()
     assert rows == [
-        ("AAPL", "DELIVERED", None),
-        ("MSFT", "SUPPRESSED", "outscored"),
+        ("AAPL", "DELIVERED", None, None),
+        ("MSFT", "SUPPRESSED", None, "outscored"),
     ]
     assert status == ("success",)
 
@@ -507,7 +507,7 @@ def test_discovery_fails_on_digest_count_mismatch(db):
          patch("signal_system.jobs.discovery.score_universe", return_value=[routed_signal]), \
          patch(
              "signal_system.jobs.discovery.route_signals",
-             return_value=[(routed_signal, "DELIVERED", None)],
+             return_value=[(routed_signal, "DELIVERED", None, None)],
          ), \
          patch(
              "signal_system.jobs.discovery.render_digest",
