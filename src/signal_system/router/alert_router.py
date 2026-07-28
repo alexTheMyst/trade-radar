@@ -1,8 +1,9 @@
 """Alert Router — enforces daily budget caps and slot competition.
 
 Pure logic: reads count_delivered_today() once, runs severity-first slot competition
-with deterministic tiebreak, returns (signal, routing_status, demoted_from) tuples.
-Does NOT write to DB. Caller (Phase 6 job) handles insert_signal() and email.
+with deterministic tiebreak, returns (signal, routing_status, demoted_from,
+suppression_reason) tuples. Does NOT write to DB. Caller (Phase 6 job) handles
+insert_signal() and email.
 """
 from __future__ import annotations
 
@@ -15,17 +16,29 @@ from signal_system.state import repository
 logger = logging.getLogger(__name__)
 
 # Hard-coded daily budget caps (ROUT-01 / D-01)
-_BUDGET_AR: int = 1
-_BUDGET_INFO: int = 3
+BUDGET_AR: int = 1
+BUDGET_INFO: int = 3
 
 
-def route_signals(signals: list[Signal]) -> list[tuple[Signal, str, str | None]]:
+def route_signals(signals: list[Signal]) -> list[tuple[Signal, str, str | None, str | None]]:
     """Route a batch of signals against today's delivery budget.
 
-    Returns a list of (signal, routing_status, demoted_from) tuples,
-    one per input signal. routing_status is 'DELIVERED' or 'SUPPRESSED'.
-    demoted_from is None for DELIVERED signals, unless they were demoted
-    from ACTION_REQUIRED to INFORMATIONAL (then it is 'ACTION_REQUIRED').
+    Returns a list of (signal, routing_status, demoted_from, suppression_reason)
+    tuples, one per input signal. routing_status is 'DELIVERED' or 'SUPPRESSED'.
+
+    demoted_from records the severity a signal was demoted *from* (currently
+    only ACTION_REQUIRED -> INFORMATIONAL). suppression_reason records why a
+    signal was ultimately cut: 'outscored' (lost a head-to-head slot
+    competition within this batch) or 'cap_exhausted' (the severity's daily
+    budget was already full — either from earlier today or after in-batch
+    demotion still left no room).
+
+    The two fields answer different questions and are NOT mutually exclusive:
+    an ACTION_REQUIRED signal that loses the AR slot is demoted into the INFO
+    pool, and if it then also loses the INFO competition it carries both a
+    demoted_from of 'ACTION_REQUIRED' and a suppression_reason. Dropping the
+    demotion in that case would hide a silent AR -> nothing downgrade.
+    suppression_reason remains None for DELIVERED signals.
 
     Outscored ACTION_REQUIRED signals are demoted to INFORMATIONAL and
     compete for INFO slots, consistent with the core design: "others demote."
@@ -44,10 +57,10 @@ def route_signals(signals: list[Signal]) -> list[tuple[Signal, str, str | None]]
     delivered = repository.count_delivered_today()
     ar_used = delivered.get("ACTION_REQUIRED", 0)
     info_used = delivered.get("INFORMATIONAL", 0)
-    ar_remaining = max(0, _BUDGET_AR - ar_used)
-    info_remaining = max(0, _BUDGET_INFO - info_used)
+    ar_remaining = max(0, BUDGET_AR - ar_used)
+    info_remaining = max(0, BUDGET_INFO - info_used)
 
-    results: list[tuple[Signal, str, str | None]] = []
+    results: list[tuple[Signal, str, str | None, str | None]] = []
 
     # --- Severity-first slot competition (D-04) ---
     ar_signals = sorted(
@@ -65,9 +78,9 @@ def route_signals(signals: list[Signal]) -> list[tuple[Signal, str, str | None]]
 
     for i, sig in enumerate(ar_signals):
         if i < ar_remaining:
-            results.append((sig, "DELIVERED", None))
-        elif ar_remaining == 0 and ar_used >= _BUDGET_AR:
-            results.append((sig, "SUPPRESSED", "budget_cap_ar"))
+            results.append((sig, "DELIVERED", None, None))
+        elif ar_remaining == 0 and ar_used >= BUDGET_AR:
+            results.append((sig, "SUPPRESSED", None, "cap_exhausted"))
         else:
             demoted = dataclasses.replace(sig, severity="INFORMATIONAL")
             demoted_ids.add(demoted.alert_id)
@@ -81,13 +94,15 @@ def route_signals(signals: list[Signal]) -> list[tuple[Signal, str, str | None]]
         )
 
     for i, sig in enumerate(info_signals):
-        is_demoted = sig.alert_id in demoted_ids
+        # demoted_from travels with the signal regardless of outcome — a demoted
+        # AR signal that then loses the INFO competition must still show that it
+        # was once ACTION_REQUIRED, not read as a plain INFORMATIONAL miss.
+        dmf = "ACTION_REQUIRED" if sig.alert_id in demoted_ids else None
         if i < info_remaining:
-            dmf = "ACTION_REQUIRED" if is_demoted else None
-            results.append((sig, "DELIVERED", dmf))
-        elif info_remaining == 0 and info_used >= _BUDGET_INFO:
-            results.append((sig, "SUPPRESSED", "budget_cap_info"))
+            results.append((sig, "DELIVERED", dmf, None))
+        elif info_remaining == 0 and info_used >= BUDGET_INFO:
+            results.append((sig, "SUPPRESSED", dmf, "cap_exhausted"))
         else:
-            results.append((sig, "SUPPRESSED", "outscored"))
+            results.append((sig, "SUPPRESSED", dmf, "outscored"))
 
     return results

@@ -110,6 +110,7 @@ def init_db() -> None:
 
         # Idempotent column additions to signals (Phase 5 schema extensions)
         _ensure_column(cursor, "signals", "demoted_from", "TEXT")
+        _ensure_column(cursor, "signals", "suppression_reason", "TEXT")
 
         # Advisor phase additions
         _ensure_column(cursor, "signals", "direction", "TEXT")
@@ -182,6 +183,7 @@ def insert_signal(
     signal: Signal,
     routing_status: str | None = None,
     demoted_from: str | None = None,
+    suppression_reason: str | None = None,
 ) -> bool:
     """Insert a Signal into the database using INSERT OR IGNORE semantics.
 
@@ -196,8 +198,8 @@ def insert_signal(
             INSERT OR IGNORE INTO signals (
                 alert_id, timestamp, agent, severity, ticker, title, body,
                 score, routing_status, signal_price_snapshot, model_version,
-                thesis_version_hash, demoted_from, direction, pillar
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                thesis_version_hash, demoted_from, direction, pillar, suppression_reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             signal.alert_id,
             signal.timestamp.isoformat(),
@@ -214,6 +216,7 @@ def insert_signal(
             demoted_from,
             signal.direction,
             signal.pillar,
+            suppression_reason,
         ))
         conn.commit()
         return cursor.rowcount == 1
@@ -362,6 +365,46 @@ def count_delivered_today() -> dict[str, int]:
             GROUP BY severity
         """, (today_iso,))
         return {row[0]: row[1] for row in cursor.fetchall()}
+    finally:
+        conn.close()
+
+
+def get_previous_score(ticker: str, agent: str, before: datetime) -> float | None:
+    """Return the most recent score for (ticker, agent) from a *prior calendar day*.
+
+    Looks back across any gap — Discovery's ~3-day rotation means the "prior
+    scan" is often not literally yesterday. Excludes MONITORING rows (no
+    comparable score, mirrors get_recent_signals()'s exclusion).
+
+    Rows sharing *before*'s own ET calendar date are excluded, not just rows at
+    a later timestamp. Discovery's alert_id is date-stable, so a same-day rerun
+    (e.g. after a crash) leaves the first attempt's row in place while the rerun
+    carries a strictly later timestamp — without the date exclusion the delta
+    would compare a signal against its own earlier attempt rather than against a
+    genuine prior scan.
+
+    Uses ISO date-prefix comparison on the timestamp column — all timestamps are
+    stored as ET ISO strings by convention, so substr(timestamp, 1, 10) is the
+    ET calendar date (same idiom as count_delivered_today()).
+    """
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT score FROM signals
+            WHERE ticker = ? AND agent = ?
+              AND timestamp < ?
+              AND substr(timestamp, 1, 10) < substr(?, 1, 10)
+              AND routing_status != 'MONITORING'
+              AND score IS NOT NULL
+            ORDER BY timestamp DESC
+            LIMIT 1
+            """,
+            (ticker, agent, before.isoformat(), before.isoformat()),
+        )
+        row = cursor.fetchone()
+        return float(row[0]) if row is not None else None
     finally:
         conn.close()
 

@@ -22,6 +22,7 @@ from signal_system.data.universe import (
 from signal_system.delivery import telegram_sender
 from signal_system.jobs.common import (
     PersistenceSummary,
+    compute_score_deltas,
     confirm_delivered_signals,
     persist_routed_signals,
     render_digest,
@@ -227,14 +228,23 @@ def run() -> None:
             routable, reconciled_losers = reconcile_directions(routable)
             for loser in reconciled_losers:
                 repository.insert_signal(loser, routing_status="MONITORING", demoted_from="reconciled")
-            persistence_summary: PersistenceSummary = persist_routed_signals(route_signals(routable))
+            routed = route_signals(routable)
+            # Deltas MUST be computed before persistence — the classifier stamps a
+            # per-signal timestamp, so several same-run signals can share a ticker;
+            # persisting first lets get_previous_score() compare against one of them.
+            score_deltas = compute_score_deltas(routed)
+            persistence_summary: PersistenceSummary = persist_routed_signals(routed)
             status_counts = dict(persistence_summary.status_counts)
             status_counts["MONITORING"] += classifier_monitoring_count + len(overflow_items) + len(reconciled_losers)
 
+            # news-morning only ever scans core holdings, so `tickers` IS the held set.
+            held_tickers = set(tickers)
             digest = render_digest(
                 job_name="news-morning",
                 scanned_tickers=len(tickers),
-                delivered_signals=persistence_summary.delivered_signals,
+                routed_signals=routed,
+                held_tickers=held_tickers,
+                score_deltas=score_deltas,
                 status_counts=status_counts,
             )
             validate_digest_payload(
