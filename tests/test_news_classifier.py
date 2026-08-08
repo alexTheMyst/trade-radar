@@ -73,7 +73,10 @@ def test_no_quote_call_for_offthesis_headlines(monkeypatch):
         thesis_version_hash="h",
     )
 
-    assert signals == []
+    assert len(signals) == 1
+    assert signals[0].severity == "MONITORING"
+    assert signals[0].title.startswith("[off_thesis]")
+    assert signals[0].signal_price_snapshot is None
 
 
 def test_missing_quote_still_emits_signal_without_snapshot(monkeypatch):

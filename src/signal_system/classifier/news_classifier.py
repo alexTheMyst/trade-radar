@@ -361,13 +361,14 @@ def classify_headline(
     thesis_version_hash: str,
     system_prompt: str,
     weights: dict[str, float] | None = None,
-) -> Signal | None:
-    """Classify a single headline dict against the thesis. Returns Signal or None (off-thesis).
+) -> Signal:
+    """Classify a single headline dict against the thesis. Returns a Signal.
 
-    None means the headline was classified as off-thesis (pillar_name is None).
-    Off-thesis classifications are not persisted — there is no audit trail for
-    headlines the classifier chose to ignore. MONITORING signals are returned
-    (not None) for parse failures.
+    MONITORING signals are returned for off-thesis classifications (title
+    prefixed `[off_thesis]`, rationale preserved in the body) and for parse
+    failures (`[parse_failure]`). These feed the MONITORING corpus that the
+    weekly synthesis job reads for new pillar candidates — off-thesis
+    rationale is paid-for raw material and must not be discarded.
     """
     raw = headline_dict.get("headline", "")
     sanitized = _sanitize_headline(raw)
@@ -420,7 +421,19 @@ def classify_headline(
         )
 
     if parsed.pillar_name is None:
-        return None  # off-thesis — no signal
+        return Signal(
+            ticker=ticker,
+            score=parsed.confidence,
+            severity="MONITORING",
+            agent=NEWS_CLASSIFIER_AGENT,
+            timestamp=datetime.now(_ET),
+            alert_id=alert_id,
+            title=f"[off_thesis] {_fix_encoding(raw)[:120]}",
+            body=parsed.rationale,
+            model_version=config.ANTHROPIC_MODEL,
+            thesis_version_hash=thesis_version_hash,
+            direction=parsed.direction,
+        )
 
     severity = _weight_adjusted_severity(
         parsed.confidence, ticker, thesis, parsed.pillar_name, weights or {}

@@ -1173,15 +1173,45 @@ def test_classify_returns_signal_with_stamped_fields(monkeypatch):
     assert signal.severity == "ACTION_REQUIRED"  # 0.9 >= 0.85
 
 
-def test_classify_returns_none_when_pillar_name_none(monkeypatch):
+def test_classify_returns_monitoring_signal_when_pillar_name_none(monkeypatch):
     from signal_system.classifier.news_classifier import classify_headline, ClassificationResult
+    from signal_system import config
     parsed = ClassificationResult(pillar_name=None, confidence=0.3, direction="neutral", rationale="off-thesis")
     mock_client = _make_mock_anthropic(parsed)
     monkeypatch.setattr("signal_system.classifier.news_classifier._get_client", lambda: mock_client)
     monkeypatch.setattr("signal_system.classifier.news_classifier.repository.insert_llm_call", MagicMock())
     thesis = _make_test_thesis()
     result = classify_headline("AAPL", {"headline": "Weather report"}, thesis, "abc", "SYS")
-    assert result is None
+    assert result is not None
+    assert result.severity == "MONITORING"
+    assert result.title.startswith("[off_thesis]")
+    assert result.body == "off-thesis"
+    assert result.score == 0.3
+    assert result.direction == "neutral"
+    assert result.pillar is None
+    assert result.model_version == config.ANTHROPIC_MODEL
+    assert result.thesis_version_hash == "abc"
+
+
+def test_classify_off_thesis_alert_id_matches_on_thesis(monkeypatch):
+    """The same headline gets the same alert_id whether on- or off-thesis."""
+    from signal_system.classifier.news_classifier import classify_headline, ClassificationResult
+
+    on_thesis = ClassificationResult(pillar_name="growth", confidence=0.9, direction="positive", rationale="x")
+    mock_on = _make_mock_anthropic(on_thesis)
+    monkeypatch.setattr("signal_system.classifier.news_classifier._get_client", lambda: mock_on)
+    monkeypatch.setattr("signal_system.classifier.news_classifier.repository.insert_llm_call", MagicMock())
+    thesis = _make_test_thesis()
+    on_signal = classify_headline("AAPL", {"headline": "Apple beats earnings"}, thesis, "abc", "SYS")
+
+    off_thesis = ClassificationResult(pillar_name=None, confidence=0.2, direction="neutral", rationale="off")
+    mock_off = _make_mock_anthropic(off_thesis)
+    monkeypatch.setattr("signal_system.classifier.news_classifier._get_client", lambda: mock_off)
+    off_signal = classify_headline("AAPL", {"headline": "Apple beats earnings"}, thesis, "abc", "SYS")
+
+    assert on_signal is not None and off_signal is not None
+    assert off_signal.severity == "MONITORING"
+    assert off_signal.alert_id == on_signal.alert_id
 
 
 def test_classify_coerces_none_cache_counts_to_zero(monkeypatch):
