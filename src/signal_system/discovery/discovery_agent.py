@@ -39,8 +39,14 @@ _FACTOR_LABELS: dict[str, str] = {
 
 # Scoring-regime stamp for IC interpretability. NULL in the DB = legacy-mixed
 # regime (pre-2026-05-31 single-day scores + early unstamped 50/30/20 signals).
-# Bump to "xsect-50/30/20-absgate-v3" when the absolute gates land (Phase 3.3).
-WEIGHT_VERSION: str = "xsect-50/30/20-v2"
+# Bumped to v3 when the absolute momentum gates landed (Phase 3.3).
+WEIGHT_VERSION: str = "xsect-50/30/20-absgate-v3"
+
+# Absolute momentum gates — Discovery is cross-sectional, so a top-of-falling-
+# universe ranker still scores ~100. These gate on raw momentum_20d so the
+# scarce AR slot never fires in a broad downtrend.
+ABS_GATE_AR_MOMENTUM_20D: float = 0.05
+ABS_GATE_INFO_MOMENTUM_20D: float = 0.0
 
 
 def _rank_values(values: dict[str, float]) -> dict[str, float]:
@@ -150,6 +156,19 @@ def score_universe(tickers: list[str], run_id: str, date_iso: str) -> list[Signa
         if severity == "MONITORING":
             continue
 
+        momentum_20d = raw_factors[ticker]["momentum_20d"]
+
+        # Absolute momentum gates: no alert in a broad downtrend, and AR only
+        # on genuine strength. These are the "absolute" backstop on top of the
+        # cross-sectional rank.
+        if momentum_20d < ABS_GATE_INFO_MOMENTUM_20D:
+            continue  # negative momentum — not emitted even as INFORMATIONAL
+        if severity == "ACTION_REQUIRED" and momentum_20d < ABS_GATE_AR_MOMENTUM_20D:
+            severity = "INFORMATIONAL"
+            gate_marker = " gate=abs_mom_ar"
+        else:
+            gate_marker = ""
+
         alert_id = compute_alert_id(ticker, date_iso, "discovery", "discovery_agent")
 
         quote = fetch_quote(ticker)
@@ -166,7 +185,7 @@ def score_universe(tickers: list[str], run_id: str, date_iso: str) -> list[Signa
             timestamp=timestamp,
             alert_id=alert_id,
             title=f"{ticker}: Discovery score {composite:.0f}",
-            body=f"weights={weights_str} {rank_str}",
+            body=f"weights={weights_str} {rank_str}{gate_marker}",
             sub_scores={name: rank for name, _, rank in factors},
             model_version=None,
             thesis_version_hash=None,

@@ -64,7 +64,7 @@ def test_momentum_scoring_three_tickers(db):
     assert strong_sig.score == pytest.approx(100.0)
     assert strong_sig.severity == "ACTION_REQUIRED"
     assert set(strong_sig.sub_scores.keys()) == {"momentum_20d", "momentum_5d", "range_vs_20d"}
-    assert strong_sig.weight_version == "xsect-50/30/20-v2"
+    assert strong_sig.weight_version == "xsect-50/30/20-absgate-v3"
 
 
 def test_ticker_with_fewer_than_5_days_skipped(db):
@@ -296,3 +296,76 @@ def test_public_surface_smoke():
     assert _rank_values({"AAPL": 5.0}) == {"AAPL": 0.5}
     assert _rank_values({"AAPL": 5.0, "MSFT": 3.0}) == {"AAPL": 1.0, "MSFT": 0.0}
     assert _rank_values({"BIDU": 5.0, "AAPL": 5.0}) == {"AAPL": 1.0, "BIDU": 0.0}
+
+
+def _momentum_df(start: float, end: float, n: int = 21) -> "pd.DataFrame":
+    """Build a candle df with a linear path from *start* to *end* (momentum_20d ≈ end/start - 1)."""
+    closes = [start + (end - start) * i / (n - 1) for i in range(n)]
+    return _make_candle_df(
+        closes=closes,
+        highs=[max(c, c + 1.0) for c in closes],
+        lows=[min(c, c - 1.0) for c in closes],
+    )
+
+
+def test_negative_momentum_top_ticker_emits_nothing(db):
+    """A falling-universe top ranker still emits nothing (absolute gate)."""
+    from signal_system.discovery.discovery_agent import score_universe
+
+    # 100 -> 97 over 20d: momentum_20d = -3%. Even though this is the best of
+    # a falling batch (rank ~1.0, composite ~100), the gate suppresses it.
+    falling = _momentum_df(100.0, 97.0)
+    history = {"TOP": falling, "MID": _momentum_df(100.0, 95.0), "BOT": _momentum_df(100.0, 90.0)}
+    weights = {"TOP": 10.0, "MID": 10.0, "BOT": 10.0}
+
+    run_id = repository.insert_run("discovery")
+    with patch("signal_system.discovery.discovery_agent.fetch_history", return_value=history), \
+         patch("signal_system.discovery.discovery_agent.get_position_weights", return_value=weights), \
+         patch("signal_system.discovery.discovery_agent.fetch_quote", return_value={"c": 119.0, "dp": 1.0, "h": 121.0, "l": 117.0}):
+        signals = score_universe(["TOP", "MID", "BOT"], run_id, DATE_ISO)
+
+    assert signals == []
+
+
+def test_positive_but_sub_action_momentum_caps_at_info_with_gate(db):
+    """+3% momentum in a weak batch caps the top ranker at INFORMATIONAL with gate marker."""
+    from signal_system.discovery.discovery_agent import score_universe
+
+    # TOP momentum_20d = +3% (< 0.05 AR gate), but positive (>= 0.0 INFO gate).
+    # In a batch where everything else is flat/negative, TOP ranks ~1.0 so the
+    # base severity would be ACTION_REQUIRED — the gate downgrades it to INFO.
+    top = _momentum_df(100.0, 103.0)
+    history = {"TOP": top, "FLAT": _momentum_df(100.0, 100.0), "NEG": _momentum_df(100.0, 98.0)}
+    weights = {"TOP": 10.0, "FLAT": 10.0, "NEG": 10.0}
+
+    run_id = repository.insert_run("discovery")
+    with patch("signal_system.discovery.discovery_agent.fetch_history", return_value=history), \
+         patch("signal_system.discovery.discovery_agent.get_position_weights", return_value=weights), \
+         patch("signal_system.discovery.discovery_agent.fetch_quote", return_value={"c": 119.0, "dp": 1.0, "h": 121.0, "l": 117.0}):
+        signals = score_universe(["TOP", "FLAT", "NEG"], run_id, DATE_ISO)
+
+    top_sigs = [s for s in signals if s.ticker == "TOP"]
+    assert len(top_sigs) == 1
+    assert top_sigs[0].severity == "INFORMATIONAL"
+    assert top_sigs[0].body is not None
+    assert "gate=abs_mom_ar" in top_sigs[0].body
+
+
+def test_strong_momentum_still_fires_action(db):
+    """+10% momentum fires ACTION_REQUIRED — gate passes, stamp is v3."""
+    from signal_system.discovery.discovery_agent import score_universe
+
+    strong = _momentum_df(100.0, 110.0)
+    history = {"STRONG": strong, "WEAK": _momentum_df(100.0, 99.0)}
+    weights = {"STRONG": 10.0, "WEAK": 10.0}
+
+    run_id = repository.insert_run("discovery")
+    with patch("signal_system.discovery.discovery_agent.fetch_history", return_value=history), \
+         patch("signal_system.discovery.discovery_agent.get_position_weights", return_value=weights), \
+         patch("signal_system.discovery.discovery_agent.fetch_quote", return_value={"c": 119.0, "dp": 1.0, "h": 121.0, "l": 117.0}):
+        signals = score_universe(["STRONG", "WEAK"], run_id, DATE_ISO)
+
+    strong_sigs = [s for s in signals if s.ticker == "STRONG"]
+    assert len(strong_sigs) == 1
+    assert strong_sigs[0].severity == "ACTION_REQUIRED"
+    assert strong_sigs[0].weight_version == "xsect-50/30/20-absgate-v3"
