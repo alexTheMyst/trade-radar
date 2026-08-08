@@ -320,6 +320,66 @@ def test_render_digest_suppressed_section_sorted_by_score_descending():
     assert nvda_pos < cde_pos
 
 
+def test_render_digest_monitoring_breakdown_renders_all_categories():
+    from signal_system.jobs.common import render_digest
+
+    delivered = _sig(ticker="AAPL", severity="INFORMATIONAL", score=0.75)
+    payload = render_digest(
+        job_name="news-morning",
+        scanned_tickers=3,
+        routed_signals=[(delivered, "DELIVERED", None, None)],
+        held_tickers=set(),
+        score_deltas={},
+        status_counts={"DELIVERED": 1, "SUPPRESSED": 0, "MONITORING": 5},
+        monitoring_breakdown={
+            "off_thesis": 2,
+            "parse_failure": 1,
+            "volume_cap": 1,
+            "reconciled": 1,
+        },
+    )
+
+    assert (
+        "Monitoring: 5 (off-thesis 2, parse-fail 1, volume-cap 1, reconciled 1)"
+        in payload.body
+    )
+
+
+def test_render_digest_monitoring_breakdown_omits_zero_categories():
+    from signal_system.jobs.common import render_digest
+
+    payload = render_digest(
+        job_name="news-morning",
+        scanned_tickers=2,
+        routed_signals=[],
+        held_tickers=set(),
+        score_deltas={},
+        status_counts={"DELIVERED": 0, "SUPPRESSED": 0, "MONITORING": 2},
+        monitoring_breakdown={"off_thesis": 2},
+    )
+
+    assert "Monitoring: 2 (off-thesis 2)" in payload.body
+    assert "parse-fail" not in payload.body
+    assert "volume-cap" not in payload.body
+    assert "reconciled" not in payload.body
+
+
+def test_render_digest_monitoring_breakdown_none_renders_bare_count():
+    from signal_system.jobs.common import render_digest
+
+    payload = render_digest(
+        job_name="news-morning",
+        scanned_tickers=2,
+        routed_signals=[],
+        held_tickers=set(),
+        score_deltas={},
+        status_counts={"DELIVERED": 0, "SUPPRESSED": 0, "MONITORING": 3},
+    )
+
+    assert "Monitoring: 3" in payload.body
+    assert "(off-thesis" not in payload.body
+
+
 def test_news_morning_requires_previous_daily_close_before_fetch_or_delivery(db):
     from signal_system.jobs import news_morning
 
@@ -583,6 +643,54 @@ def test_news_morning_digest_counts_zero_alert_and_mismatch_guard(db):
             news_morning.run()
 
     mismatch_send.assert_not_called()
+
+
+def test_news_morning_digest_monitoring_breakdown_composed_end_to_end(db):
+    from signal_system.jobs import news_morning
+
+    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
+    previous_close = datetime(2026, 5, 16, 20, 0, tzinfo=timezone.utc)
+    off_thesis = _sig(ticker="AAPL", severity="MONITORING", agent="news_classifier")
+    off_thesis = Signal(
+        ticker=off_thesis.ticker,
+        score=off_thesis.score,
+        severity=off_thesis.severity,
+        agent=off_thesis.agent,
+        timestamp=off_thesis.timestamp,
+        alert_id=off_thesis.alert_id,
+        title="[off_thesis] unrelated story",
+        body="not about a pillar",
+    )
+    reconciled_loser = _sig(ticker="AAPL", severity="INFORMATIONAL", agent="news_classifier")
+
+    items = []
+    for index in range(51):
+        items.append(
+            _news_item(
+                f"Headline {index:02d}",
+                previous_close.replace(hour=20 + (index // 60), minute=index % 60),
+            )
+        )
+
+    with patch("signal_system.jobs.news_morning.heartbeat.heartbeat", _noop_heartbeat), \
+         patch("signal_system.jobs.news_morning._now_et", return_value=fixed_now), \
+         patch("signal_system.jobs.news_morning.get_core_holdings", return_value=["AAPL"]), \
+         patch("signal_system.jobs.news_morning.get_position_weights", return_value={"AAPL": 10.0}), \
+         patch("signal_system.jobs.news_morning.repository.get_latest_successful_run_date", return_value=date(2026, 5, 16)), \
+         patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
+         patch("signal_system.jobs.news_morning.fetch_company_news", return_value=items), \
+         patch("signal_system.jobs.news_morning.classify_headlines", return_value=[off_thesis]), \
+         patch("signal_system.jobs.news_morning.route_signals", return_value=[]), \
+         patch(
+             "signal_system.jobs.news_morning.reconcile_directions",
+             return_value=([], [reconciled_loser]),
+         ), \
+         patch("signal_system.jobs.news_morning.telegram_sender.send_message") as mock_send:
+        news_morning.run()
+
+    assert mock_send.call_count == 1
+    body = mock_send.call_args.args[0]
+    assert "Monitoring: 3 (off-thesis 1, volume-cap 1, reconciled 1)" in body
 
 
 def test_discovery_routes_persists_and_sends_digest(db):

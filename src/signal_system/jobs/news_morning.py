@@ -154,13 +154,14 @@ def _classify_kept_headlines(
     thesis: object,
     thesis_version_hash: str,
     weights: dict[str, float],
-) -> tuple[list[Signal], int]:
+) -> tuple[list[Signal], dict[str, int], int]:
     headlines_by_ticker: dict[str, list[dict]] = defaultdict(list)
     for ticker, item, _ in kept_items:
         headlines_by_ticker[ticker].append(item)
 
     routable: list[Signal] = []
-    monitoring_count = 0
+    monitoring_breakdown: dict[str, int] = {"off_thesis": 0, "parse_failure": 0}
+    monitoring_total = 0
     dedup_seen: set[str] = set()
 
     for ticker, headlines in headlines_by_ticker.items():
@@ -174,11 +175,15 @@ def _classify_kept_headlines(
         ):
             if signal.severity == "MONITORING":
                 _persist_monitoring_signal(signal)
-                monitoring_count += 1
+                monitoring_total += 1
+                if signal.title.startswith("[off_thesis]"):
+                    monitoring_breakdown["off_thesis"] += 1
+                elif signal.title.startswith("[parse_failure]"):
+                    monitoring_breakdown["parse_failure"] += 1
             else:
                 routable.append(signal)
 
-    return routable, monitoring_count
+    return routable, monitoring_breakdown, monitoring_total
 
 
 def _send_digest_once(*, subject: str, body: str) -> None:
@@ -219,7 +224,7 @@ def run() -> None:
                 )
 
             weights = get_position_weights()
-            routable, classifier_monitoring_count = _classify_kept_headlines(
+            routable, classifier_monitoring_breakdown, classifier_monitoring_total = _classify_kept_headlines(
                 kept_items,
                 thesis=thesis,
                 thesis_version_hash=thesis_version_hash,
@@ -235,7 +240,14 @@ def run() -> None:
             score_deltas = compute_score_deltas(routed)
             persistence_summary: PersistenceSummary = persist_routed_signals(routed)
             status_counts = dict(persistence_summary.status_counts)
-            status_counts["MONITORING"] += classifier_monitoring_count + len(overflow_items) + len(reconciled_losers)
+            monitoring_breakdown = dict(classifier_monitoring_breakdown)
+            monitoring_breakdown["volume_cap"] = len(overflow_items)
+            monitoring_breakdown["reconciled"] = len(reconciled_losers)
+            status_counts["MONITORING"] = (
+                classifier_monitoring_total
+                + len(overflow_items)
+                + len(reconciled_losers)
+            )
 
             # news-morning only ever scans core holdings, so `tickers` IS the held set.
             held_tickers = set(tickers)
@@ -246,6 +258,7 @@ def run() -> None:
                 held_tickers=held_tickers,
                 score_deltas=score_deltas,
                 status_counts=status_counts,
+                monitoring_breakdown=monitoring_breakdown,
             )
             validate_digest_payload(
                 digest,
