@@ -10,7 +10,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 
-from signal_system.models import Signal
+from signal_system.models import Signal, competition_score
 from signal_system.state import repository
 
 logger = logging.getLogger(__name__)
@@ -71,11 +71,11 @@ def route_signals(signals: list[Signal]) -> list[tuple[Signal, str, str | None, 
     # --- Severity-first slot competition (D-04) ---
     ar_signals = sorted(
         [s for s in signals if s.severity == "ACTION_REQUIRED"],
-        key=lambda s: (-(s.score or 0.0), s.ticker or ""),
+        key=lambda s: (-competition_score(s), s.ticker or ""),
     )
     info_signals = sorted(
         [s for s in signals if s.severity == "INFORMATIONAL"],
-        key=lambda s: (-(s.score or 0.0), s.ticker or ""),
+        key=lambda s: (-competition_score(s), s.ticker or ""),
     )
 
     # Track AR signals demoted to INFO so they carry demoted_from="ACTION_REQUIRED"
@@ -94,7 +94,7 @@ def route_signals(signals: list[Signal]) -> list[tuple[Signal, str, str | None, 
     if demoted_info:
         info_signals = sorted(
             info_signals + demoted_info,
-            key=lambda s: (-(s.score or 0.0), s.ticker or ""),
+            key=lambda s: (-competition_score(s), s.ticker or ""),
         )
 
     for i, sig in enumerate(info_signals):

@@ -23,7 +23,11 @@ from signal_system import config
 from signal_system.data.finnhub_client import fetch_quotes
 from signal_system.data.thesis_loader import Thesis
 from signal_system.data.universe import get_position_weights
-from signal_system.models import Signal, compute_alert_id
+from signal_system.models import (
+    NEWS_CLASSIFIER_AGENT,
+    Signal,
+    compute_alert_id,
+)
 from signal_system.scoring.weight_amplifier import adjusted_severity
 from signal_system.state import repository
 
@@ -35,10 +39,9 @@ _INFORMATIONAL_THRESHOLD: float = 0.60
 _ET = ZoneInfo("America/New_York")
 _client: Anthropic | None = None
 
-# Single agent identity for every signal from the news pillar — classified,
-# parse-failure, and volume-cap overflow alike. Keeps the `agent` dimension
-# consistent for per-signal-type measurement (see signal-log-schema.md).
-NEWS_CLASSIFIER_AGENT: str = "news_classifier"
+# NEWS_CLASSIFIER_AGENT is defined canonically in models.py (stdlib-only, so the
+# router can use it without importing this anthropic-heavy module) and re-exported
+# here for backward compatibility with existing import sites.
 
 # Map common typographic/smart-quote Unicode to ASCII equivalents.
 # Applied before storing in Signal.title and before sending to Claude.

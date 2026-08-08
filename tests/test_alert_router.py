@@ -46,6 +46,46 @@ def test_budget_constants_are_public():
     assert BUDGET_INFO == 3
 
 
+def test_competition_score_scales_news_confidence_to_hundreds():
+    """News confidences are 0-1; competition scale converts to 0-100 for cross-agent ties."""
+    from signal_system.models import competition_score
+
+    news = _sig(ticker="AAPL", score=0.92, severity="ACTION_REQUIRED", agent="news_classifier")
+    discovery = _sig(ticker="MSFT", score=88.0, severity="ACTION_REQUIRED", agent="discovery_agent")
+
+    assert competition_score(news) == pytest.approx(92.0)
+    assert competition_score(discovery) == pytest.approx(88.0)
+    assert competition_score(news) > competition_score(discovery)
+
+
+def test_cross_agent_ar_competition_uses_competition_scale(monkeypatch):
+    """news 0.92 (→92) beats discovery 88 on the unified scale for the single AR slot."""
+    monkeypatch.setattr(repository, "count_delivered_today", lambda: {})
+    news = _sig(ticker="AAPL", score=0.92, severity="ACTION_REQUIRED", agent="news_classifier")
+    discovery = _sig(ticker="MSFT", score=88.0, severity="ACTION_REQUIRED", agent="discovery_agent")
+
+    results = route_signals([discovery, news])
+    delivered = [t for t in results if t[1] == "DELIVERED"]
+    assert delivered[0][0].ticker == "AAPL"  # news wins AR
+    assert delivered[0][0].severity == "ACTION_REQUIRED"
+    assert delivered[0][2] is None
+    # discovery demoted to INFO, delivered with demoted_from
+    assert delivered[1][0].ticker == "MSFT"
+    assert delivered[1][0].severity == "INFORMATIONAL"
+    assert delivered[1][2] == "ACTION_REQUIRED"
+
+
+def test_cross_agent_ar_tie_breaks_by_ticker(monkeypatch):
+    """Equal competition scores (news 0.80 vs discovery 80) tiebreak alphabetically."""
+    monkeypatch.setattr(repository, "count_delivered_today", lambda: {})
+    news = _sig(ticker="ZZZ", score=0.80, severity="ACTION_REQUIRED", agent="news_classifier")
+    discovery = _sig(ticker="AAA", score=80.0, severity="ACTION_REQUIRED", agent="discovery_agent")
+
+    results = route_signals([news, discovery])
+    delivered = [t for t in results if t[1] == "DELIVERED"]
+    assert delivered[0][0].ticker == "AAA"  # alphabetically first wins AR
+
+
 # ---------------------------------------------------------------------------
 # T-AR-07: empty input
 # ---------------------------------------------------------------------------
