@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from signal_system.data import universe
+from signal_system.discovery.discovery_agent import ScoreResult
 from signal_system.models import Signal, compute_alert_id
 from signal_system.state import repository
 
@@ -893,7 +894,7 @@ def test_discovery_routes_persists_and_sends_digest(db):
          patch("signal_system.jobs.discovery.get_core_holdings", return_value=["MSFT"]), \
          patch(
              "signal_system.jobs.discovery.score_universe",
-             return_value=[delivered_signal, suppressed_signal],
+             return_value=ScoreResult(signals=[delivered_signal, suppressed_signal]),
          ), \
          patch(
              "signal_system.jobs.discovery.route_signals",
@@ -964,7 +965,7 @@ def test_discovery_zero_alert_digest_even_when_score_returns_empty(db):
          patch("signal_system.jobs.discovery.heartbeat.heartbeat", _noop_heartbeat), \
          patch("signal_system.jobs.discovery.get_todays_universe", return_value=["AAPL"]), \
          patch("signal_system.jobs.discovery.get_core_holdings", return_value=[]), \
-         patch("signal_system.jobs.discovery.score_universe", return_value=[]), \
+         patch("signal_system.jobs.discovery.score_universe", return_value=ScoreResult()), \
          patch("signal_system.jobs.discovery.route_signals", return_value=[]) as mock_route, \
          patch("signal_system.jobs.discovery.telegram_sender.send_message") as mock_send:
         discovery.run()
@@ -992,7 +993,7 @@ def test_discovery_fails_on_digest_count_mismatch(db):
          patch("signal_system.jobs.discovery.heartbeat.heartbeat", _noop_heartbeat), \
          patch("signal_system.jobs.discovery.get_todays_universe", return_value=["AAPL"]), \
          patch("signal_system.jobs.discovery.get_core_holdings", return_value=[]), \
-         patch("signal_system.jobs.discovery.score_universe", return_value=[routed_signal]), \
+         patch("signal_system.jobs.discovery.score_universe", return_value=ScoreResult(signals=[routed_signal])), \
          patch(
              "signal_system.jobs.discovery.route_signals",
              return_value=[(routed_signal, "DELIVERED", None, None)],
@@ -1045,6 +1046,65 @@ def test_discovery_fails_loudly_on_empty_universe(db):
     status = conn.execute("SELECT status FROM runs WHERE job = 'discovery'").fetchone()
     conn.close()
     assert status == ("failed",)
+
+
+def test_discovery_digest_includes_industry_rollup_section(db, monkeypatch):
+    """The discovery digest renders the industry momentum section when industries exist."""
+    from signal_system.jobs import discovery
+
+    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
+    delivered = _sig(ticker="NVDA", agent="discovery_agent", score=88.0)
+
+    with patch("signal_system.jobs.discovery.get_industries",
+               return_value={"NVDA": "Semiconductors", "AMD": "Semiconductors", "AVGO": "Semiconductors"}), \
+         patch("signal_system.jobs.discovery._now_et", return_value=fixed_now), \
+         patch("signal_system.jobs.discovery.heartbeat.heartbeat", _noop_heartbeat), \
+         patch("signal_system.jobs.discovery.get_todays_universe", return_value=["NVDA", "AMD", "AVGO"]), \
+         patch("signal_system.jobs.discovery.get_core_holdings", return_value=[]), \
+         patch(
+             "signal_system.jobs.discovery.score_universe",
+             return_value=ScoreResult(
+                 signals=[delivered],
+                 composite_by_ticker={"NVDA": 88.0, "AMD": 60.0, "AVGO": 30.0},
+             ),
+         ), \
+         patch(
+             "signal_system.jobs.discovery.route_signals",
+             return_value=[(delivered, "DELIVERED", None, None)],
+         ), \
+         patch("signal_system.jobs.discovery.telegram_sender.send_message") as mock_send:
+        discovery.run()
+
+    body = mock_send.call_args.args[0]
+    assert "Industry momentum (median composite, n>=3)" in body
+    assert "Semiconductors: 60" in body
+
+
+def test_discovery_digest_no_industry_section_without_industries(db, monkeypatch):
+    """No industry section when universe.csv lacks industry columns (pre-4.3)."""
+    from signal_system.jobs import discovery
+
+    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
+    delivered = _sig(ticker="NVDA", agent="discovery_agent", score=88.0)
+
+    with patch("signal_system.jobs.discovery.get_industries", return_value={}), \
+         patch("signal_system.jobs.discovery._now_et", return_value=fixed_now), \
+         patch("signal_system.jobs.discovery.heartbeat.heartbeat", _noop_heartbeat), \
+         patch("signal_system.jobs.discovery.get_todays_universe", return_value=["NVDA"]), \
+         patch("signal_system.jobs.discovery.get_core_holdings", return_value=[]), \
+         patch(
+             "signal_system.jobs.discovery.score_universe",
+             return_value=ScoreResult(signals=[delivered], composite_by_ticker={"NVDA": 88.0}),
+         ), \
+         patch(
+             "signal_system.jobs.discovery.route_signals",
+             return_value=[(delivered, "DELIVERED", None, None)],
+         ), \
+         patch("signal_system.jobs.discovery.telegram_sender.send_message") as mock_send:
+        discovery.run()
+
+    body = mock_send.call_args.args[0]
+    assert "Industry momentum" not in body
 
 
 def test_news_morning_fails_loudly_on_empty_universe(db):
@@ -1384,7 +1444,7 @@ def test_discovery_computes_deltas_before_persisting(db):
          patch("signal_system.jobs.discovery.heartbeat.heartbeat", _noop_heartbeat), \
          patch("signal_system.jobs.discovery.get_todays_universe", return_value=["MSFT"]), \
          patch("signal_system.jobs.discovery.get_core_holdings", return_value=["MSFT"]), \
-         patch("signal_system.jobs.discovery.score_universe", return_value=[suppressed_signal]), \
+         patch("signal_system.jobs.discovery.score_universe", return_value=ScoreResult(signals=[suppressed_signal])), \
          patch(
              "signal_system.jobs.discovery.route_signals",
              return_value=[(suppressed_signal, "SUPPRESSED", None, "cap_exhausted")],

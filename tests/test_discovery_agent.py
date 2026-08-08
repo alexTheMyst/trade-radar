@@ -55,7 +55,8 @@ def test_momentum_scoring_three_tickers(db):
     with patch("signal_system.discovery.discovery_agent.fetch_history", return_value=history), \
          patch("signal_system.discovery.discovery_agent.get_position_weights", return_value=weights), \
          patch("signal_system.discovery.discovery_agent.fetch_quote", return_value={"c": 119.0, "dp": 1.0, "h": 121.0, "l": 117.0}):
-        signals = score_universe(["STRONG", "MEDIUM", "WEAK"], run_id, DATE_ISO)
+        result = score_universe(["STRONG", "MEDIUM", "WEAK"], run_id, DATE_ISO)
+        signals = result.signals
 
     assert len(signals) >= 1
     tickers = [s.ticker for s in signals]
@@ -84,7 +85,8 @@ def test_ticker_with_fewer_than_5_days_skipped(db):
     with patch("signal_system.discovery.discovery_agent.fetch_history", return_value=history), \
          patch("signal_system.discovery.discovery_agent.get_position_weights", return_value=weights), \
          patch("signal_system.discovery.discovery_agent.fetch_quote", return_value=None):
-        signals = score_universe(["SHORT"], run_id, DATE_ISO)
+        result = score_universe(["SHORT"], run_id, DATE_ISO)
+        signals = result.signals
 
     assert signals == []
 
@@ -96,7 +98,8 @@ def test_empty_universe(db):
     run_id = repository.insert_run("discovery")
 
     with patch("signal_system.discovery.discovery_agent.fetch_history") as mock_fh:
-        signals = score_universe([], run_id, DATE_ISO)
+        result = score_universe([], run_id, DATE_ISO)
+        signals = result.signals
 
     assert signals == []
     mock_fh.assert_not_called()
@@ -110,7 +113,8 @@ def test_all_tickers_no_data(db):
 
     with patch("signal_system.discovery.discovery_agent.fetch_history", return_value={}), \
          patch("signal_system.discovery.discovery_agent.get_position_weights", return_value={}):
-        signals = score_universe(["AAPL", "MSFT"], run_id, DATE_ISO)
+        result = score_universe(["AAPL", "MSFT"], run_id, DATE_ISO)
+        signals = result.signals
 
     assert signals == []
     conn = sqlite3.connect(db)
@@ -136,7 +140,8 @@ def test_weight_amplifier_integration(db):
     with patch("signal_system.discovery.discovery_agent.fetch_history", return_value=history), \
          patch("signal_system.discovery.discovery_agent.get_position_weights", return_value=weights), \
          patch("signal_system.discovery.discovery_agent.fetch_quote", return_value={"c": 119.0, "dp": 1.0, "h": 121.0, "l": 117.0}):
-        signals = score_universe(["BIG", "SMALL"], run_id, DATE_ISO)
+        result = score_universe(["BIG", "SMALL"], run_id, DATE_ISO)
+        signals = result.signals
 
     big_signals = [s for s in signals if s.ticker == "BIG"]
     assert len(big_signals) == 1
@@ -160,7 +165,8 @@ def test_signal_price_snapshot_from_quote(db):
     with patch("signal_system.discovery.discovery_agent.fetch_history", return_value=history), \
          patch("signal_system.discovery.discovery_agent.get_position_weights", return_value=weights), \
          patch("signal_system.discovery.discovery_agent.fetch_quote", return_value={"c": 177.50, "dp": 1.0, "h": 180.0, "l": 175.0}):
-        signals = score_universe(["AAPL", "MSFT"], run_id, DATE_ISO)
+        result = score_universe(["AAPL", "MSFT"], run_id, DATE_ISO)
+        signals = result.signals
 
     for sig in signals:
         assert sig.signal_price_snapshot == pytest.approx(177.50)
@@ -217,13 +223,15 @@ def test_alert_id_determinism(db):
     with patch("signal_system.discovery.discovery_agent.fetch_history", return_value=history), \
          patch("signal_system.discovery.discovery_agent.get_position_weights", return_value=weights), \
          patch("signal_system.discovery.discovery_agent.fetch_quote", return_value={"c": 119.0, "dp": 1.0, "h": 121.0, "l": 117.0}):
-        signals_run1 = score_universe(["HIGH", "LOW"], run_id1, DATE_ISO)
+        result1 = score_universe(["HIGH", "LOW"], run_id1, DATE_ISO)
+        signals_run1 = result1.signals
 
     run_id2 = repository.insert_run("discovery")
     with patch("signal_system.discovery.discovery_agent.fetch_history", return_value=history), \
          patch("signal_system.discovery.discovery_agent.get_position_weights", return_value=weights), \
          patch("signal_system.discovery.discovery_agent.fetch_quote", return_value={"c": 119.0, "dp": 1.0, "h": 121.0, "l": 117.0}):
-        signals_run2 = score_universe(["HIGH", "LOW"], run_id2, DATE_ISO)
+        result2 = score_universe(["HIGH", "LOW"], run_id2, DATE_ISO)
+        signals_run2 = result2.signals
 
     assert len(signals_run1) == len(signals_run2)
     for s1, s2 in zip(signals_run1, signals_run2):
@@ -247,7 +255,8 @@ def test_sub_scores_contains_momentum_keys(db):
     with patch("signal_system.discovery.discovery_agent.fetch_history", return_value=history), \
          patch("signal_system.discovery.discovery_agent.get_position_weights", return_value=weights), \
          patch("signal_system.discovery.discovery_agent.fetch_quote", return_value={"c": 119.0, "dp": 1.0, "h": 121.0, "l": 117.0}):
-        signals = score_universe(["AAPL", "MSFT"], run_id, DATE_ISO)
+        result = score_universe(["AAPL", "MSFT"], run_id, DATE_ISO)
+        signals = result.signals
 
     assert len(signals) >= 1
     signal = signals[0]
@@ -273,7 +282,8 @@ def test_signal_body_prefix(db):
     with patch("signal_system.discovery.discovery_agent.fetch_history", return_value=history), \
          patch("signal_system.discovery.discovery_agent.get_position_weights", return_value=weights), \
          patch("signal_system.discovery.discovery_agent.fetch_quote", return_value={"c": 119.0, "dp": 1.0, "h": 121.0, "l": 117.0}):
-        signals = score_universe(["HIGH", "LOW"], run_id, DATE_ISO)
+        result = score_universe(["HIGH", "LOW"], run_id, DATE_ISO)
+        signals = result.signals
 
     assert len(signals) >= 1
     assert signals[0].body is not None
@@ -322,7 +332,8 @@ def test_negative_momentum_top_ticker_emits_nothing(db):
     with patch("signal_system.discovery.discovery_agent.fetch_history", return_value=history), \
          patch("signal_system.discovery.discovery_agent.get_position_weights", return_value=weights), \
          patch("signal_system.discovery.discovery_agent.fetch_quote", return_value={"c": 119.0, "dp": 1.0, "h": 121.0, "l": 117.0}):
-        signals = score_universe(["TOP", "MID", "BOT"], run_id, DATE_ISO)
+        result = score_universe(["TOP", "MID", "BOT"], run_id, DATE_ISO)
+        signals = result.signals
 
     assert signals == []
 
@@ -342,7 +353,8 @@ def test_positive_but_sub_action_momentum_caps_at_info_with_gate(db):
     with patch("signal_system.discovery.discovery_agent.fetch_history", return_value=history), \
          patch("signal_system.discovery.discovery_agent.get_position_weights", return_value=weights), \
          patch("signal_system.discovery.discovery_agent.fetch_quote", return_value={"c": 119.0, "dp": 1.0, "h": 121.0, "l": 117.0}):
-        signals = score_universe(["TOP", "FLAT", "NEG"], run_id, DATE_ISO)
+        result = score_universe(["TOP", "FLAT", "NEG"], run_id, DATE_ISO)
+        signals = result.signals
 
     top_sigs = [s for s in signals if s.ticker == "TOP"]
     assert len(top_sigs) == 1
@@ -363,9 +375,88 @@ def test_strong_momentum_still_fires_action(db):
     with patch("signal_system.discovery.discovery_agent.fetch_history", return_value=history), \
          patch("signal_system.discovery.discovery_agent.get_position_weights", return_value=weights), \
          patch("signal_system.discovery.discovery_agent.fetch_quote", return_value={"c": 119.0, "dp": 1.0, "h": 121.0, "l": 117.0}):
-        signals = score_universe(["STRONG", "WEAK"], run_id, DATE_ISO)
+        result = score_universe(["STRONG", "WEAK"], run_id, DATE_ISO)
+        signals = result.signals
 
     strong_sigs = [s for s in signals if s.ticker == "STRONG"]
     assert len(strong_sigs) == 1
     assert strong_sigs[0].severity == "ACTION_REQUIRED"
     assert strong_sigs[0].weight_version == "xsect-50/30/20-absgate-v3"
+
+
+def test_score_universe_returns_score_result_with_composites(db):
+    """score_universe returns a ScoreResult with both signals and composite_by_ticker."""
+    from signal_system.discovery.discovery_agent import score_universe
+
+    strong = _momentum_df(100.0, 110.0)
+    weak = _momentum_df(100.0, 99.0)
+    history = {"STRONG": strong, "WEAK": weak}
+    weights = {"STRONG": 10.0, "WEAK": 10.0}
+
+    run_id = repository.insert_run("discovery")
+    with patch("signal_system.discovery.discovery_agent.fetch_history", return_value=history), \
+         patch("signal_system.discovery.discovery_agent.get_position_weights", return_value=weights), \
+         patch("signal_system.discovery.discovery_agent.fetch_quote", return_value={"c": 119.0, "dp": 1.0, "h": 121.0, "l": 117.0}):
+        result = score_universe(["STRONG", "WEAK"], run_id, DATE_ISO)
+        signals = result.signals
+
+    assert result.signals  # at least one signal emitted
+    assert "STRONG" in result.composite_by_ticker
+    assert "WEAK" in result.composite_by_ticker
+    assert all(0.0 <= v <= 100.0 for v in result.composite_by_ticker.values())
+
+
+def test_score_universe_empty_returns_empty_score_result(db):
+    from signal_system.discovery.discovery_agent import score_universe
+
+    run_id = repository.insert_run("discovery")
+    with patch("signal_system.discovery.discovery_agent.fetch_history", return_value={}), \
+         patch("signal_system.discovery.discovery_agent.get_position_weights", return_value={}):
+        result = score_universe([], run_id, DATE_ISO)
+        signals = result.signals
+
+    assert result.signals == []
+    assert result.composite_by_ticker == {}
+
+
+def test_industry_rollup_median_composite_top_n_min_members():
+    """industry_rollup computes median composite per industry, top_n, min_members gate."""
+    from signal_system.discovery.discovery_agent import industry_rollup
+
+    composite_by_ticker = {
+        "A1": 90.0, "A2": 80.0, "A3": 70.0,  # Tech — median 80, n=3
+        "B1": 60.0, "B2": 50.0,             # Energy — median 55, n=2 (< min_members)
+        "C1": 100.0,                          # Single — n=1
+        "D1": 95.0, "D2": 10.0, "D3": 20.0, "D4": 30.0,  # Fin — median 25, n=4
+    }
+    industries = {
+        "A1": "Technology", "A2": "Technology", "A3": "Technology",
+        "B1": "Energy", "B2": "Energy",
+        "C1": "Healthcare",
+        "D1": "Financials", "D2": "Financials", "D3": "Financials", "D4": "Financials",
+    }
+
+    result = industry_rollup(composite_by_ticker, industries, min_members=3, top_n=2)
+
+    # Only Technology (median 80) and Financials (median 25) qualify (n>=3); top 2.
+    assert [r.industry for r in result] == ["Technology", "Financials"]
+    assert result[0].median_composite == pytest.approx(80.0)
+    assert result[1].median_composite == pytest.approx(25.0)
+    assert result[0].member_count == 3
+
+
+def test_industry_rollup_empty_inputs():
+    from signal_system.discovery.discovery_agent import industry_rollup
+
+    assert industry_rollup({}, {}) == []
+    assert industry_rollup({"A": 50.0}, {"A": "Tech"}) == []  # n<3
+
+
+def test_industry_rollup_tickers_not_in_industries_ignored():
+    from signal_system.discovery.discovery_agent import industry_rollup
+
+    composite = {"A1": 90.0, "A2": 80.0, "A3": 70.0, "UNMAPPED": 99.0}
+    industries = {"A1": "Tech", "A2": "Tech", "A3": "Tech"}
+    result = industry_rollup(composite, industries)
+    assert [r.industry for r in result] == ["Tech"]
+    assert result[0].member_count == 3
