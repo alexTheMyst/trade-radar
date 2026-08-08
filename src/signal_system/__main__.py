@@ -12,6 +12,7 @@ from signal_system.jobs.outcome_backfill import (
     run as run_outcome_backfill,
     backfill_benchmark,
 )
+from signal_system.jobs.review_report import run as run_review_report
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,6 +27,7 @@ JOBS = {
     "news-morning": run_news_morning,
     "advisor": run_advisor,
     "outcome-backfill": run_outcome_backfill,
+    "review-report": run_review_report,
 }
 
 

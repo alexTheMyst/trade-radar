@@ -110,3 +110,7 @@ def test_cmd_log_action_invalid_prefix_exits_two(capsys, db):
     with pytest.raises(SystemExit) as exc:
         __main__._cmd_log_action("xyz", acted=True, user_note=None)
     assert exc.value.code == 2
+
+
+def test_review_report_job_is_registered():
+    assert "review-report" in __main__.JOBS
