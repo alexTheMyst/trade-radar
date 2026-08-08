@@ -121,3 +121,57 @@ def test_get_monitoring_signals_since_row_shape(db):
     assert row["score"] == 0.2
     assert row["agent"] == "news_classifier"
     assert row["routing_status"] == "MONITORING"
+
+
+# ---------------------------------------------------------------------------
+# benchmark_prices
+# ---------------------------------------------------------------------------
+
+def test_upsert_benchmark_price_inserts_and_replaces(db):
+    repository.upsert_benchmark_price(ticker="SPY", date_iso="2026-07-20", close=591.42, source="finnhub_quote")
+    repository.upsert_benchmark_price(ticker="SPY", date_iso="2026-07-20", close=592.00, source="yfinance_backfill")
+
+    conn = sqlite3.connect(db)
+    rows = conn.execute(
+        "SELECT ticker, date, close, source FROM benchmark_prices WHERE ticker='SPY'"
+    ).fetchall()
+    conn.close()
+
+    assert rows == [("SPY", "2026-07-20", 592.00, "yfinance_backfill")]
+
+
+def test_get_benchmark_close_on_or_after_returns_first_trading_day(db):
+    for date_iso, close in [("2026-07-20", 591.0), ("2026-07-21", 592.0), ("2026-07-22", 593.0)]:
+        repository.upsert_benchmark_price(ticker="SPY", date_iso=date_iso, close=close, source="finnhub_quote")
+
+    # Target falls on a stored date → that exact close
+    assert repository.get_benchmark_close_on_or_after("SPY", "2026-07-21") == 592.0
+    # Target before first stored date → first trading day >= target
+    assert repository.get_benchmark_close_on_or_after("SPY", "2026-07-15") == 591.0
+    # Target after last stored date → None
+    assert repository.get_benchmark_close_on_or_after("SPY", "2026-07-30") is None
+
+
+def test_get_benchmark_close_on_or_after_missing_ticker(db):
+    assert repository.get_benchmark_close_on_or_after("QQQ", "2026-07-20") is None
+
+
+def test_get_earliest_signal_date_returns_oldest_signal(db):
+    older = _sig(
+        title="[off_thesis] old",
+        severity="INFORMATIONAL",
+        timestamp=datetime(2026, 6, 1, 8, 0, tzinfo=timezone.utc),
+    )
+    newer = _sig(
+        title="[off_thesis] new",
+        severity="INFORMATIONAL",
+        timestamp=datetime(2026, 7, 1, 8, 0, tzinfo=timezone.utc),
+    )
+    repository.insert_signal(older, routing_status="DELIVERED")
+    repository.insert_signal(newer, routing_status="DELIVERED")
+
+    assert repository.get_earliest_signal_date() == date(2026, 6, 1)
+
+
+def test_get_earliest_signal_date_empty(db):
+    assert repository.get_earliest_signal_date() is None

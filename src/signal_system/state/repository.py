@@ -174,6 +174,16 @@ def init_db() -> None:
             )
         """)
 
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS benchmark_prices (
+                ticker TEXT NOT NULL,
+                date TEXT NOT NULL,
+                close REAL NOT NULL,
+                source TEXT,
+                PRIMARY KEY (ticker, date)
+            )
+        """)
+
         conn.commit()
     finally:
         conn.close()
@@ -595,6 +605,68 @@ def get_monitoring_signals_since(
         cursor.execute(query, params)
         columns = [col[0] for col in cursor.description]
         return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def upsert_benchmark_price(*, ticker: str, date_iso: str, close: float, source: str) -> None:
+    """Insert or replace a benchmark close for (ticker, date).
+
+    INSERT OR REPLACE lets the yfinance history backfill overwrite quote-sourced
+    rows when the backfill runs after daily-close has written the same date.
+    """
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO benchmark_prices (ticker, date, close, source)
+            VALUES (?, ?, ?, ?)
+            """,
+            (ticker, date_iso, close, source),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_benchmark_close_on_or_after(ticker: str, date_iso: str) -> float | None:
+    """Return the benchmark close for the first stored trading day >= *date_iso*.
+
+    Mirrors the outcome-backfill convention (first trading day at or after the
+    target) so excess-return math is consistent with signal outcome prices.
+    """
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT close FROM benchmark_prices
+            WHERE ticker = ? AND date >= ?
+            ORDER BY date ASC
+            LIMIT 1
+            """,
+            (ticker, date_iso),
+        )
+        row = cursor.fetchone()
+        return float(row[0]) if row is not None else None
+    finally:
+        conn.close()
+
+
+def get_earliest_signal_date() -> date | None:
+    """Return the earliest signal timestamp's ET date, or None on an empty table."""
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT MIN(timestamp) FROM signals")
+        row = cursor.fetchone()
+        if row is None or row[0] is None:
+            return None
+        return (
+            datetime.fromisoformat(row[0])
+            .astimezone(ZoneInfo("America/New_York"))
+            .date()
+        )
     finally:
         conn.close()
 
