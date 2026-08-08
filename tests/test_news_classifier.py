@@ -276,3 +276,39 @@ def test_macro_headline_no_quote_call_and_underscore_alert_id(monkeypatch):
         None, today, expected_rule, NEWS_CLASSIFIER_AGENT
     )
 
+
+def test_macro_negative_below_threshold_not_forced_to_ar(monkeypatch):
+    """The thesis-break AR floor must not fire for macro (ticker=None) headlines.
+
+    A negative macro headline below the AR confidence threshold stays at the
+    weight amplifier's severity — the unmeasurable AR floor override is gated
+    on ticker is not None.
+    """
+    from signal_system.classifier import news_classifier as nc
+
+    _patch_common(monkeypatch, nc)
+    result = nc.ClassificationResult(
+        pillar_name="monetary_policy", confidence=0.7, direction="negative", rationale="fed hike"
+    )
+    monkeypatch.setattr(nc, "_call_with_retry", lambda h, s: (result, _usage()))
+    monkeypatch.setattr(nc, "fetch_quotes", lambda tickers: {"SPY": {"c": 500.0}})
+
+    from signal_system.data.thesis_loader import Thesis, Pillar
+    from datetime import date
+    thesis = Thesis(review_due=date(2099, 1, 1), pillars=[
+        Pillar(name="monetary_policy", description="Fed", positive_signals=["cut"],
+               negative_signals=["hike"], holdings_exposed=["SPY"])
+    ])
+
+    signals = nc.classify_headlines(
+        None,
+        [{"headline": "Fed hikes unexpectedly"}],
+        thesis=thesis,
+        thesis_version_hash="h",
+    )
+
+    assert len(signals) == 1
+    assert signals[0].ticker is None
+    # 0.7 < 0.85 → INFORMATIONAL via the amplifier, NOT floored to AR
+    assert signals[0].severity == "INFORMATIONAL"
+

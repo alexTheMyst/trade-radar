@@ -448,7 +448,15 @@ def classify_headline(
     )
     # Thesis-break severity floor: a high-confidence negative signal on a
     # held position is always ACTION_REQUIRED, regardless of weight penalty.
-    if parsed.direction == "negative" and parsed.confidence >= _ACTION_REQUIRED_THRESHOLD:
+    # Gated on ticker is not None: macro headlines (ticker=None) carry no price
+    # snapshot, so an AR slot spent on them would be invisible to the review
+    # report. Macro thesis-breaks still reach AR through the weight amplifier's
+    # holdings_exposed lookup, which is measurable.
+    if (
+        ticker is not None
+        and parsed.direction == "negative"
+        and parsed.confidence >= _ACTION_REQUIRED_THRESHOLD
+    ):
         severity = "ACTION_REQUIRED"
 
     return Signal(
