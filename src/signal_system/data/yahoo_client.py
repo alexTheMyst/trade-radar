@@ -29,9 +29,15 @@ def fetch_history(tickers: list[str], days: int = 25) -> dict[str, pd.DataFrame]
     if not tickers:
         return {}
 
+    # Yahoo Finance uses dashes for share classes (BRK-B) while the rest of the
+    # system (Finnhub, universe.csv) uses dots (BRK.B). Translate for the call
+    # and map results back to the original symbols.
+    yahoo_to_original: dict[str, str] = {t.replace(".", "-"): t for t in tickers}
+    yahoo_tickers = list(yahoo_to_original)
+
     try:
         raw = yf.download(
-            tickers,
+            yahoo_tickers,
             period=f"{days}d",
             interval="1d",
             group_by="ticker",
@@ -47,19 +53,19 @@ def fetch_history(tickers: list[str], days: int = 25) -> dict[str, pd.DataFrame]
 
     result: dict[str, pd.DataFrame] = {}
 
-    for ticker in tickers:
+    for yahoo_ticker, original in yahoo_to_original.items():
         try:
             # group_by="ticker" yields MultiIndex (ticker, field) columns even
             # for single-ticker requests on current yfinance; older versions
             # returned flat columns for a single ticker.
             if isinstance(raw.columns, pd.MultiIndex):
-                df = raw[ticker][["Close", "High", "Low"]].dropna()
+                df = raw[yahoo_ticker][["Close", "High", "Low"]].dropna()
             else:
                 df = raw[["Close", "High", "Low"]].dropna()
             if not df.empty:
-                result[ticker] = df
+                result[original] = df
         except (KeyError, TypeError):
-            logger.debug("No data for %r in yfinance response", ticker)
+            logger.debug("No data for %r in yfinance response", original)
             continue
 
     return result

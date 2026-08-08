@@ -105,3 +105,31 @@ def test_fetch_history_flat_columns_single_ticker():
     assert "AAPL" in result
     assert list(result["AAPL"].columns) == ["Close", "High", "Low"]
     assert len(result["AAPL"]) == 10
+
+
+def test_fetch_history_translates_dot_to_dash_for_yahoo():
+    """BRK.B/BF.B (dot form) are translated to BRK-B/BF-B for yfinance, mapped back."""
+    from signal_system.data.yahoo_client import fetch_history
+
+    dates = pd.date_range("2026-05-01", periods=10, freq="B")
+    mock_df = pd.DataFrame(
+        {
+            ("BRK-B", "Close"): range(400, 410),
+            ("BRK-B", "High"): range(402, 412),
+            ("BRK-B", "Low"): range(398, 408),
+            ("BRK-B", "Open"): range(401, 411),
+            ("BRK-B", "Volume"): [1_000_000] * 10,
+        },
+        index=dates,
+    )
+    mock_df.columns = pd.MultiIndex.from_tuples(mock_df.columns)
+
+    with patch("signal_system.data.yahoo_client.yf.download", return_value=mock_df) as mock_dl:
+        result = fetch_history(["BRK.B"], days=10)
+
+    # yfinance was called with the dash form
+    assert mock_dl.call_args.args[0] == ["BRK-B"]
+    # result is keyed by the original dot form
+    assert "BRK.B" in result
+    assert "BRK-B" not in result
+    assert len(result["BRK.B"]) == 10

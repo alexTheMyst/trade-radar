@@ -448,10 +448,12 @@ def classify_headline(
     )
     # Thesis-break severity floor: a high-confidence negative signal on a
     # held position is always ACTION_REQUIRED, regardless of weight penalty.
-    # Gated on ticker is not None: macro headlines (ticker=None) carry no price
-    # snapshot, so an AR slot spent on them would be invisible to the review
-    # report. Macro thesis-breaks still reach AR through the weight amplifier's
-    # holdings_exposed lookup, which is measurable.
+    # Gated on ticker is not None so the floor cannot override a deliberate
+    # amplifier demotion on a macro headline. Note: macro headlines that DO
+    # reach ACTION_REQUIRED still carry ticker=None and no price snapshot, so
+    # they remain outside outcome backfill and the review report — a known
+    # measurement limitation of the ticker=None sentinel, not something this
+    # floor can fix.
     if (
         ticker is not None
         and parsed.direction == "negative"

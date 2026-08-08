@@ -312,3 +312,43 @@ def test_macro_negative_below_threshold_not_forced_to_ar(monkeypatch):
     # 0.7 < 0.85 → INFORMATIONAL via the amplifier, NOT floored to AR
     assert signals[0].severity == "INFORMATIONAL"
 
+
+def test_macro_negative_above_threshold_not_floored_past_amplifier_demotion(monkeypatch):
+    """A 0.9-confidence negative macro is not floored past an amplifier demotion.
+
+    The gate must prevent the floor from overriding a deliberate demotion:
+    confidence 0.9 is >= 0.85 (would have been floored pre-gate), but the
+    amplifier demotes it below ACTION_REQUIRED for a low-weight exposed holding.
+    """
+    from signal_system.classifier import news_classifier as nc
+
+    _patch_common(monkeypatch, nc)
+    result = nc.ClassificationResult(
+        pillar_name="monetary_policy", confidence=0.9, direction="negative", rationale="fed hike"
+    )
+    monkeypatch.setattr(nc, "_call_with_retry", lambda h, s: (result, _usage()))
+    monkeypatch.setattr(nc, "fetch_quotes", lambda tickers: {"SPY": {"c": 500.0}})
+    # SPY exposed but very low weight vs the median → amplifier demotes
+    monkeypatch.setattr(
+        "signal_system.classifier.news_classifier.get_position_weights",
+        lambda: {"SPY": 0.5, "AAPL": 20.0, "NVDA": 20.0},
+    )
+
+    from signal_system.data.thesis_loader import Thesis, Pillar
+    from datetime import date
+    thesis = Thesis(review_due=date(2099, 1, 1), pillars=[
+        Pillar(name="monetary_policy", description="Fed", positive_signals=["cut"],
+               negative_signals=["hike"], holdings_exposed=["SPY"])
+    ])
+
+    signals = nc.classify_headlines(
+        None,
+        [{"headline": "Fed hikes unexpectedly"}],
+        thesis=thesis,
+        thesis_version_hash="h",
+    )
+
+    assert len(signals) == 1
+    assert signals[0].ticker is None
+    assert signals[0].severity == "INFORMATIONAL"
+
