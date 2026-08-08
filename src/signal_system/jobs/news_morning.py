@@ -266,7 +266,14 @@ def run() -> None:
                 expected_counts=status_counts,
                 delivered_signals=persistence_summary.delivered_signals,
             )
-            _send_digest_once(subject=digest.subject, body=digest.body)
+            unacted = repository.count_unacted_delivered_older_than(days=7)
+            body = digest.body
+            if unacted > 0:
+                body = (
+                    f"{digest.body}\n\nREMINDER: {unacted} delivered signal(s) from "
+                    "7+ days ago are unreviewed — run `log-action <prefix> --acted|--passed`."
+                )
+            _send_digest_once(subject=digest.subject, body=body)
             confirm_delivered_signals(persistence_summary.delivered_signals)
             repository.update_run(run_id, "success")
     except Exception:

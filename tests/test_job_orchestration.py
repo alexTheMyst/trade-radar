@@ -693,6 +693,50 @@ def test_news_morning_digest_monitoring_breakdown_composed_end_to_end(db):
     assert "Monitoring: 3 (off-thesis 1, volume-cap 1, reconciled 1)" in body
 
 
+def test_news_morning_appends_unacted_nag_when_overdue(db):
+    from signal_system.jobs import news_morning
+
+    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
+
+    with patch("signal_system.jobs.news_morning.heartbeat.heartbeat", _noop_heartbeat), \
+         patch("signal_system.jobs.news_morning._now_et", return_value=fixed_now), \
+         patch("signal_system.jobs.news_morning.get_core_holdings", return_value=["AAPL"]), \
+         patch("signal_system.jobs.news_morning.get_position_weights", return_value={"AAPL": 10.0}), \
+         patch("signal_system.jobs.news_morning.repository.get_latest_successful_run_date", return_value=date(2026, 5, 16)), \
+         patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
+         patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[]), \
+         patch("signal_system.jobs.news_morning.classify_headlines", return_value=[]), \
+         patch("signal_system.jobs.news_morning.route_signals", return_value=[]), \
+         patch("signal_system.jobs.news_morning.repository.count_unacted_delivered_older_than", return_value=3), \
+         patch("signal_system.jobs.news_morning.telegram_sender.send_message") as mock_send:
+        news_morning.run()
+
+    body = mock_send.call_args.args[0]
+    assert "3 delivered signal(s) from 7+ days ago are unreviewed" in body
+
+
+def test_news_morning_no_nag_when_none_unacted(db):
+    from signal_system.jobs import news_morning
+
+    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
+
+    with patch("signal_system.jobs.news_morning.heartbeat.heartbeat", _noop_heartbeat), \
+         patch("signal_system.jobs.news_morning._now_et", return_value=fixed_now), \
+         patch("signal_system.jobs.news_morning.get_core_holdings", return_value=["AAPL"]), \
+         patch("signal_system.jobs.news_morning.get_position_weights", return_value={"AAPL": 10.0}), \
+         patch("signal_system.jobs.news_morning.repository.get_latest_successful_run_date", return_value=date(2026, 5, 16)), \
+         patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
+         patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[]), \
+         patch("signal_system.jobs.news_morning.classify_headlines", return_value=[]), \
+         patch("signal_system.jobs.news_morning.route_signals", return_value=[]), \
+         patch("signal_system.jobs.news_morning.repository.count_unacted_delivered_older_than", return_value=0), \
+         patch("signal_system.jobs.news_morning.telegram_sender.send_message") as mock_send:
+        news_morning.run()
+
+    body = mock_send.call_args.args[0]
+    assert "unreviewed" not in body
+
+
 def test_discovery_routes_persists_and_sends_digest(db):
     from signal_system.jobs import discovery
 

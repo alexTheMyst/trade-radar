@@ -5,10 +5,11 @@ Every connection is opened via _connect() which applies PRAGMA busy_timeout = 30
 to prevent "database is locked" errors under concurrent Task Scheduler runs.
 """
 
+import re
 import sqlite3
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -667,6 +668,112 @@ def get_earliest_signal_date() -> date | None:
             .astimezone(ZoneInfo("America/New_York"))
             .date()
         )
+    finally:
+        conn.close()
+
+
+def find_signals_by_alert_prefix(prefix: str) -> list[dict]:
+    """Return DELIVERED signals whose alert_id starts with *prefix*.
+
+    Raises ValueError for non-hex or out-of-range prefixes (CLI ambiguity guard
+    depends on this). Returns all matching rows so the caller can detect
+    ambiguity (>1) or no-match (0).
+    """
+    if not re.fullmatch(r"[0-9a-fA-F]{4,64}", prefix):
+        raise ValueError(
+            f"alert_id prefix must be 4-64 hex chars, got {prefix!r}"
+        )
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT alert_id, timestamp, agent, severity, ticker, title, acted, acted_at
+            FROM signals
+            WHERE alert_id LIKE ? || '%'
+            ORDER BY timestamp DESC
+            """,
+            (prefix,),
+        )
+        columns = [col[0] for col in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def update_signal_acted(
+    alert_id: str, *, acted: bool, user_note: str | None = None
+) -> None:
+    """Record the operator's acted/passed decision on a signal.
+
+    Stamps acted_at with the current ET time. acted=True → 1, acted=False → 0.
+    """
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            UPDATE signals
+            SET acted = ?, acted_at = ?, user_note = COALESCE(?, user_note)
+            WHERE alert_id = ?
+            """,
+            (
+                int(acted),
+                datetime.now(ZoneInfo("America/New_York")).isoformat(),
+                user_note,
+                alert_id,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_recent_delivered_signals(
+    days: int = 14, *, now: datetime | None = None
+) -> list[dict]:
+    """Return DELIVERED signals from the last *days* (ET), newest first."""
+    effective_now = now or datetime.now(ZoneInfo("America/New_York"))
+    cutoff = (effective_now.astimezone(ZoneInfo("America/New_York")) - timedelta(days=days)).isoformat()
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT alert_id, timestamp, agent, severity, ticker, title, score,
+                   acted, acted_at, routing_status
+            FROM signals
+            WHERE routing_status = 'DELIVERED'
+              AND timestamp >= ?
+            ORDER BY timestamp DESC
+            """,
+            (cutoff,),
+        )
+        columns = [col[0] for col in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def count_unacted_delivered_older_than(
+    days: int = 7, *, now: datetime | None = None
+) -> int:
+    """Count DELIVERED signals older than *days* (ET) with acted IS NULL."""
+    effective_now = now or datetime.now(ZoneInfo("America/New_York"))
+    cutoff = (effective_now.astimezone(ZoneInfo("America/New_York")) - timedelta(days=days)).isoformat()
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT COUNT(*) FROM signals
+            WHERE routing_status = 'DELIVERED'
+              AND acted IS NULL
+              AND timestamp < ?
+            """,
+            (cutoff,),
+        )
+        row = cursor.fetchone()
+        return int(row[0]) if row is not None else 0
     finally:
         conn.close()
 

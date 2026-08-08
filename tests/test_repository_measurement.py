@@ -175,3 +175,122 @@ def test_get_earliest_signal_date_returns_oldest_signal(db):
 
 def test_get_earliest_signal_date_empty(db):
     assert repository.get_earliest_signal_date() is None
+
+
+# ---------------------------------------------------------------------------
+# acted-recording CLI support
+# ---------------------------------------------------------------------------
+
+def test_find_signals_by_alert_prefix_matches_unique(db):
+    sig = _sig(title="[off_thesis] headline", severity="INFORMATIONAL")
+    repository.insert_signal(sig, routing_status="DELIVERED")
+
+    matches = repository.find_signals_by_alert_prefix(sig.alert_id[:8])
+    assert len(matches) == 1
+    assert matches[0]["alert_id"] == sig.alert_id
+    assert matches[0]["acted"] is None
+
+
+def test_find_signals_by_alert_prefix_ambiguous_returns_all(db):
+    base = _sig(title="[off_thesis] a", severity="INFORMATIONAL")
+    other = _sig(title="[off_thesis] b", severity="INFORMATIONAL")
+    # Two signals sharing the same 8-char prefix
+    same_prefix = base.alert_id[:8]
+    colliding = _sig(title="[off_thesis] c", severity="INFORMATIONAL")
+    colliding = Signal(
+        ticker=colliding.ticker, score=colliding.score, severity=colliding.severity,
+        agent=colliding.agent, timestamp=colliding.timestamp,
+        alert_id=same_prefix + "deadbeefcafe1234", title=colliding.title,
+        body=colliding.body,
+    )
+    repository.insert_signal(base, routing_status="DELIVERED")
+    repository.insert_signal(other, routing_status="DELIVERED")
+    repository.insert_signal(colliding, routing_status="DELIVERED")
+
+    matches = repository.find_signals_by_alert_prefix(same_prefix)
+    assert len(matches) == 2
+
+
+def test_find_signals_by_alert_prefix_invalid_raises(db):
+    with pytest.raises(ValueError):
+        repository.find_signals_by_alert_prefix("not-hex!")
+    with pytest.raises(ValueError):
+        repository.find_signals_by_alert_prefix("")
+
+
+def test_update_signal_acted_stamps_acted_at(db):
+    sig = _sig(title="[off_thesis] headline", severity="INFORMATIONAL")
+    repository.insert_signal(sig, routing_status="DELIVERED")
+
+    repository.update_signal_acted(sig.alert_id, acted=True, user_note="bought 10")
+
+    conn = sqlite3.connect(db)
+    row = conn.execute(
+        "SELECT acted, acted_at, user_note FROM signals WHERE alert_id=?", (sig.alert_id,)
+    ).fetchone()
+    conn.close()
+    assert row[0] == 1
+    assert row[1] is not None
+    assert row[2] == "bought 10"
+
+
+def test_update_signal_acted_passed_sets_zero(db):
+    sig = _sig(title="[off_thesis] headline", severity="INFORMATIONAL")
+    repository.insert_signal(sig, routing_status="DELIVERED")
+
+    repository.update_signal_acted(sig.alert_id, acted=False, user_note=None)
+
+    conn = sqlite3.connect(db)
+    row = conn.execute("SELECT acted, acted_at, user_note FROM signals WHERE alert_id=?", (sig.alert_id,)).fetchone()
+    conn.close()
+    assert row[0] == 0
+    assert row[1] is not None
+
+
+def test_list_recent_delivered_signals_filters_by_window_and_status(db):
+    older = _sig(
+        title="[off_thesis] older",
+        severity="INFORMATIONAL",
+        timestamp=datetime(2026, 7, 1, 8, 0, tzinfo=timezone.utc),
+    )
+    recent = _sig(
+        title="[off_thesis] recent",
+        severity="INFORMATIONAL",
+        timestamp=datetime(2026, 7, 20, 8, 0, tzinfo=timezone.utc),
+    )
+    suppressed = _sig(
+        title="[off_thesis] suppressed",
+        severity="INFORMATIONAL",
+        timestamp=datetime(2026, 7, 21, 8, 0, tzinfo=timezone.utc),
+    )
+    repository.insert_signal(older, routing_status="DELIVERED")
+    repository.insert_signal(recent, routing_status="DELIVERED")
+    repository.insert_signal(suppressed, routing_status="SUPPRESSED")
+
+    rows = repository.list_recent_delivered_signals(days=14, now=datetime(2026, 7, 25, 8, 0, tzinfo=timezone.utc))
+    assert [row["alert_id"] for row in rows] == [recent.alert_id]
+
+
+def test_count_unacted_delivered_older_than(db):
+    unacted_old = _sig(
+        title="[off_thesis] old unacted",
+        severity="INFORMATIONAL",
+        timestamp=datetime(2026, 7, 1, 8, 0, tzinfo=timezone.utc),
+    )
+    acted_old = _sig(
+        title="[off_thesis] old acted",
+        severity="INFORMATIONAL",
+        timestamp=datetime(2026, 7, 2, 8, 0, tzinfo=timezone.utc),
+    )
+    recent_unacted = _sig(
+        title="[off_thesis] recent",
+        severity="INFORMATIONAL",
+        timestamp=datetime(2026, 7, 22, 8, 0, tzinfo=timezone.utc),
+    )
+    repository.insert_signal(unacted_old, routing_status="DELIVERED")
+    repository.insert_signal(acted_old, routing_status="DELIVERED")
+    repository.update_signal_acted(acted_old.alert_id, acted=True)
+    repository.insert_signal(recent_unacted, routing_status="DELIVERED")
+
+    count = repository.count_unacted_delivered_older_than(days=7, now=datetime(2026, 7, 25, 8, 0, tzinfo=timezone.utc))
+    assert count == 1  # only unacted_old (7/1) is >7 days old and unacted
