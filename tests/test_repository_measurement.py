@@ -280,6 +280,15 @@ def test_find_signals_by_alert_prefix_invalid_raises(db):
         repository.find_signals_by_alert_prefix("")
 
 
+def test_find_signals_by_alert_prefix_excludes_non_delivered(db):
+    """Prefix lookup only matches DELIVERED rows — MONITORING/PENDING must not collide."""
+    sig = _sig(title="[off_thesis] headline", severity="INFORMATIONAL")
+    repository.insert_signal(sig, routing_status="MONITORING")
+
+    matches = repository.find_signals_by_alert_prefix(sig.alert_id[:8])
+    assert matches == []
+
+
 def test_update_signal_acted_stamps_acted_at(db):
     sig = _sig(title="[off_thesis] headline", severity="INFORMATIONAL")
     repository.insert_signal(sig, routing_status="DELIVERED")

@@ -107,11 +107,32 @@ def render_corpus_item(item: dict) -> str:
 
     The title goes through _sanitize_headline so any stray control chars or
     angle brackets (which survive storage) are neutralized before the LLM sees
-    them — untrusted-content discipline.
+    them — untrusted-content discipline. The body is sanitized the same way
+    (control chars stripped, angle brackets escaped) so it cannot forge the
+    <item>/</item> boundary either.
     """
     sanitized_title = _sanitize_headline(item["title"])
-    body = item.get("body") or ""
-    return f"<item>{sanitized_title}\n{body}</item>"
+    sanitized_body = _sanitize_body(item.get("body") or "")
+    return f"<item>{sanitized_title}\n{sanitized_body}</item>"
+
+
+def _sanitize_body(text: str) -> str:
+    """Strip control chars and escape angle brackets in a body string.
+
+    Mirrors _sanitize_headline's safety operations without the <headline>
+    wrapper — bodies carry the LLM's own rationale but must not be able to
+    forge the enclosing <item> trust boundary.
+    """
+    import re as _re
+    import unicodedata as _unidata
+
+    cleaned = _re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
+    cleaned = "".join(
+        ch for ch in cleaned
+        if _unidata.category(ch)[0] != "C" or ch in ("\n", "\t")
+    )
+    cleaned = cleaned.replace("<", "&lt;").replace(">", "&gt;")
+    return " ".join(cleaned.split())
 
 
 def build_system_prompt(
@@ -259,11 +280,16 @@ def build_report_text(
     return "\n".join(lines)
 
 
-def run_weekly_synthesis(*, client=None, now_et=None) -> str:
+def run_weekly_synthesis(*, run_id: str | None = None, client=None, now_et=None) -> str:
     """Scheduled weekly synthesis: fetch corpus, call LLM, render report text.
 
     Returns the rendered report text. Raises on LLM failure (heartbeat /fail).
+
+    *run_id* is the per-run UUID from the job's insert_run() — threaded into the
+    synthesis_reports row so weekly history is never overwritten. Direct callers
+    that omit it fall back to a constant (test/one-off use only).
     """
+    effective_run_id = run_id or "weekly-synthesis"
     effective_now = now_et or datetime.now(_ET)
     week_start = (effective_now - timedelta(days=7)).date()
 
@@ -273,10 +299,14 @@ def run_weekly_synthesis(*, client=None, now_et=None) -> str:
     industries = get_industries()
     industry_lines: list[str] = []
     if industries:
-        # Reuse discovery's rollup over the corpus tickers only
-        composite = {i["ticker"]: i.get("score") for i in corpus if i.get("ticker")}
-        composite = {t: float(s) for t, s in composite.items() if s is not None}
-        for rollup in industry_rollup(composite, industries, min_members=1, top_n=5):
+        # The week's Discovery composites (0-100) — not corpus news confidences.
+        discovery_rows = repository.get_agent_signals_since("discovery_agent", week_start)
+        composite = {
+            r["ticker"]: float(r["score"])
+            for r in discovery_rows
+            if r.get("ticker") and r.get("score") is not None
+        }
+        for rollup in industry_rollup(composite, industries, min_members=3, top_n=5):
             industry_lines.append(f"{rollup.industry}: {rollup.median_composite:.0f}")
 
     client = client or Anthropic(api_key=config.ANTHROPIC_API_KEY)
@@ -298,7 +328,7 @@ def run_weekly_synthesis(*, client=None, now_et=None) -> str:
     )
 
     repository.insert_synthesis_report(
-        run_id="weekly-synthesis",
+        run_id=effective_run_id,
         week_start=week_start.isoformat(),
         corpus_size=len(corpus),
         themes_json=json.dumps([t.model_dump() for t in outcome.themes]),

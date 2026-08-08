@@ -148,3 +148,17 @@ def test_comment_rows_dropped(tmp_path, monkeypatch, db, bundle):
 
     rows = ub.build_merged_universe()
     assert all(not r["ticker"].startswith("#") for r in rows)
+
+
+def test_rows_to_csv_quotes_fields_with_commas(tmp_path, monkeypatch, db, bundle):
+    """csv.writer quoting keeps comma-containing names parseable by csv.DictReader."""
+    import csv as _csv
+    from signal_system.data.universe_builder import _rows_to_csv
+
+    rows = [{"ticker": "TPR", "name": "Tapestry, Inc.", "sector": "Consumer",
+             "industry": "Luxury Goods", "core_holding": "1", "weight_pct": "5.0", "k1_etf": "0"}]
+    content = _rows_to_csv(rows)
+    parsed = list(_csv.DictReader(content.splitlines()))
+    assert parsed[0]["ticker"] == "TPR"
+    assert parsed[0]["name"] == "Tapestry, Inc."
+    assert parsed[0]["core_holding"] == "1"

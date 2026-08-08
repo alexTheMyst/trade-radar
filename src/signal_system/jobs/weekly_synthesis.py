@@ -20,7 +20,7 @@ def run() -> None:
     run_id = repository.insert_run("weekly-synthesis")
     try:
         with heartbeat():
-            text = run_weekly_synthesis()
+            text = run_weekly_synthesis(run_id=run_id)
             logger.info("weekly-synthesis:\n%s", text)
             print(text)
             send_message(text)

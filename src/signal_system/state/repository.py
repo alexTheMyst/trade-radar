@@ -844,6 +844,7 @@ def find_signals_by_alert_prefix(prefix: str) -> list[dict]:
             SELECT alert_id, timestamp, agent, severity, ticker, title, acted, acted_at
             FROM signals
             WHERE alert_id LIKE ? || '%'
+              AND routing_status = 'DELIVERED'
             ORDER BY timestamp DESC
             """,
             (prefix,),

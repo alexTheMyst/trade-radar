@@ -134,12 +134,13 @@ def build_merged_universe() -> list[dict]:
 
 def _rows_to_csv(rows: list[dict]) -> str:
     columns = ["ticker", "name", "sector", "industry", "core_holding", "weight_pct", "k1_etf"]
-    buffer: list[str] = [",".join(columns)]
+    import io as _io
+    buffer = _io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(columns)
     for row in rows:
-        buffer.append(
-            ",".join(row.get(col, "") for col in columns)
-        )
-    return "\n".join(buffer) + "\n"
+        writer.writerow([row.get(col, "") for col in columns])
+    return buffer.getvalue()
 
 
 def apply_merged_universe(*, dry_run: bool = True) -> int:

@@ -96,7 +96,9 @@ def holdings_universe_drift(
     if holdings is None:
         try:
             holdings = load_holdings()
-        except EmptyHoldingsError:
+        except (EmptyHoldingsError, ValueError, KeyError, TypeError):
+            # Missing, empty, or malformed holdings.csv must never take down the
+            # weekly-synthesis job after the paid LLM call — best-effort drift.
             holdings = []
     if core_holdings is None:
         from signal_system.data.universe import get_core_holdings
