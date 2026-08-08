@@ -783,15 +783,70 @@ def count_unacted_delivered_older_than(
         conn.close()
 
 
-def get_delivered_discovery_signals(
+def list_signals_for_review() -> list[dict]:
+    """Return routable signals with price snapshots for the review report.
+
+    Agents discovery_agent/news_classifier, routing DELIVERED/SUPPRESSED,
+    signal_price_snapshot NOT NULL (excludes legacy DAILY_CLOSE rows by
+    construction since they carry no snapshot). Excludes MONITORING corpus.
+    """
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT alert_id, timestamp, agent, severity, ticker, title, score,
+                   routing_status, signal_price_snapshot, outcome_price_30d,
+                   outcome_price_90d, direction, acted, weight_version
+            FROM signals
+            WHERE agent IN ('discovery_agent', 'news_classifier')
+              AND routing_status IN ('DELIVERED', 'SUPPRESSED')
+              AND signal_price_snapshot IS NOT NULL
+              AND signal_price_snapshot > 0
+            ORDER BY timestamp ASC
+            """
+        )
+        columns = [col[0] for col in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_llm_call_summary() -> list[dict]:
+    """Aggregate llm_calls per job: call count and token sums."""
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT job,
+                   COUNT(*) AS calls,
+                   COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                   COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                   COALESCE(SUM(cache_read_input_tokens), 0) AS cache_read_input_tokens,
+                   COALESCE(SUM(cache_creation_input_tokens), 0) AS cache_creation_input_tokens
+            FROM llm_calls
+            GROUP BY job
+            ORDER BY job
+            """
+        )
+        columns = [col[0] for col in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_routable_discovery_signals(
     since: date,
     *,
     excluded_tickers: set[str] | None = None,
     limit: int = 20,
 ) -> list[dict]:
-    """Return recent DELIVERED discovery_agent signals ordered by score desc.
+    """Return recent routable (DELIVERED or SUPPRESSED) discovery_agent signals by score desc.
 
-    Used by the advisor to find new-buy candidates not already held.
+    Includes SUPPRESSED so the daily delivery budget can't starve analysis —
+    the advisor's new-buy funnel should see every top scorer, not just the few
+    the router delivered that day.
     """
     conn = _connect()
     try:
@@ -800,7 +855,7 @@ def get_delivered_discovery_signals(
             SELECT ticker, score, timestamp
             FROM signals
             WHERE agent = 'discovery_agent'
-              AND routing_status = 'DELIVERED'
+              AND routing_status IN ('DELIVERED', 'SUPPRESSED')
               AND timestamp >= ?
             ORDER BY score DESC, timestamp DESC
             LIMIT ?
