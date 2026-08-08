@@ -37,6 +37,11 @@ _FACTOR_LABELS: dict[str, str] = {
     "range_vs_20d": "range",
 }
 
+# Scoring-regime stamp for IC interpretability. NULL in the DB = legacy-mixed
+# regime (pre-2026-05-31 single-day scores + early unstamped 50/30/20 signals).
+# Bump to "xsect-50/30/20-absgate-v3" when the absolute gates land (Phase 3.3).
+WEIGHT_VERSION: str = "xsect-50/30/20-v2"
+
 
 def _rank_values(values: dict[str, float]) -> dict[str, float]:
     """Rank tickers 1.0 (top) to 0.0 (bottom), alphabetical tiebreak for equal values."""
@@ -166,6 +171,7 @@ def score_universe(tickers: list[str], run_id: str, date_iso: str) -> list[Signa
             model_version=None,
             thesis_version_hash=None,
             signal_price_snapshot=price_snapshot,
+            weight_version=WEIGHT_VERSION,
         )
 
         signals_emitted.append(signal)

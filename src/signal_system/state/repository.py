@@ -119,6 +119,9 @@ def init_db() -> None:
         # Reconciliation phase additions
         _ensure_column(cursor, "signals", "pillar", "TEXT")
 
+        # Scoring-regime stamp for IC interpretability (Phase 2)
+        _ensure_column(cursor, "signals", "weight_version", "TEXT")
+
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS advice (
                 advice_id TEXT PRIMARY KEY,
@@ -209,8 +212,9 @@ def insert_signal(
             INSERT OR IGNORE INTO signals (
                 alert_id, timestamp, agent, severity, ticker, title, body,
                 score, routing_status, signal_price_snapshot, model_version,
-                thesis_version_hash, demoted_from, direction, pillar, suppression_reason
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                thesis_version_hash, demoted_from, direction, pillar,
+                suppression_reason, weight_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             signal.alert_id,
             signal.timestamp.isoformat(),
@@ -228,6 +232,7 @@ def insert_signal(
             signal.direction,
             signal.pillar,
             suppression_reason,
+            signal.weight_version,
         ))
         conn.commit()
         return cursor.rowcount == 1

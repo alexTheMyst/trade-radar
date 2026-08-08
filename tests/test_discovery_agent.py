@@ -64,6 +64,7 @@ def test_momentum_scoring_three_tickers(db):
     assert strong_sig.score == pytest.approx(100.0)
     assert strong_sig.severity == "ACTION_REQUIRED"
     assert set(strong_sig.sub_scores.keys()) == {"momentum_20d", "momentum_5d", "range_vs_20d"}
+    assert strong_sig.weight_version == "xsect-50/30/20-v2"
 
 
 def test_ticker_with_fewer_than_5_days_skipped(db):

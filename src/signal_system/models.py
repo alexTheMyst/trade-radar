@@ -36,6 +36,7 @@ class Signal:
     signal_price_snapshot: float | None = None
     direction: str | None = None  # "positive" | "negative" | "neutral" from ClassificationResult
     pillar: str | None = None  # thesis pillar name from ClassificationResult; None for non-news signals
+    weight_version: str | None = None  # scoring-regime stamp (Discovery); NULL = legacy-mixed regime
 
 
 def compute_alert_id(ticker: str | None, date_iso: str, rule: str, agent: str) -> str:

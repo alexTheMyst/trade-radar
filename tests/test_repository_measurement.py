@@ -177,6 +177,16 @@ def test_get_earliest_signal_date_empty(db):
     assert repository.get_earliest_signal_date() is None
 
 
+def test_insert_signal_persists_weight_version(db):
+    sig = _sig(title="[off_thesis] headline", severity="INFORMATIONAL")
+    repository.insert_signal(sig, routing_status="DELIVERED")
+
+    conn = sqlite3.connect(db)
+    row = conn.execute("SELECT weight_version FROM signals WHERE alert_id=?", (sig.alert_id,)).fetchone()
+    conn.close()
+    assert row[0] is None  # NULL default for non-Discovery signals
+
+
 # ---------------------------------------------------------------------------
 # acted-recording CLI support
 # ---------------------------------------------------------------------------

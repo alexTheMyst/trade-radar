@@ -243,6 +243,7 @@ def test_init_db_idempotent_and_new_schema(tmp_path, monkeypatch):
         "thesis_version_hash",
         "demoted_from",
         "suppression_reason",
+        "weight_version",
     ):
         assert col in col_names, f"Column {col!r} missing from signals"
 
@@ -254,6 +255,7 @@ def test_init_db_idempotent_and_new_schema(tmp_path, monkeypatch):
     }
     assert "wash_sale" in table_names, "wash_sale table not found"
     assert "llm_calls" in table_names, "llm_calls table not found"
+    assert "benchmark_prices" in table_names, "benchmark_prices table not found"
     conn.close()
 
 
