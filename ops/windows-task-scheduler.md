@@ -46,3 +46,7 @@ Do not use relative paths. Task Scheduler often starts from `C:\Windows\System32
   - `uv run python -m signal_system list-signals [--days N]` — recent DELIVERED signals
   - `uv run python -m signal_system log-action <prefix> --acted|--passed [--note "..."]` — record your acted/passed decision (the unreviewed nag in news-morning clears when acted is set)
 - Healthchecks should remain the source of truth for run success/failure; use non-email alerts there so the operator can distinguish "job ran" from "digest arrived."
+
+## Finnhub general-news feed probe (2026-08-07)
+
+`general_news('general', min_id=0)` is **available on the free tier** with the production key: returned 100 items, recency within hours, fields `id`, `datetime`, `headline`, `source`, `summary`, `related`, `category`, `url`, `image`. The macro/general-news ingestion (news-morning) is built against this endpoint.
