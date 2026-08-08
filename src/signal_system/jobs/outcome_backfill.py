@@ -62,6 +62,46 @@ def _default_fetch_close_on_date(ticker: str, target_date: datetime) -> float | 
     return float(matching.iloc[0]["Close"])
 
 
+def backfill_benchmark(*, ticker: str = "SPY") -> int:
+    """Backfill daily benchmark closes from the earliest signal date to now.
+
+    One-time bootstrap so excess-return measurement has a SPY series for every
+    historical signal. Uses yahoo_client.fetch_history (never raises; returns
+    {} on failure). Rows are upserted with source='yfinance_backfill' and may
+    overwrite quote-sourced rows written by daily-close.
+
+    Returns the number of benchmark rows written.
+    """
+    earliest = repository.get_earliest_signal_date()
+    if earliest is None:
+        return 0
+
+    days_needed = max(30, (datetime.now(_ET) - datetime.combine(earliest, datetime.min.time(), tzinfo=_ET)).days + 10)
+    history = _yahoo_client.fetch_history([ticker], days=days_needed)
+    df = history.get(ticker)
+    if df is None or df.empty:
+        return 0
+
+    index = df.index
+    if getattr(index, "tz", None) is not None:
+        index = index.tz_localize(None)
+
+    written = 0
+    for idx, row in df.iterrows():
+        # Iterating over the normalized index so a tz-aware df still works
+        date_iso = idx.strftime("%Y-%m-%d") if hasattr(idx, "strftime") else idx
+        if str(date_iso) < earliest.isoformat():
+            continue
+        repository.upsert_benchmark_price(
+            ticker=ticker,
+            date_iso=str(date_iso),
+            close=float(row["Close"]),
+            source="yfinance_backfill",
+        )
+        written += 1
+    return written
+
+
 def backfill_due_outcomes(
     *,
     now_et: datetime | None = None,
