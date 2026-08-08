@@ -560,6 +560,45 @@ def get_recent_signals(
     return results
 
 
+def get_monitoring_signals_since(
+    since: date,
+    *,
+    title_prefixes: tuple[str, ...] = ("[off_thesis]", "[volume_cap]"),
+    limit: int = 500,
+) -> list[dict]:
+    """Return recent MONITORING signals whose title starts with a given prefix.
+
+    The MONITORING corpus is the audit trail for off-thesis classifications,
+    volume-cap overflow, and parse failures. The weekly synthesis job reads
+    this to find new pillar candidates.
+
+    `[` is not a SQLite LIKE wildcard, so prefix filters are safe as-is.
+    Returns newest-first rows; each row is a sqlite3.Row-like dict with the
+    full signals columns plus routing_status.
+    """
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        query = f"""
+            SELECT alert_id, timestamp, agent, severity, ticker, title, body,
+                   score, routing_status, direction, pillar
+            FROM signals
+            WHERE routing_status = 'MONITORING'
+              AND timestamp >= ?
+              AND ({" OR ".join(f"title LIKE ? || '%'" for _ in title_prefixes)})
+            ORDER BY timestamp DESC
+            LIMIT ?
+        """
+        params: list = [since.isoformat()]
+        params.extend(title_prefixes)
+        params.append(limit)
+        cursor.execute(query, params)
+        columns = [col[0] for col in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
 def get_delivered_discovery_signals(
     since: date,
     *,
