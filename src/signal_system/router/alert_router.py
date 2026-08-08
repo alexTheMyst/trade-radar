@@ -33,6 +33,12 @@ def route_signals(signals: list[Signal]) -> list[tuple[Signal, str, str | None, 
     budget was already full — either from earlier today or after in-batch
     demotion still left no room).
 
+    AR signals always demote before suppressing, including across runs: when
+    today's AR budget is already exhausted (by an earlier run), a new AR
+    signal is demoted to INFORMATIONAL and competes for the INFO pool rather
+    than being suppressed outright. Only if the INFO pool is also full does it
+    get suppressed (cap_exhausted) — still carrying demoted_from.
+
     The two fields answer different questions and are NOT mutually exclusive:
     an ACTION_REQUIRED signal that loses the AR slot is demoted into the INFO
     pool, and if it then also loses the INFO competition it carries both a
@@ -79,8 +85,6 @@ def route_signals(signals: list[Signal]) -> list[tuple[Signal, str, str | None, 
     for i, sig in enumerate(ar_signals):
         if i < ar_remaining:
             results.append((sig, "DELIVERED", None, None))
-        elif ar_remaining == 0 and ar_used >= BUDGET_AR:
-            results.append((sig, "SUPPRESSED", None, "cap_exhausted"))
         else:
             demoted = dataclasses.replace(sig, severity="INFORMATIONAL")
             demoted_ids.add(demoted.alert_id)

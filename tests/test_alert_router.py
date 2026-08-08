@@ -233,11 +233,16 @@ def test_mixed_batch_allocation(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# T-AR-03: cross-run — DB already has 1 AR DELIVERED → new AR → cap_exhausted
+# T-AR-03: cross-run — DB already has 1 AR DELIVERED → new AR → demote-then-compete
 # ---------------------------------------------------------------------------
 
 def test_cross_run_ar_full(db, monkeypatch):
-    """No eviction: if DB has 1 AR DELIVERED today, new AR gets cap_exhausted."""
+    """AR budget already consumed today: new AR is demoted to INFO, not suppressed outright.
+
+    Demote-before-suppress (suppressed-signals-spec): an AR that can't get an AR
+    slot is still worth delivering as INFO if INFO has room. With INFO room free,
+    the demoted AR is DELIVERED as INFORMATIONAL carrying demoted_from.
+    """
     from zoneinfo import ZoneInfo
     today_et = datetime.now(ZoneInfo("America/New_York"))
     prior_sig = Signal(
@@ -257,9 +262,34 @@ def test_cross_run_ar_full(db, monkeypatch):
     results = route_signals([new_sig])
     assert len(results) == 1
     _, rs, dmf, reason = results[0]
+    assert rs == "DELIVERED"
+    assert dmf == "ACTION_REQUIRED"
+    assert reason is None
+    assert results[0][0].severity == "INFORMATIONAL"
+
+
+def test_cross_run_ar_full_and_info_full_demoted_then_suppressed(db, monkeypatch):
+    """Both budgets exhausted today: demoted AR competes for INFO, loses, carries both fields."""
+    from zoneinfo import ZoneInfo
+    today_et = datetime.now(ZoneInfo("America/New_York"))
+    new_sig = Signal(
+        ticker="NEW", score=95.0, severity="ACTION_REQUIRED", agent="ag",
+        timestamp=today_et,
+        alert_id=compute_alert_id("NEW", today_et.date().isoformat(), "r2", "ag"),
+        title="new",
+    )
+    # Both budgets already fully consumed today via count_delivered_today
+    monkeypatch.setattr(
+        repository, "count_delivered_today",
+        lambda: {"ACTION_REQUIRED": 1, "INFORMATIONAL": BUDGET_INFO},
+    )
+    results = route_signals([new_sig])
+    assert len(results) == 1
+    sig, rs, dmf, reason = results[0]
     assert rs == "SUPPRESSED"
-    assert dmf is None
+    assert dmf == "ACTION_REQUIRED"
     assert reason == "cap_exhausted"
+    assert sig.severity == "INFORMATIONAL"
 
 
 # ---------------------------------------------------------------------------
