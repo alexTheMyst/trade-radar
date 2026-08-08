@@ -88,7 +88,7 @@ def test_compute_alert_id_deterministic():
 
 
 def test_daily_close_smoke(tmp_path, monkeypatch):
-    """daily_close.run() must write a DAILY_CLOSE signal row with score == SPY close price."""
+    """daily_close.run() must write a SPY benchmark_prices row, not a signal row."""
     monkeypatch.setattr(repository, "DB_PATH", tmp_path / "test.db")
     repository.init_db()
 
@@ -107,13 +107,16 @@ def test_daily_close_smoke(tmp_path, monkeypatch):
 
     conn = sqlite3.connect(tmp_path / "test.db")
     row = conn.execute(
-        "SELECT ticker, score FROM signals WHERE agent='DAILY_CLOSE'"
+        "SELECT ticker, date, close, source FROM benchmark_prices WHERE ticker='SPY'"
     ).fetchone()
+    signal_row = conn.execute("SELECT COUNT(*) FROM signals").fetchone()
     conn.close()
 
     assert row is not None
     assert row[0] == "SPY"
-    assert abs(row[1] - 591.42) < 0.01
+    assert row[3] == "finnhub_quote"
+    assert abs(row[2] - 591.42) < 0.01
+    assert signal_row[0] == 0, "daily-close must no longer write a signals row"
 
 
 def test_daily_close_finnhub_failure(tmp_path, monkeypatch):
@@ -141,7 +144,7 @@ def test_daily_close_finnhub_failure(tmp_path, monkeypatch):
 
 
 def test_daily_close_delivery_failure(tmp_path, monkeypatch):
-    """When Telegram delivery fails after signal insert, run is marked failed and signal row is retained."""
+    """When Telegram delivery fails after benchmark insert, run is marked failed and benchmark row is retained."""
     monkeypatch.setattr(repository, "DB_PATH", tmp_path / "test.db")
     repository.init_db()
 
@@ -154,12 +157,12 @@ def test_daily_close_delivery_failure(tmp_path, monkeypatch):
         with pytest.raises(urllib.error.HTTPError):
             daily_close.run()
 
-    # Signal was inserted before delivery failed — row should exist
+    # Benchmark was inserted before delivery failed — row should exist
     conn = sqlite3.connect(tmp_path / "test.db")
-    signal_row = conn.execute("SELECT ticker FROM signals WHERE agent='DAILY_CLOSE'").fetchone()
+    benchmark_row = conn.execute("SELECT ticker FROM benchmark_prices WHERE ticker='SPY'").fetchone()
     run_row = conn.execute("SELECT status FROM runs").fetchone()
     conn.close()
-    assert signal_row is not None, "Signal should be persisted even if delivery fails"
+    assert benchmark_row is not None, "Benchmark should be persisted even if delivery fails"
     assert run_row[0] == "failed"
 
 

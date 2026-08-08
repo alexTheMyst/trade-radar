@@ -2,7 +2,6 @@ import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from signal_system.models import Signal, compute_alert_id
 from signal_system.monitoring import heartbeat
 from signal_system.data import finnhub_client
 from signal_system.state import repository
@@ -17,21 +16,15 @@ def run() -> None:
             spy_close = finnhub_client.fetch_spy_close()
 
             now_et = datetime.now(ZoneInfo("America/New_York"))
-            alert_id = compute_alert_id("SPY", now_et.date().isoformat(), "daily_close", "DAILY_CLOSE")
-            signal = Signal(
+            repository.upsert_benchmark_price(
                 ticker="SPY",
-                score=spy_close,
-                severity="INFORMATIONAL",
-                agent="DAILY_CLOSE",
-                timestamp=now_et,
-                alert_id=alert_id,
-                title=f"SPY closed at {spy_close:.2f} (S&P 500 proxy)",
-                body="Daily close captured at market close.",
+                date_iso=now_et.date().isoformat(),
+                close=spy_close,
+                source="finnhub_quote",
             )
-            repository.insert_signal(signal)
 
             telegram_sender.send_message(
-                f"Daily Close — SPY {spy_close:.2f}\n\nSPY closed at {spy_close:.2f}\nAlert ID: {alert_id}"
+                f"Daily Close — SPY {spy_close:.2f}\n\nSPY closed at {spy_close:.2f}"
             )
             repository.update_run(run_id, "success")  # inside heartbeat: DB failure trips /fail ping
     except Exception:
