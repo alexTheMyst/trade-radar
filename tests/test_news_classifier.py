@@ -230,3 +230,49 @@ def test_weight_amplifier_promotes_high_weight_ticker(monkeypatch):
     # AR threshold = 85 - 9.4 = 75.6. Score=80 > 75.6 → ACTION_REQUIRED
     assert signals[0].severity == "ACTION_REQUIRED"
 
+
+def test_macro_headline_no_quote_call_and_underscore_alert_id(monkeypatch):
+    """ticker=None (macro feed) skips the quote fetch and uses '_' in the alert_id key."""
+    from signal_system.classifier import news_classifier as nc
+
+    _patch_common(monkeypatch, nc)
+    result = nc.ClassificationResult(
+        pillar_name="monetary_policy", confidence=0.9, direction="negative", rationale="fed hike"
+    )
+    monkeypatch.setattr(nc, "_call_with_retry", lambda h, s: (result, _usage()))
+
+    def _boom(tickers):
+        raise AssertionError("fetch_quotes must not be called for macro (ticker=None)")
+
+    monkeypatch.setattr(nc, "fetch_quotes", _boom)
+
+    from signal_system.data.thesis_loader import Thesis, Pillar
+    from datetime import date
+    thesis = Thesis(review_due=date(2099, 1, 1), pillars=[
+        Pillar(name="monetary_policy", description="Fed", positive_signals=["cut"],
+               negative_signals=["hike"], holdings_exposed=["SPY"])
+    ])
+
+    signals = nc.classify_headlines(
+        None,
+        [{"headline": "Fed hikes unexpectedly"}],
+        thesis=thesis,
+        thesis_version_hash="h",
+    )
+
+    assert len(signals) == 1
+    assert signals[0].ticker is None
+    assert signals[0].severity == "ACTION_REQUIRED"
+    assert signals[0].signal_price_snapshot is None
+    # compute_alert_id normalizes None -> '_' in the hashed key. Recompute the
+    # expected id from the headline + today's ET date to prove determinism.
+    from signal_system.classifier.news_classifier import headline_dedup_key
+    from signal_system.models import compute_alert_id, NEWS_CLASSIFIER_AGENT
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo as _ZI
+    today = _dt.now(_ZI("America/New_York")).date().isoformat()
+    expected_rule = f"news:{headline_dedup_key('GENERAL', 'Fed hikes unexpectedly')[:16]}"
+    assert signals[0].alert_id == compute_alert_id(
+        None, today, expected_rule, NEWS_CLASSIFIER_AGENT
+    )
+

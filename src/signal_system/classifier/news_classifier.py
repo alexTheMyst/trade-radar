@@ -229,7 +229,7 @@ def _severity_from_confidence(conf: float) -> str:
 
 def _weight_adjusted_severity(
     confidence: float,
-    ticker: str,
+    ticker: str | None,
     thesis: Thesis,
     parsed_pillar: str | None,
     weights: dict[str, float],
@@ -337,7 +337,7 @@ def _fetch_raw_text_on_parse_failure(headline_text: str, system_prompt: str) -> 
 
 
 def _make_parse_failure_signal(
-    ticker: str,
+    ticker: str | None,
     alert_id: str,
     headline_text: str,
     raw_response: str,
@@ -358,7 +358,7 @@ def _make_parse_failure_signal(
 
 
 def classify_headline(
-    ticker: str,
+    ticker: str | None,
     headline_dict: dict,
     thesis: Thesis,
     thesis_version_hash: str,
@@ -366,6 +366,10 @@ def classify_headline(
     weights: dict[str, float] | None = None,
 ) -> Signal:
     """Classify a single headline dict against the thesis. Returns a Signal.
+
+    ticker may be None for macro/general headlines — compute_alert_id already
+    normalizes None to '_', and the price-snapshot fetch is skipped for None
+    (macro rows stay out of price measurement).
 
     MONITORING signals are returned for off-thesis classifications (title
     prefixed `[off_thesis]`, rationale preserved in the body) and for parse
@@ -379,8 +383,9 @@ def classify_headline(
     article_date = _article_date_iso(headline_dict)
     date_iso = article_date or datetime.now(_ET).date().isoformat()
 
-    # Compute alert_id up front — same value for happy-path and parse-failure signals
-    headline_hash = headline_dedup_key(ticker, raw, article_date=article_date)
+    # Compute alert_id up front — same value for happy-path and parse-failure signals.
+    # Dedup namespace: None tickers share the "GENERAL" bucket.
+    headline_hash = headline_dedup_key(ticker or "GENERAL", raw, article_date=article_date)
     alert_id = compute_alert_id(ticker, date_iso, f"news:{headline_hash[:16]}", NEWS_CLASSIFIER_AGENT)
 
     try:
@@ -463,7 +468,7 @@ def classify_headline(
 
 
 def classify_headlines(
-    ticker: str,
+    ticker: str | None,
     headlines: list[dict],
     thesis: Thesis,
     thesis_version_hash: str,
@@ -505,7 +510,7 @@ def classify_headlines(
 
         # Layer 1: in-memory dedup — short-circuit before any API call
         article_date = _article_date_iso(item)
-        dedup_key = headline_dedup_key(ticker, str(raw), article_date=article_date)
+        dedup_key = headline_dedup_key(ticker or "GENERAL", str(raw), article_date=article_date)
         if dedup_key in dedup_seen:
             logger.debug("Skipping duplicate headline for %r (dedup hit)", ticker)
             continue
@@ -527,7 +532,9 @@ def classify_headlines(
     # routable signal was emitted, so off-thesis tickers don't waste a Finnhub call.
     # MONITORING signals (off-thesis exhaust, parse failures) get no outcome
     # measurement, so they are intentionally left without a snapshot.
-    if any(s.severity != "MONITORING" for s in results):
+    # ticker=None (macro headlines) never fetches a quote — the outcome backfill's
+    # ticker IS NOT NULL guard keeps macro rows out of price measurement.
+    if ticker is not None and any(s.severity != "MONITORING" for s in results):
         price = _fetch_price_snapshot(ticker)
         if price is not None:
             results = [

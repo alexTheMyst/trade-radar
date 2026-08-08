@@ -216,7 +216,7 @@ def _delivered_header_line(
     ar_winner: Signal | None,
     held_tickers: set[str],
 ) -> str:
-    header = f"{signal.ticker or 'UNKNOWN'} — {signal.severity}"
+    header = f"{signal.ticker or 'MACRO'} — {signal.severity}"
     if demoted_from is not None:
         if ar_winner is not None and ar_winner.alert_id != signal.alert_id:
             # Reachable with News Classifier confidences: a batch is never mixed
@@ -226,7 +226,7 @@ def _delivered_header_line(
             winner_score = format_score(ar_winner.agent, ar_winner.score)
             header += (
                 f" (demoted from {demoted_from}, outscored by "
-                f"{ar_winner.ticker or 'UNKNOWN'} {winner_score})"
+                f"{ar_winner.ticker or 'MACRO'} {winner_score})"
             )
         else:
             header += f" (demoted from {demoted_from})"
@@ -242,7 +242,7 @@ def _suppressed_line(
     held_tickers: set[str],
     score_deltas: dict[str, str],
 ) -> str:
-    ticker = signal.ticker or "UNKNOWN"
+    ticker = signal.ticker or "MACRO"
     score_str = format_score(signal.agent, signal.score)
     delta = score_deltas.get(signal.alert_id)
     if delta:

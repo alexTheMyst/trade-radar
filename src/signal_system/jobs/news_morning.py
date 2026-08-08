@@ -12,7 +12,7 @@ from signal_system.classifier.news_classifier import (
     article_dedup_key,
     headline_dedup_key,
 )
-from signal_system.data.finnhub_client import fetch_company_news
+from signal_system.data.finnhub_client import fetch_company_news, fetch_general_news
 from signal_system.data.thesis_loader import load_thesis
 from signal_system.data.universe import (
     get_core_holdings,
@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 _ET = ZoneInfo("America/New_York")
 _MAX_NEWS_HEADLINES = 50
+_MAX_GENERAL_HEADLINES = 20
 
 
 def _now_et() -> datetime:
@@ -73,7 +74,7 @@ def _news_item_datetime(item: dict) -> datetime | None:
 
 def _make_overflow_monitoring_signal(
     *,
-    ticker: str,
+    ticker: str | None,
     headline: str,
     headline_dt: datetime,
     generated_at: datetime,
@@ -82,7 +83,9 @@ def _make_overflow_monitoring_signal(
     # `timestamp` is signal-generation time (the run), NOT the article's publication
     # time — the article time is preserved in the body. Stamping article time here
     # produced phantom weekend/no-run rows in the signals table.
-    rule = f"volume_cap:{headline_dedup_key(ticker, headline)[:16]}"
+    # ticker=None marks a general/macro overflow row; compute_alert_id normalizes
+    # None -> '_' exactly like the classifier does.
+    rule = f"volume_cap:{headline_dedup_key(ticker or 'GENERAL', headline)[:16]}"
     return Signal(
         ticker=ticker,
         score=None,
@@ -123,25 +126,54 @@ def _collect_windowed_headlines(
     return candidates
 
 
-def _dedupe_and_cap_headlines(
-    candidates: list[tuple[str, dict, datetime]],
-) -> tuple[list[tuple[str, dict, datetime]], list[tuple[str, dict, datetime]]]:
-    unique_items: list[tuple[str, dict, datetime]] = []
-    seen: set[str] = set()
+def _collect_general_headlines(
+    *,
+    previous_close: datetime,
+    now_et: datetime,
+) -> list[tuple[str | None, dict, datetime]]:
+    """Fetch macro/general headlines; ticker is None for all of them."""
+    candidates: list[tuple[str | None, dict, datetime]] = []
+    for item in fetch_general_news("general"):
+        item_dt = _news_item_datetime(item)
+        if item_dt is None:
+            continue
+        if previous_close <= item_dt <= now_et:
+            candidates.append((None, item, item_dt))
+    return candidates
 
+
+def _dedupe_headlines(
+    candidates: list[tuple[str | None, dict, datetime]],
+    seen: set[str],
+) -> list[tuple[str | None, dict, datetime]]:
+    """Dedup by article identity into a caller-supplied *seen* set (ticker-independent)."""
+    unique: list[tuple[str | None, dict, datetime]] = []
     for ticker, item, item_dt in sorted(candidates, key=lambda row: row[2], reverse=True):
         headline = str(item.get("headline", ""))
         if not headline.strip():
             continue
-        # Dedup by article identity, not (ticker, headline): the same story is
-        # returned under every related ticker, and must alert only once.
         dedup_key = article_dedup_key(item)
         if dedup_key in seen:
             continue
         seen.add(dedup_key)
-        unique_items.append((ticker, item, item_dt))
+        unique.append((ticker, item, item_dt))
+    return unique
 
-    return unique_items[:_MAX_NEWS_HEADLINES], unique_items[_MAX_NEWS_HEADLINES:]
+
+def _dedupe_and_cap_headlines(
+    candidates: list[tuple[str | None, dict, datetime]],
+    *,
+    seen: set[str] | None = None,
+    cap: int = _MAX_NEWS_HEADLINES,
+) -> tuple[list[tuple[str | None, dict, datetime]], list[tuple[str | None, dict, datetime]]]:
+    """Dedup by article identity, cap, and return (kept, overflow).
+
+    Pass a shared *seen* set across feeds so the same story (returned in both the
+    company and general feeds, or under multiple related tickers) alerts once.
+    """
+    dedup_seen = set() if seen is None else seen
+    unique = _dedupe_headlines(candidates, dedup_seen)
+    return unique[:cap], unique[cap:]
 
 
 def _persist_monitoring_signal(signal: Signal) -> None:
@@ -149,13 +181,13 @@ def _persist_monitoring_signal(signal: Signal) -> None:
 
 
 def _classify_kept_headlines(
-    kept_items: list[tuple[str, dict, datetime]],
+    kept_items: list[tuple[str | None, dict, datetime]],
     *,
     thesis: object,
     thesis_version_hash: str,
     weights: dict[str, float],
 ) -> tuple[list[Signal], dict[str, int], int]:
-    headlines_by_ticker: dict[str, list[dict]] = defaultdict(list)
+    headlines_by_ticker: dict[str | None, list[dict]] = defaultdict(list)
     for ticker, item, _ in kept_items:
         headlines_by_ticker[ticker].append(item)
 
@@ -210,9 +242,25 @@ def run() -> None:
                 previous_close=previous_close,
                 now_et=now_et,
             )
-            kept_items, overflow_items = _dedupe_and_cap_headlines(candidates)
+            general_candidates = _collect_general_headlines(
+                previous_close=previous_close,
+                now_et=now_et,
+            )
 
-            for ticker, item, item_dt in overflow_items:
+            # Shared dedup set across both feeds: the same story surfaced under a
+            # related ticker and in the general feed must alert only once.
+            shared_seen: set[str] = set()
+            kept_items, overflow_items = _dedupe_and_cap_headlines(
+                candidates, seen=shared_seen
+            )
+            kept_general, overflow_general = _dedupe_and_cap_headlines(
+                general_candidates,
+                seen=shared_seen,
+                cap=_MAX_GENERAL_HEADLINES,
+            )
+            all_overflow = overflow_items + overflow_general
+
+            for ticker, item, item_dt in all_overflow:
                 _persist_monitoring_signal(
                     _make_overflow_monitoring_signal(
                         ticker=ticker,
@@ -225,7 +273,7 @@ def run() -> None:
 
             weights = get_position_weights()
             routable, classifier_monitoring_breakdown, classifier_monitoring_total = _classify_kept_headlines(
-                kept_items,
+                kept_items + kept_general,
                 thesis=thesis,
                 thesis_version_hash=thesis_version_hash,
                 weights=weights,
@@ -241,11 +289,11 @@ def run() -> None:
             persistence_summary: PersistenceSummary = persist_routed_signals(routed)
             status_counts = dict(persistence_summary.status_counts)
             monitoring_breakdown = dict(classifier_monitoring_breakdown)
-            monitoring_breakdown["volume_cap"] = len(overflow_items)
+            monitoring_breakdown["volume_cap"] = len(all_overflow)
             monitoring_breakdown["reconciled"] = len(reconciled_losers)
             status_counts["MONITORING"] = (
                 classifier_monitoring_total
-                + len(overflow_items)
+                + len(all_overflow)
                 + len(reconciled_losers)
             )
 

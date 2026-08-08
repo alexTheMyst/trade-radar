@@ -53,14 +53,14 @@ def reconcile_directions(
     if not routable:
         return [], []
 
-    # Partition: reconcilable = news signals with a ticker, pillar, and a directional
-    # opinion. Everything else passes through without inspection.
+    # Partition: reconcilable = news signals with a pillar and a directional
+    # opinion. Ticker may be None (macro/general headlines) — those still
+    # reconcile against each other on (ticker or "__MACRO__", pillar).
     reconcilable: list[Signal] = []
     passthrough: list[Signal] = []
     for sig in routable:
         if (
-            sig.ticker is not None
-            and sig.pillar is not None
+            sig.pillar is not None
             and sig.direction in ("positive", "negative")
         ):
             reconcilable.append(sig)
@@ -70,10 +70,12 @@ def reconcile_directions(
     if not reconcilable:
         return list(routable), []
 
-    # Group by (ticker, pillar)
+    # Group by (ticker, pillar). Macro headlines have ticker=None and group
+    # under "__MACRO__" so contradictory general-news headlines on the same
+    # pillar still net out against each other.
     groups: dict[tuple[str, str], list[Signal]] = defaultdict(list)
     for sig in reconcilable:
-        groups[(sig.ticker, sig.pillar)].append(sig)  # type: ignore[index]
+        groups[(sig.ticker or "__MACRO__", sig.pillar)].append(sig)  # type: ignore[index]
 
     winners: list[Signal] = list(passthrough)
     losers: list[Signal] = []

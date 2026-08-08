@@ -740,6 +740,67 @@ def test_company_news_date_format(monkeypatch):
     assert captured["to_str"] == "2026-05-15", f"Bad to_str: {captured['to_str']!r}"
 
 
+def test_general_news_returns_list(monkeypatch):
+    """fetch_general_news returns a list with headline and source keys."""
+    import signal_system.data.finnhub_client as fc
+
+    fake_news = [
+        {
+            "headline": "Fed signals rate path",
+            "source": "Reuters",
+            "datetime": 1700000000,
+            "url": "",
+            "summary": "",
+            "id": 99,
+            "image": "",
+            "category": "general",
+            "related": "",
+        }
+    ]
+    monkeypatch.setattr(fc, "_acquire_slot", lambda: None)
+    mock_client = MagicMock()
+    mock_client.general_news.return_value = fake_news
+    monkeypatch.setattr(fc, "_get_client", lambda: mock_client)
+
+    result = fc.fetch_general_news("general")
+    assert isinstance(result, list)
+    assert len(result) == 1
+    assert result[0]["headline"] == "Fed signals rate path"
+    assert result[0]["source"] == "Reuters"
+
+
+def test_general_news_empty_on_paid_tier(monkeypatch):
+    """fetch_general_news returns [] on 403 paid-tier error (no exception propagates)."""
+    import signal_system.data.finnhub_client as fc
+
+    exc = _make_finnhub_exc(403)
+    monkeypatch.setattr(fc, "_acquire_slot", lambda: None)
+    mock_client = MagicMock()
+    mock_client.general_news.side_effect = exc
+    monkeypatch.setattr(fc, "_get_client", lambda: mock_client)
+
+    result = fc.fetch_general_news("general")
+    assert result == []
+
+
+def test_general_news_passes_category_and_min_id(monkeypatch):
+    """fetch_general_news calls general_news(category) and passes min_id when given."""
+    import signal_system.data.finnhub_client as fc
+
+    captured = {}
+
+    def fake_raw(category, min_id):
+        captured["category"] = category
+        captured["min_id"] = min_id
+        return []
+
+    monkeypatch.setattr(fc, "_fetch_general_news_raw", fake_raw)
+
+    fc.fetch_general_news("general", min_id=123)
+    assert captured["category"] == "general"
+    assert captured["min_id"] == 123
+
+
 # ---------------------------------------------------------------------------
 # Phase 2: T6 — Integration smoke test
 # ---------------------------------------------------------------------------
