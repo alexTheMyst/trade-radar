@@ -44,6 +44,14 @@ uv sync
 # Run a job manually (main entry point)
 python -m signal_system daily-close
 python -m signal_system news-morning
+python -m signal_system review-report      # per-agent quality readout
+python -m signal_system weekly-synthesis   # pillar candidates from the corpus
+
+# Operator commands (never scheduled)
+python -m signal_system list-signals [--days N]
+python -m signal_system log-action <prefix> --acted|--passed [--note "..."]
+python -m signal_system build-universe [--apply]   # dry-run by default
+python -m signal_system backfill-benchmark         # one-time SPY history bootstrap
 
 # Run tests
 uv run pytest
@@ -58,7 +66,9 @@ sqlite3 state/signals.db "SELECT * FROM runs ORDER BY started_at DESC LIMIT 5;"
 
 **Heartbeat wraps every job.** The `heartbeat()` context manager (in `monitoring/heartbeat.py`) pings healthchecks.io `/start`, `/success`, and `/fail`. This is non-negotiable — silent failure is indistinguishable from "no alerts today."
 
-**Alert Router enforces a daily budget.** All signals from both agents funnel through the router before delivery. Hard caps: 1 `ACTION_REQUIRED`, 3 `INFORMATIONAL` per day. Slot competition: if two agents compete for `ACTION_REQUIRED`, higher-scored wins, others demote to INFORMATIONAL and compete for INFO slots. The router writes suppressed signals to SQLite tagged `SUPPRESSED`.
+**Alert Router enforces a daily budget.** All signals from both agents funnel through the router before delivery. Hard caps: 1 `ACTION_REQUIRED`, 3 `INFORMATIONAL` per day. Slot competition: if two agents compete for `ACTION_REQUIRED`, higher-scored wins, others demote to INFORMATIONAL and compete for INFO slots. **Cross-agent competition uses a unified 0-100 scale** (`competition_score` in `models.py`: News confidence × 100; Discovery raw) — display keeps each agent's native scale. **AR signals always demote before suppressing, even across runs** (an AR that loses today's AR slot still competes for an INFO slot). The router writes suppressed signals to SQLite tagged `SUPPRESSED`.
+
+**MONITORING corpus is the new-idea raw material.** Every off-thesis classification is persisted as a MONITORING signal with a title prefix — the paid-for LLM rationale is never discarded. Title-prefix taxonomy: `[off_thesis]` (no pillar matched), `[volume_cap]` (over newest-N cap), `[parse_failure]` (schema parse failed), plus reconciled losers (`demoted_from='reconciled'`). The **weekly-synthesis** job (Mondays 8:00 AM ET) reads this corpus to propose new pillar candidates, capped at 200 items, every title re-sanitized before prompt embedding.
 
 **No-signal days are explicit.** The daily digest email is always sent, even with zero alerts. "Scanned N tickers, 0 alerts" text is required — silence with confirmation, not silence with ambiguity.
 
@@ -84,7 +94,7 @@ On Windows, secrets can also live in Windows Credential Manager; `.env` is the f
 - **Timezone:** Always use `zoneinfo.ZoneInfo("America/New_York")` for market-hour comparisons. On Windows, add `tzdata` package if you hit `ZoneInfoNotFoundError`.
 - **Prompt injection:** Headlines from Finnhub get embedded in Claude prompts. Strip control characters, cap at ~500 chars per headline, use `<headline>...</headline>` delimiters.
 - **Wash sale tracking:** The `wash_sale` table must include an `account` column from day one — wash sale rules apply across 4 accounts (main Schwab, secondary Schwab, Roth IRA, HSA). Retrofitting this is painful.
-- **K-1 exclusion:** Filter USO, UNG, DBC, GSG, and commodity futures ETFs from the discovery universe at the universe-builder level, not at alert time.
+- **K-1 exclusion:** Filter USO, UNG, DBC, GSG, and commodity futures ETFs from the discovery universe at the universe-builder level, not at alert time. A hardcoded `K1_DENYLIST` in `universe.py` backstops this regardless of the CSV `k1_etf` flag.
 
 ## What This System Explicitly Does NOT Do
 
@@ -174,7 +184,7 @@ A rules-based, **alert-only** investment signal system for a solo operator with 
 | `model_version` | Pinned model ID string for IC comparability |
 | `thesis_version_hash` | SHA256 of thesis.yaml at classification time |
 | `signal_price_snapshot` | Price at signal generation (unadjusted) for outcome measurement |
-| `weight_version` | Stamp on Discovery signals for IC interpretability after weight changes |
+| `weight_version` | Discovery scoring-regime stamp: `xsect-50/30/20-absgate-v3` current; NULL = legacy-mixed (pre-2026-05-31 + early unstamped) |
 
 Already built: `wash_sale` (4 accounts, `account` column day one), `llm_calls` (token telemetry: `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`). The router is pure over `count_delivered_today()` — no `candidate_signals`/`daily_budget` staging tables exist or are needed.
 ## Open Questions

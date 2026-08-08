@@ -8,10 +8,10 @@
 
 | Job | Cadence | Time (ET) | Purpose |
 |---|---|---|---|
-| `news-morning` | Weekdays | 9:00 AM | News classifier — pre-open scan |
+| `news-morning` | Weekdays | 9:00 AM | News classifier — pre-open scan (company + general/macro feeds) |
 | `news-midday` | Weekdays | 12:00 PM | News classifier — midday update |
-| `daily-close` | Weekdays | 4:15 PM | News classifier + Discovery Agent |
-| `weekly-digest` | Mondays | 8:00 AM | Roll up the prior week, send digest |
+| `daily-close` | Weekdays | 4:15 PM | SPY benchmark close |
+| `weekly-synthesis` | Mondays | 8:00 AM | Distill the MONITORING corpus into pillar candidates |
 
 Operator owns uptime (machine awake, power settings, post-Windows-Update reboots).
 
@@ -104,6 +104,8 @@ HEADLINES:
 
 **Key design decision:** taxonomy is **not hardcoded**. The classifier reads `thesis.yaml` at runtime. When the operator updates the thesis, the classifier adapts without code changes.
 
+**General/macro news feed:** `news-morning` also ingests the Finnhub general news feed (probed 2026-08-07 — **available on the free tier**, 100 items, current). General headlines are classified with `ticker=None` (rendered as `MACRO` in the digest, `_`-prefixed alert ids), capped at 20 independently of the 50-company cap, with a shared article-level dedup set so the same story never alerts twice across feeds. Off-thesis classifications from both feeds are persisted as `[off_thesis]` MONITORING signals — the paid-for rationale becomes the weekly-synthesis corpus.
+
 ### 5. Alert Router
 
 Receives proposed signals from agents, applies budget, writes to log, dispatches delivery.
@@ -114,7 +116,7 @@ Receives proposed signals from agents, applies budget, writes to log, dispatches
 |---|---|---|---|
 | `ACTION_REQUIRED` | ≤1 per day | Push notification (Pushover or similar) | Discovery score > 85 + fresh catalyst (RSI cross, insider buy, etc.) OR news delta ≥ \|3\| |
 | `INFORMATIONAL` | ≤3 per day | Daily email digest at 4:30 PM ET | Discovery top-3 or news delta ≥ \|2\| |
-| `MONITORING` | Unlimited | Weekly digest, Monday AM | All other signals worth logging |
+| `MONITORING` | Unlimited | Weekly synthesis, Monday AM | Off-thesis, volume-cap, parse-failure, reconciled losers |
 
 **Slot competition:** If two agents both want to fire `ACTION_REQUIRED` on the same day, the router picks the higher-scored one and demotes the others to `INFORMATIONAL`. No exceptions. This is the forcing function for signal quality.
 
