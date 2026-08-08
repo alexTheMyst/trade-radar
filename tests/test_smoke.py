@@ -487,6 +487,30 @@ def test_get_todays_universe_excludes_k1(tmp_path, monkeypatch):
     assert "AAPL" in result, "AAPL (core holding) must always be included"
 
 
+def test_k1_denylist_excludes_unflagged_rows(tmp_path, monkeypatch):
+    """The hardcoded denylist excludes K-1 tickers even when k1_etf is unset in the CSV."""
+    import signal_system.data.universe as universe_mod
+
+    # USO/UNG are NOT flagged k1_etf here — the denylist must catch them anyway.
+    csv_content = (
+        "ticker,core_holding,k1_etf,weight_pct\n"
+        "AAPL,1,0,10.0\n"
+        "USO,1,,5.0\n"
+        "DBC,1,,5.0\n"
+        "NVDA,0,0,\n"
+    )
+    csv_path = tmp_path / "universe.csv"
+    csv_path.write_text(csv_content)
+    monkeypatch.setattr(universe_mod, "UNIVERSE_PATH", csv_path)
+
+    assert "USO" not in universe_mod.get_todays_universe()
+    assert "DBC" not in universe_mod.get_todays_universe()
+    assert "USO" not in universe_mod.get_core_holdings()
+    weights = universe_mod.get_position_weights()
+    assert "USO" not in weights and "DBC" not in weights
+    assert weights["AAPL"] == 10.0
+
+
 def test_get_todays_universe_includes_core_excludes_off_partition(tmp_path, monkeypatch):
     """Core holdings always appear; non-core tickers in wrong partition are excluded."""
     import signal_system.data.universe as universe_mod

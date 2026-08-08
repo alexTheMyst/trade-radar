@@ -114,3 +114,47 @@ def test_cmd_log_action_invalid_prefix_exits_two(capsys, db):
 
 def test_review_report_job_is_registered():
     assert "review-report" in __main__.JOBS
+
+
+def test_cmd_build_universe_dry_run_prints_diff(capsys, tmp_path, monkeypatch, db):
+    import signal_system.data.universe_builder as ub
+
+    op_path = tmp_path / "universe.csv"
+    op_path.write_text(
+        "ticker,core_holding,weight_pct,k1_etf,industry\n"
+        "AAPL,1,12.5,0,\n"
+    )
+    monkeypatch.setattr(ub, "UNIVERSE_PATH", op_path)
+    monkeypatch.setattr(ub, "CONSTITUENT_BUNDLES", {
+        "sp500": tmp_path / "sp500.csv",
+    })
+    (tmp_path / "sp500.csv").write_text(
+        "ticker,name,sector,industry\nMSFT,Microsoft,Technology,Software\n"
+    )
+    monkeypatch.setattr(ub, "_enrich_with_yfinance", lambda ticker: (None, None))
+
+    __main__._cmd_build_universe([])
+    out = capsys.readouterr().out
+    assert "Dry-run" in out
+    assert "+ MSFT" in out
+    # dry-run must not write the file
+    assert "MSFT" not in op_path.read_text()
+
+
+def test_cmd_build_universe_apply_writes(capsys, tmp_path, monkeypatch, db):
+    import signal_system.data.universe_builder as ub
+
+    op_path = tmp_path / "universe.csv"
+    op_path.write_text("ticker,core_holding,weight_pct,k1_etf,industry\n")
+    monkeypatch.setattr(ub, "UNIVERSE_PATH", op_path)
+    monkeypatch.setattr(ub, "CONSTITUENT_BUNDLES", {
+        "sp500": tmp_path / "sp500.csv",
+    })
+    (tmp_path / "sp500.csv").write_text(
+        "ticker,name,sector,industry\nMSFT,Microsoft,Technology,Software\n"
+    )
+
+    __main__._cmd_build_universe(["--apply"])
+    out = capsys.readouterr().out
+    assert "Applied" in out
+    assert "MSFT" in op_path.read_text()

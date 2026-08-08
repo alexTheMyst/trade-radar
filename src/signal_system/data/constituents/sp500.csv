@@ -1,0 +1,21 @@
+ticker,name,sector,industry
+AAPL,Apple Inc.,Technology,Consumer Electronics
+MSFT,Microsoft Corp.,Technology,Software - Infrastructure
+NVDA,NVIDIA Corp.,Technology,Semiconductors
+AMZN,Amazon.com Inc.,Consumer Cyclical,Internet Retail
+GOOGL,Alphabet Inc.,Communication Services,Internet Content & Information
+META,Meta Platforms Inc.,Communication Services,Internet Content & Information
+TSLA,Tesla Inc.,Consumer Cyclical,Auto Manufacturers
+BRK.B,Berkshire Hathaway Inc.,Financial Services,Insurance - Diversified
+LLY,Eli Lilly and Co.,Healthcare,Drug Manufacturers - General
+AVGO,Broadcom Inc.,Technology,Semiconductors
+JPM,JPMorgan Chase & Co.,Financial Services,Banks - Diversified
+XOM,Exxon Mobil Corp.,Energy,Oil & Gas Integrated
+UNH,UnitedHealth Group Inc.,Healthcare,Healthcare Plans
+V,Visa Inc.,Financial Services,Credit Services
+PG,Procter & Gamble Co.,Consumer Defensive,Household & Personal Products
+HD,Home Depot Inc.,Consumer Cyclical,Home Improvement Retail
+MA,Mastercard Inc.,Financial Services,Credit Services
+COST,Costco Wholesale Corp.,Consumer Defensive,Discount Stores
+JNJ,Johnson & Johnson,Healthcare,Drug Manufacturers - General
+WMT,Walmart Inc.,Consumer Defensive,Discount Stores

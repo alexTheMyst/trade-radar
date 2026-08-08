@@ -188,6 +188,16 @@ def init_db() -> None:
             )
         """)
 
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS ticker_meta (
+                ticker TEXT PRIMARY KEY,
+                sector TEXT,
+                industry TEXT,
+                source TEXT,
+                updated_at TEXT NOT NULL
+            )
+        """)
+
         conn.commit()
     finally:
         conn.close()
@@ -673,6 +683,47 @@ def get_earliest_signal_date() -> date | None:
             .astimezone(ZoneInfo("America/New_York"))
             .date()
         )
+    finally:
+        conn.close()
+
+
+def upsert_ticker_meta(
+    *, ticker: str, sector: str | None, industry: str | None, source: str
+) -> None:
+    """Insert or replace a ticker's sector/industry enrichment row."""
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO ticker_meta (ticker, sector, industry, source, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (ticker, sector, industry, source, datetime.now(ZoneInfo("America/New_York")).isoformat()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_ticker_meta(ticker: str) -> dict | None:
+    """Return the cached sector/industry row for *ticker*, or None."""
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT ticker, sector, industry, source, updated_at FROM ticker_meta WHERE ticker = ?",
+            (ticker,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return {
+            "ticker": row[0],
+            "sector": row[1],
+            "industry": row[2],
+            "source": row[3],
+            "updated_at": row[4],
+        }
     finally:
         conn.close()
 

@@ -13,6 +13,7 @@ from signal_system.jobs.outcome_backfill import (
     backfill_benchmark,
 )
 from signal_system.jobs.review_report import run as run_review_report
+from signal_system.data.universe_builder import apply_merged_universe, diff_universe
 
 logging.basicConfig(
     level=logging.INFO,
@@ -97,6 +98,25 @@ def _parse_list_signals(argv: list[str]) -> int:
     return 0
 
 
+def _cmd_build_universe(argv: list[str]) -> int:
+    """Dry-run by default; --apply writes the merged universe atomically."""
+    apply = "--apply" in argv
+    lines = diff_universe()
+    if lines:
+        print("Universe build diff:")
+        for line in lines:
+            print(f"  {line}")
+    else:
+        print("Universe build: no changes vs current universe.csv")
+    if apply:
+        n = apply_merged_universe(dry_run=False)
+        print(f"Applied: {n} rows written to universe.csv (backup at universe.csv.bak)")
+    else:
+        n = apply_merged_universe(dry_run=True)
+        print(f"Dry-run: {n} rows would be written. Re-run with --apply to commit.")
+    return 0
+
+
 def _parse_log_action(argv: list[str]) -> int:
     if not argv:
         print("Usage: python -m signal_system log-action <prefix> --acted|--passed [--note \"...\"]")
@@ -146,6 +166,8 @@ if __name__ == "__main__":
         advise_ticker(sys.argv[2])
     elif cmd == "list-signals":
         _parse_list_signals(sys.argv[2:])
+    elif cmd == "build-universe":
+        _cmd_build_universe(sys.argv[2:])
     elif cmd == "log-action":
         _parse_log_action(sys.argv[2:])
     elif cmd == "backfill-benchmark":
@@ -155,5 +177,5 @@ if __name__ == "__main__":
         JOBS[cmd]()
     else:
         print(f"Unknown command: {cmd!r}")
-        print(f"Available jobs: {list(JOBS)}  |  advise <TICKER>  |  list-signals  |  log-action  |  backfill-benchmark")
+        print(f"Available jobs: {list(JOBS)}  |  advise <TICKER>  |  list-signals  |  log-action  |  build-universe  |  backfill-benchmark")
         sys.exit(2)
