@@ -64,7 +64,7 @@ sqlite3 state/signals.db "SELECT * FROM runs ORDER BY started_at DESC LIMIT 5;"
 
 **News Classifier taxonomy is `thesis.yaml`-driven, not hardcoded.** The classifier reads `thesis.yaml` at runtime. Operator updates the thesis; classifier adapts without code changes. If `review_due` date in `thesis.yaml` is past, the classifier should refuse to run (or alert loudly).
 
-**Discovery Agent rotates the universe.** ~1,500 tickers, free tier rate limit means 1/3 scanned per day (full coverage every 3 days). Core holdings always scanned daily. Scoring weights `50/30/20` (momentum_20d / momentum_5d / range_vs_20d) are initial guesses — Phase A logs only (no alerts) for two weeks to build intuition before connecting to the router.
+**Discovery Agent rotates the universe.** Core holdings always scanned daily; non-core tickers partition into thirds, scanned on rotation. Scoring weights `50/30/20` (momentum_20d / momentum_5d / range_vs_20d) are initial guesses.
 
 **SQLite WAL mode** handles any concurrent job writes. All DB access goes through `state/repository.py` — no raw SQL outside that module.
 
@@ -141,7 +141,7 @@ A rules-based, **alert-only** investment signal system for a solo operator with 
 - **Do NOT use `instructor`** — it wraps the same SDK calls with an extra dependency and is now redundant
 ### Rate Limiting — stdlib token bucket (not a library)
 # ~10 lines — correct for sequential one-shot jobs
-- At 500 tickers/day × 1-2 calls/ticker, the Discovery job takes 9–18 minutes wall time — acceptable
+- Sequential jobs pace themselves through the token bucket; wall time is acceptable
 - **Do NOT use `pyrate-limiter`** — it solves concurrent-access problems that don't exist in sequential jobs
 - **Do NOT use `asyncio`** — Windows event-loop policy quirks; sequential is correct
 ### Reactive 429 Handling — `tenacity`
@@ -161,14 +161,13 @@ A rules-based, **alert-only** investment signal system for a solo operator with 
 | `SQLAlchemy`, `peewee` | Explicitly excluded by CLAUDE.md; `repository.py` is the access layer |
 | `pyrate-limiter`, `ratelimit` | Solve concurrent-access problems absent in sequential jobs |
 | `Redis` | No network services; SQLite is the shared state |
-| `httpx` | `finnhub-python` wraps `requests`; mixing HTTP clients creates confusion |
+| `httpx` | Not a general-purpose HTTP layer — used only by `monitoring/heartbeat.py` for healthchecks.io pings; `finnhub-python` wraps `requests` and that client stays unmixed |
 ## New SQLite Tables Needed
 | Table | Purpose |
 |-------|---------|
-| `candidate_signals` | Router staging; cleared after each routing pass |
-| `daily_budget` | Tracks slots used per day per severity; query target for router |
-| `wash_sale` | Wash sale tracking with `account` column (4 accounts — day one) |
-| `llm_calls` | Token telemetry: `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens` |
+| `benchmark_prices` | SPY daily closes (`ticker, date, close, source`) for excess-return measurement |
+| `ticker_meta` | Ticker sector/industry cache (`ticker` PK, sector, industry, source, updated_at) |
+| `synthesis_reports` | Weekly-synthesis run record: corpus size, themes, pillar candidates, model_version |
 | Column | Purpose |
 |--------|---------|
 | `routing_status` | DELIVERED / MONITORING / SUPPRESSED — router sets this, never severity |
@@ -176,6 +175,8 @@ A rules-based, **alert-only** investment signal system for a solo operator with 
 | `thesis_version_hash` | SHA256 of thesis.yaml at classification time |
 | `signal_price_snapshot` | Price at signal generation (unadjusted) for outcome measurement |
 | `weight_version` | Stamp on Discovery signals for IC interpretability after weight changes |
+
+Already built: `wash_sale` (4 accounts, `account` column day one), `llm_calls` (token telemetry: `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`). The router is pure over `count_delivered_today()` — no `candidate_signals`/`daily_budget` staging tables exist or are needed.
 ## Open Questions
 - Exact minimum token threshold for Anthropic prompt caching (verify against current docs at implementation)
 - Which Finnhub free-tier endpoints are available for the 35/30/25/10 Discovery scoring weights — validate empirically before writing scoring code

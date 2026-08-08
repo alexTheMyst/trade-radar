@@ -31,7 +31,7 @@ Do not use relative paths. Task Scheduler often starts from `C:\Windows\System32
    - Document this as the required single-instance policy for every signal-system task.
 4. **Run whether logged on or not**
    - Select **run whether logged on or not**.
-   - Use a **password-backed** Windows account. Do not use `S4U`; it breaks network and credential access needed for Finnhub, Anthropic, Gmail SMTP, and Healthchecks.
+   - Use a **password-backed** Windows account. Do not use `S4U`; it breaks network and credential access needed for Finnhub, Anthropic, and Healthchecks.
 5. **Wake and retry posture**
    - Enable wake-to-run if the machine sleeps.
    - Test each task manually once after saving credentials.
