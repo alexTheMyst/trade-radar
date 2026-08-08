@@ -177,6 +177,58 @@ def test_get_earliest_signal_date_empty(db):
     assert repository.get_earliest_signal_date() is None
 
 
+def test_get_pillar_routing_counts_since(db):
+    def _pillar_sig(pillar: str, title: str) -> Signal:
+        sig = _sig(title=title, severity="INFORMATIONAL")
+        return Signal(
+            ticker=sig.ticker, score=sig.score, severity=sig.severity, agent=sig.agent,
+            timestamp=sig.timestamp, alert_id=sig.alert_id, title=sig.title, body=sig.body,
+            pillar=pillar,
+        )
+
+    repository.insert_signal(_pillar_sig("growth", "a"), routing_status="DELIVERED")
+    repository.insert_signal(_pillar_sig("growth", "b"), routing_status="DELIVERED")
+    repository.insert_signal(_pillar_sig("rates", "c"), routing_status="SUPPRESSED")
+
+    counts = repository.get_pillar_routing_counts_since(date(2026, 7, 1))
+    assert counts["growth"]["DELIVERED"] == 2
+    assert counts["growth"]["SUPPRESSED"] == 0
+    assert counts["rates"]["SUPPRESSED"] == 1
+
+
+def test_get_agent_signals_since_filters_by_agent(db):
+    _insert(_sig(ticker="AAPL", title="[off_thesis] a", agent="news_classifier"))
+    _insert(_sig(ticker="MSFT", title="[off_thesis] b", agent="news_classifier"))
+    repository.insert_signal(
+        _sig(ticker="NVDA", title="disc", agent="discovery_agent", severity="INFORMATIONAL"),
+        routing_status="DELIVERED",
+    )
+    rows = repository.get_agent_signals_since("news_classifier", date(2026, 7, 1))
+    assert len(rows) == 2
+    assert all(r["agent"] == "news_classifier" for r in rows)
+
+
+def test_insert_synthesis_report_roundtrip(db):
+    repository.insert_synthesis_report(
+        run_id="run-1",
+        week_start="2026-07-20",
+        corpus_size=5,
+        themes_json="[]",
+        candidates_json="[]",
+        model_version="m",
+    )
+    conn = sqlite3.connect(db)
+    row = conn.execute(
+        "SELECT run_id, week_start, corpus_size, themes_json, candidates_json, model_version "
+        "FROM synthesis_reports WHERE run_id='run-1'"
+    ).fetchone()
+    conn.close()
+    assert row[0] == "run-1"
+    assert row[1] == "2026-07-20"
+    assert row[2] == 5
+    assert row[5] == "m"
+
+
 def test_insert_signal_persists_weight_version(db):
     sig = _sig(title="[off_thesis] headline", severity="INFORMATIONAL")
     repository.insert_signal(sig, routing_status="DELIVERED")

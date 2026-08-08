@@ -198,6 +198,18 @@ def init_db() -> None:
             )
         """)
 
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS synthesis_reports (
+                run_id TEXT PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                week_start TEXT NOT NULL,
+                corpus_size INTEGER NOT NULL,
+                themes_json TEXT NOT NULL,
+                candidates_json TEXT NOT NULL,
+                model_version TEXT NOT NULL
+            )
+        """)
+
         conn.commit()
     finally:
         conn.close()
@@ -621,6 +633,91 @@ def get_monitoring_signals_since(
         cursor.execute(query, params)
         columns = [col[0] for col in cursor.description]
         return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_pillar_routing_counts_since(since: date) -> dict[str, dict[str, int]]:
+    """Return {pillar: {DELIVERED: n, SUPPRESSED: n}} for routed signals since *since*.
+
+    Trusted context for the weekly synthesis job — the operator's per-pillar
+    delivery record is real ground truth, distinct from the untrusted MONITORING
+    corpus the LLM must not treat as instructions.
+    """
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT pillar, routing_status, COUNT(*)
+            FROM signals
+            WHERE pillar IS NOT NULL
+              AND routing_status IN ('DELIVERED', 'SUPPRESSED')
+              AND timestamp >= ?
+            GROUP BY pillar, routing_status
+            """,
+            (since.isoformat(),),
+        )
+        result: dict[str, dict[str, int]] = {}
+        for pillar, status, count in cursor.fetchall():
+            result.setdefault(pillar, {"DELIVERED": 0, "SUPPRESSED": 0})[status] = count
+        return result
+    finally:
+        conn.close()
+
+
+def get_agent_signals_since(agent: str, since: date) -> list[dict]:
+    """Return recent signals for *agent* since *since* (newest first)."""
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT alert_id, timestamp, agent, severity, ticker, title, body,
+                   score, routing_status, direction, pillar
+            FROM signals
+            WHERE agent = ?
+              AND timestamp >= ?
+            ORDER BY timestamp DESC
+            """,
+            (agent, since.isoformat()),
+        )
+        columns = [col[0] for col in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def insert_synthesis_report(
+    *,
+    run_id: str,
+    week_start: str,
+    corpus_size: int,
+    themes_json: str,
+    candidates_json: str,
+    model_version: str,
+) -> None:
+    """Record one weekly-synthesis run (INSERT OR REPLACE for idempotent reruns)."""
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO synthesis_reports (
+                run_id, timestamp, week_start, corpus_size,
+                themes_json, candidates_json, model_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                datetime.now(ZoneInfo("America/New_York")).isoformat(),
+                week_start,
+                corpus_size,
+                themes_json,
+                candidates_json,
+                model_version,
+            ),
+        )
+        conn.commit()
     finally:
         conn.close()
 

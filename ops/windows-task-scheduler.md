@@ -41,6 +41,7 @@ Do not use relative paths. Task Scheduler often starts from `C:\Windows\System32
 - `news-morning` depends on at least one successful `daily-close` run already being in SQLite. Run `uv run python -m signal_system daily-close` manually before enabling the morning schedule on a fresh deployment.
 - `outcome-backfill` (overdue as of Aug 2026): daily at **5:30 PM ET weekdays** (30/90-day outcome prices for the review report).
 - `review-report`: **first Saturday 9:00 AM ET monthly** + on-demand before each quarterly review.
+- `weekly-synthesis`: **Mondays 8:00 AM ET** (the slot architecture.md reserves) — distills the MONITORING corpus into pillar candidates.
 - `backfill-benchmark` is a one-time bootstrap, not a schedule: run `uv run python -m signal_system backfill-benchmark` once after deployment so the SPY series covers every historical signal. Re-run after a long gap to top up.
 - `log-action` / `list-signals` are manual operator commands, never scheduled:
   - `uv run python -m signal_system list-signals [--days N]` — recent DELIVERED signals

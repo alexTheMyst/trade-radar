@@ -73,3 +73,35 @@ def load_holdings(path: Path = HOLDINGS_PATH) -> list[Holding]:
 def require_non_empty_holdings(path: Path = HOLDINGS_PATH) -> list[Holding]:
     """Alias for load_holdings — name mirrors universe.py's require_non_empty_universe."""
     return load_holdings(path)
+
+
+def holdings_universe_drift(
+    holdings: list[Holding] | None = None,
+    core_holdings: set[str] | None = None,
+) -> list[str]:
+    """Return held tickers missing from the discovery core-holding set.
+
+    A position that is not a core_holding in universe.csv is invisible to the
+    news-morning scan (which only scans core holdings). Surfacing this drift
+    keeps the operator's thesis-relevant coverage honest.
+
+    Args:
+        holdings: Holding objects (default: load from HOLDINGS_PATH, empty on
+            EmptyHoldingsError so the helper never raises).
+        core_holdings: The universe core-holding set (default: universe.csv lookup).
+
+    Returns:
+        Sorted list of held tickers lacking core_holding=true.
+    """
+    if holdings is None:
+        try:
+            holdings = load_holdings()
+        except EmptyHoldingsError:
+            holdings = []
+    if core_holdings is None:
+        from signal_system.data.universe import get_core_holdings
+
+        core_holdings = set(get_core_holdings())
+
+    held_tickers = sorted({h.ticker for h in holdings})
+    return [t for t in held_tickers if t not in core_holdings]

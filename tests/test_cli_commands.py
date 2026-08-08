@@ -116,6 +116,10 @@ def test_review_report_job_is_registered():
     assert "review-report" in __main__.JOBS
 
 
+def test_weekly_synthesis_job_is_registered():
+    assert "weekly-synthesis" in __main__.JOBS
+
+
 def test_cmd_build_universe_dry_run_prints_diff(capsys, tmp_path, monkeypatch, db):
     import signal_system.data.universe_builder as ub
 

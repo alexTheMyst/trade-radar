@@ -13,6 +13,7 @@ from signal_system.jobs.outcome_backfill import (
     backfill_benchmark,
 )
 from signal_system.jobs.review_report import run as run_review_report
+from signal_system.jobs.weekly_synthesis import run as run_weekly_synthesis
 from signal_system.data.universe_builder import apply_merged_universe, diff_universe
 
 logging.basicConfig(
@@ -29,6 +30,7 @@ JOBS = {
     "advisor": run_advisor,
     "outcome-backfill": run_outcome_backfill,
     "review-report": run_review_report,
+    "weekly-synthesis": run_weekly_synthesis,
 }
 
 
