@@ -18,6 +18,11 @@ from zoneinfo import ZoneInfo
 
 UNIVERSE_PATH = Path(__file__).parent / "universe.csv"
 
+# Hardcoded K-1 denylist — the code-level backstop CLAUDE.md:87 demands.
+# These commodity ETFs/ETNs pass through K-1 tax forms and are excluded
+# unconditionally, regardless of the k1_etf column in universe.csv.
+K1_DENYLIST: frozenset[str] = frozenset({"USO", "UNG", "DBC", "GSG"})
+
 
 class EmptyUniverseError(RuntimeError):
     """Raised when the ticker universe is empty or universe.csv is missing.
@@ -78,6 +83,15 @@ def _is_truthy(value: str | None) -> bool:
     return value.strip().lower() in ("1", "true", "yes")
 
 
+def _is_k1_ticker(ticker: str, row: dict) -> bool:
+    """Return True if *ticker* is K-1, by denylist OR CSV flag (either wins).
+
+    The denylist is the hard backstop — an operator forgetting to set k1_etf=1
+    in universe.csv must not let a K-1 pass through (CLAUDE.md:87).
+    """
+    return ticker in K1_DENYLIST or _is_truthy(row.get("k1_etf"))
+
+
 def _is_data_row(row: dict) -> bool:
     """Return False for blank or comment rows emitted by DictReader from # lines."""
     ticker = row.get("ticker", "") or ""
@@ -95,11 +109,12 @@ def get_core_holdings() -> list[str]:
         for row in reader:
             if not _is_data_row(row):
                 continue
-            if _is_truthy(row.get("k1_etf")):
+            ticker = row["ticker"].strip().upper()
+            if _is_k1_ticker(ticker, row):
                 continue
             if not _is_truthy(row.get("core_holding")):
                 continue
-            tickers.append(row["ticker"].strip().upper())
+            tickers.append(ticker)
 
     return tickers
 
@@ -128,10 +143,11 @@ def get_todays_universe() -> list[str]:
         for row in reader:
             if not _is_data_row(row):
                 continue
-            if _is_truthy(row.get("k1_etf")):
-                continue  # exclude K-1 ETFs at load time, unconditionally
 
             ticker = row["ticker"].strip().upper()
+            if _is_k1_ticker(ticker, row):
+                continue  # exclude K-1 ETFs at load time, unconditionally
+
             is_core = _is_truthy(row.get("core_holding"))
             in_partition = _md5_bucket(ticker) == todays_bucket
 
@@ -158,9 +174,9 @@ def get_position_weights() -> dict[str, float]:
         for row in reader:
             if not _is_data_row(row):
                 continue
-            if _is_truthy(row.get("k1_etf")):
-                continue
             ticker = row["ticker"].strip().upper()
+            if _is_k1_ticker(ticker, row):
+                continue
             raw_weight = row.get("weight_pct", "").strip()
             try:
                 weights[ticker] = float(raw_weight) if raw_weight else 0.0
@@ -168,3 +184,30 @@ def get_position_weights() -> dict[str, float]:
                 weights[ticker] = 0.0
 
     return weights
+
+
+def get_industries() -> dict[str, str]:
+    """Return {ticker: industry} for all non-K1 universe tickers with an industry column.
+
+    Returns {} when universe.csv is absent or has no industry column (pre-4.3
+    universes) — callers render nothing in that case.
+    """
+    if not UNIVERSE_PATH.exists():
+        return {}
+    industries: dict[str, str] = {}
+
+    with UNIVERSE_PATH.open(newline="") as f:
+        reader = csv.DictReader(f)
+        if "industry" not in (reader.fieldnames or []):
+            return {}
+        for row in reader:
+            if not _is_data_row(row):
+                continue
+            ticker = row["ticker"].strip().upper()
+            if _is_k1_ticker(ticker, row):
+                continue
+            industry = (row.get("industry") or "").strip()
+            if industry:
+                industries[ticker] = industry
+
+    return industries

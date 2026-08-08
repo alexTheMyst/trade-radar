@@ -117,6 +117,7 @@ def render_digest(
     held_tickers: set[str],
     score_deltas: dict[str, str],
     status_counts: dict[str, int],
+    monitoring_breakdown: dict[str, int] | None = None,
 ) -> DigestPayload:
     """Render the plain-text digest required by the live jobs."""
     delivered = [
@@ -138,7 +139,7 @@ def render_digest(
     lines = [
         f"Scanned {scanned_tickers} tickers, {delivered_count} {alert_label}",
         f"Suppressed: {suppressed_count}",
-        f"Monitoring: {monitoring_count}",
+        _monitoring_line(monitoring_count, monitoring_breakdown),
     ]
 
     if delivered:
@@ -179,13 +180,43 @@ def render_digest(
     )
 
 
+_MONITORING_CATEGORY_LABELS: tuple[tuple[str, str], ...] = (
+    ("off_thesis", "off-thesis"),
+    ("parse_failure", "parse-fail"),
+    ("volume_cap", "volume-cap"),
+    ("reconciled", "reconciled"),
+)
+
+
+def _monitoring_line(
+    monitoring_count: int, breakdown: dict[str, int] | None
+) -> str:
+    """Render the Monitoring count line, with per-category breakdown when provided.
+
+    Zero categories are omitted; an empty/None breakdown renders the bare count.
+    The category labels are the title-prefix taxonomy used across the jobs
+    ([off_thesis], [parse_failure], [volume_cap]) plus reconciled losers.
+    """
+    line = f"Monitoring: {monitoring_count}"
+    if not breakdown:
+        return line
+    parts = [
+        f"{label} {breakdown.get(key, 0)}"
+        for key, label in _MONITORING_CATEGORY_LABELS
+        if breakdown.get(key, 0) > 0
+    ]
+    if not parts:
+        return line
+    return f"{line} ({', '.join(parts)})"
+
+
 def _delivered_header_line(
     signal: Signal,
     demoted_from: str | None,
     ar_winner: Signal | None,
     held_tickers: set[str],
 ) -> str:
-    header = f"{signal.ticker or 'UNKNOWN'} — {signal.severity}"
+    header = f"{signal.ticker or 'MACRO'} — {signal.severity}"
     if demoted_from is not None:
         if ar_winner is not None and ar_winner.alert_id != signal.alert_id:
             # Reachable with News Classifier confidences: a batch is never mixed
@@ -195,7 +226,7 @@ def _delivered_header_line(
             winner_score = format_score(ar_winner.agent, ar_winner.score)
             header += (
                 f" (demoted from {demoted_from}, outscored by "
-                f"{ar_winner.ticker or 'UNKNOWN'} {winner_score})"
+                f"{ar_winner.ticker or 'MACRO'} {winner_score})"
             )
         else:
             header += f" (demoted from {demoted_from})"
@@ -211,7 +242,7 @@ def _suppressed_line(
     held_tickers: set[str],
     score_deltas: dict[str, str],
 ) -> str:
-    ticker = signal.ticker or "UNKNOWN"
+    ticker = signal.ticker or "MACRO"
     score_str = format_score(signal.agent, signal.score)
     delta = score_deltas.get(signal.alert_id)
     if delta:

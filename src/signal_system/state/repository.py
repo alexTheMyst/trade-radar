@@ -5,10 +5,11 @@ Every connection is opened via _connect() which applies PRAGMA busy_timeout = 30
 to prevent "database is locked" errors under concurrent Task Scheduler runs.
 """
 
+import re
 import sqlite3
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -118,6 +119,9 @@ def init_db() -> None:
         # Reconciliation phase additions
         _ensure_column(cursor, "signals", "pillar", "TEXT")
 
+        # Scoring-regime stamp for IC interpretability (Phase 2)
+        _ensure_column(cursor, "signals", "weight_version", "TEXT")
+
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS advice (
                 advice_id TEXT PRIMARY KEY,
@@ -174,6 +178,38 @@ def init_db() -> None:
             )
         """)
 
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS benchmark_prices (
+                ticker TEXT NOT NULL,
+                date TEXT NOT NULL,
+                close REAL NOT NULL,
+                source TEXT,
+                PRIMARY KEY (ticker, date)
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS ticker_meta (
+                ticker TEXT PRIMARY KEY,
+                sector TEXT,
+                industry TEXT,
+                source TEXT,
+                updated_at TEXT NOT NULL
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS synthesis_reports (
+                run_id TEXT PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                week_start TEXT NOT NULL,
+                corpus_size INTEGER NOT NULL,
+                themes_json TEXT NOT NULL,
+                candidates_json TEXT NOT NULL,
+                model_version TEXT NOT NULL
+            )
+        """)
+
         conn.commit()
     finally:
         conn.close()
@@ -198,8 +234,9 @@ def insert_signal(
             INSERT OR IGNORE INTO signals (
                 alert_id, timestamp, agent, severity, ticker, title, body,
                 score, routing_status, signal_price_snapshot, model_version,
-                thesis_version_hash, demoted_from, direction, pillar, suppression_reason
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                thesis_version_hash, demoted_from, direction, pillar,
+                suppression_reason, weight_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             signal.alert_id,
             signal.timestamp.isoformat(),
@@ -217,6 +254,7 @@ def insert_signal(
             signal.direction,
             signal.pillar,
             suppression_reason,
+            signal.weight_version,
         ))
         conn.commit()
         return cursor.rowcount == 1
@@ -560,15 +598,404 @@ def get_recent_signals(
     return results
 
 
-def get_delivered_discovery_signals(
+def get_monitoring_signals_since(
+    since: date,
+    *,
+    title_prefixes: tuple[str, ...] = ("[off_thesis]", "[volume_cap]"),
+    limit: int = 500,
+) -> list[dict]:
+    """Return recent MONITORING signals whose title starts with a given prefix.
+
+    The MONITORING corpus is the audit trail for off-thesis classifications,
+    volume-cap overflow, and parse failures. The weekly synthesis job reads
+    this to find new pillar candidates.
+
+    `[` is not a SQLite LIKE wildcard, so prefix filters are safe as-is.
+    Returns newest-first rows; each row is a sqlite3.Row-like dict with the
+    full signals columns plus routing_status.
+    """
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        query = f"""
+            SELECT alert_id, timestamp, agent, severity, ticker, title, body,
+                   score, routing_status, direction, pillar
+            FROM signals
+            WHERE routing_status = 'MONITORING'
+              AND timestamp >= ?
+              AND ({" OR ".join(f"title LIKE ? || '%'" for _ in title_prefixes)})
+            ORDER BY timestamp DESC
+            LIMIT ?
+        """
+        params: list = [since.isoformat()]
+        params.extend(title_prefixes)
+        params.append(limit)
+        cursor.execute(query, params)
+        columns = [col[0] for col in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_pillar_routing_counts_since(since: date) -> dict[str, dict[str, int]]:
+    """Return {pillar: {DELIVERED: n, SUPPRESSED: n}} for routed signals since *since*.
+
+    Trusted context for the weekly synthesis job — the operator's per-pillar
+    delivery record is real ground truth, distinct from the untrusted MONITORING
+    corpus the LLM must not treat as instructions.
+    """
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT pillar, routing_status, COUNT(*)
+            FROM signals
+            WHERE pillar IS NOT NULL
+              AND routing_status IN ('DELIVERED', 'SUPPRESSED')
+              AND timestamp >= ?
+            GROUP BY pillar, routing_status
+            """,
+            (since.isoformat(),),
+        )
+        result: dict[str, dict[str, int]] = {}
+        for pillar, status, count in cursor.fetchall():
+            result.setdefault(pillar, {"DELIVERED": 0, "SUPPRESSED": 0})[status] = count
+        return result
+    finally:
+        conn.close()
+
+
+def get_agent_signals_since(agent: str, since: date) -> list[dict]:
+    """Return recent signals for *agent* since *since* (newest first)."""
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT alert_id, timestamp, agent, severity, ticker, title, body,
+                   score, routing_status, direction, pillar
+            FROM signals
+            WHERE agent = ?
+              AND timestamp >= ?
+            ORDER BY timestamp DESC
+            """,
+            (agent, since.isoformat()),
+        )
+        columns = [col[0] for col in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def insert_synthesis_report(
+    *,
+    run_id: str,
+    week_start: str,
+    corpus_size: int,
+    themes_json: str,
+    candidates_json: str,
+    model_version: str,
+) -> None:
+    """Record one weekly-synthesis run (INSERT OR REPLACE for idempotent reruns)."""
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO synthesis_reports (
+                run_id, timestamp, week_start, corpus_size,
+                themes_json, candidates_json, model_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                datetime.now(ZoneInfo("America/New_York")).isoformat(),
+                week_start,
+                corpus_size,
+                themes_json,
+                candidates_json,
+                model_version,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def upsert_benchmark_price(*, ticker: str, date_iso: str, close: float, source: str) -> None:
+    """Insert or replace a benchmark close for (ticker, date).
+
+    INSERT OR REPLACE lets the yfinance history backfill overwrite quote-sourced
+    rows when the backfill runs after daily-close has written the same date.
+    """
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO benchmark_prices (ticker, date, close, source)
+            VALUES (?, ?, ?, ?)
+            """,
+            (ticker, date_iso, close, source),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_benchmark_close_on_or_after(ticker: str, date_iso: str) -> float | None:
+    """Return the benchmark close for the first stored trading day >= *date_iso*.
+
+    Mirrors the outcome-backfill convention (first trading day at or after the
+    target) so excess-return math is consistent with signal outcome prices.
+    """
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT close FROM benchmark_prices
+            WHERE ticker = ? AND date >= ?
+            ORDER BY date ASC
+            LIMIT 1
+            """,
+            (ticker, date_iso),
+        )
+        row = cursor.fetchone()
+        return float(row[0]) if row is not None else None
+    finally:
+        conn.close()
+
+
+def get_earliest_signal_date() -> date | None:
+    """Return the earliest signal timestamp's ET date, or None on an empty table."""
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT MIN(timestamp) FROM signals")
+        row = cursor.fetchone()
+        if row is None or row[0] is None:
+            return None
+        return (
+            datetime.fromisoformat(row[0])
+            .astimezone(ZoneInfo("America/New_York"))
+            .date()
+        )
+    finally:
+        conn.close()
+
+
+def upsert_ticker_meta(
+    *, ticker: str, sector: str | None, industry: str | None, source: str
+) -> None:
+    """Insert or replace a ticker's sector/industry enrichment row."""
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO ticker_meta (ticker, sector, industry, source, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (ticker, sector, industry, source, datetime.now(ZoneInfo("America/New_York")).isoformat()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_ticker_meta(ticker: str) -> dict | None:
+    """Return the cached sector/industry row for *ticker*, or None."""
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT ticker, sector, industry, source, updated_at FROM ticker_meta WHERE ticker = ?",
+            (ticker,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return {
+            "ticker": row[0],
+            "sector": row[1],
+            "industry": row[2],
+            "source": row[3],
+            "updated_at": row[4],
+        }
+    finally:
+        conn.close()
+
+
+def find_signals_by_alert_prefix(prefix: str) -> list[dict]:
+    """Return DELIVERED signals whose alert_id starts with *prefix*.
+
+    Raises ValueError for non-hex or out-of-range prefixes (CLI ambiguity guard
+    depends on this). Returns all matching rows so the caller can detect
+    ambiguity (>1) or no-match (0).
+    """
+    if not re.fullmatch(r"[0-9a-fA-F]{4,64}", prefix):
+        raise ValueError(
+            f"alert_id prefix must be 4-64 hex chars, got {prefix!r}"
+        )
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT alert_id, timestamp, agent, severity, ticker, title, acted, acted_at
+            FROM signals
+            WHERE alert_id LIKE ? || '%'
+              AND routing_status = 'DELIVERED'
+            ORDER BY timestamp DESC
+            """,
+            (prefix,),
+        )
+        columns = [col[0] for col in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def update_signal_acted(
+    alert_id: str, *, acted: bool, user_note: str | None = None
+) -> None:
+    """Record the operator's acted/passed decision on a signal.
+
+    Stamps acted_at with the current ET time. acted=True → 1, acted=False → 0.
+    """
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            UPDATE signals
+            SET acted = ?, acted_at = ?, user_note = COALESCE(?, user_note)
+            WHERE alert_id = ?
+            """,
+            (
+                int(acted),
+                datetime.now(ZoneInfo("America/New_York")).isoformat(),
+                user_note,
+                alert_id,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_recent_delivered_signals(
+    days: int = 14, *, now: datetime | None = None
+) -> list[dict]:
+    """Return DELIVERED signals from the last *days* (ET), newest first."""
+    effective_now = now or datetime.now(ZoneInfo("America/New_York"))
+    cutoff = (effective_now.astimezone(ZoneInfo("America/New_York")) - timedelta(days=days)).isoformat()
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT alert_id, timestamp, agent, severity, ticker, title, score,
+                   acted, acted_at, routing_status
+            FROM signals
+            WHERE routing_status = 'DELIVERED'
+              AND timestamp >= ?
+            ORDER BY timestamp DESC
+            """,
+            (cutoff,),
+        )
+        columns = [col[0] for col in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def count_unacted_delivered_older_than(
+    days: int = 7, *, now: datetime | None = None
+) -> int:
+    """Count DELIVERED signals older than *days* (ET) with acted IS NULL."""
+    effective_now = now or datetime.now(ZoneInfo("America/New_York"))
+    cutoff = (effective_now.astimezone(ZoneInfo("America/New_York")) - timedelta(days=days)).isoformat()
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT COUNT(*) FROM signals
+            WHERE routing_status = 'DELIVERED'
+              AND acted IS NULL
+              AND timestamp < ?
+            """,
+            (cutoff,),
+        )
+        row = cursor.fetchone()
+        return int(row[0]) if row is not None else 0
+    finally:
+        conn.close()
+
+
+def list_signals_for_review() -> list[dict]:
+    """Return routable signals with price snapshots for the review report.
+
+    Agents discovery_agent/news_classifier, routing DELIVERED/SUPPRESSED,
+    signal_price_snapshot NOT NULL (excludes legacy DAILY_CLOSE rows by
+    construction since they carry no snapshot). Excludes MONITORING corpus.
+    """
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT alert_id, timestamp, agent, severity, ticker, title, score,
+                   routing_status, signal_price_snapshot, outcome_price_30d,
+                   outcome_price_90d, direction, acted, weight_version
+            FROM signals
+            WHERE agent IN ('discovery_agent', 'news_classifier')
+              AND routing_status IN ('DELIVERED', 'SUPPRESSED')
+              AND signal_price_snapshot IS NOT NULL
+              AND signal_price_snapshot > 0
+            ORDER BY timestamp ASC
+            """
+        )
+        columns = [col[0] for col in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_llm_call_summary() -> list[dict]:
+    """Aggregate llm_calls per job: call count and token sums."""
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT job,
+                   COUNT(*) AS calls,
+                   COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                   COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                   COALESCE(SUM(cache_read_input_tokens), 0) AS cache_read_input_tokens,
+                   COALESCE(SUM(cache_creation_input_tokens), 0) AS cache_creation_input_tokens
+            FROM llm_calls
+            GROUP BY job
+            ORDER BY job
+            """
+        )
+        columns = [col[0] for col in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_routable_discovery_signals(
     since: date,
     *,
     excluded_tickers: set[str] | None = None,
     limit: int = 20,
 ) -> list[dict]:
-    """Return recent DELIVERED discovery_agent signals ordered by score desc.
+    """Return recent routable (DELIVERED or SUPPRESSED) discovery_agent signals by score desc.
 
-    Used by the advisor to find new-buy candidates not already held.
+    Includes SUPPRESSED so the daily delivery budget can't starve analysis —
+    the advisor's new-buy funnel should see every top scorer, not just the few
+    the router delivered that day.
     """
     conn = _connect()
     try:
@@ -577,7 +1004,7 @@ def get_delivered_discovery_signals(
             SELECT ticker, score, timestamp
             FROM signals
             WHERE agent = 'discovery_agent'
-              AND routing_status = 'DELIVERED'
+              AND routing_status IN ('DELIVERED', 'SUPPRESSED')
               AND timestamp >= ?
             ORDER BY score DESC, timestamp DESC
             LIMIT ?

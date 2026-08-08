@@ -46,6 +46,46 @@ def test_budget_constants_are_public():
     assert BUDGET_INFO == 3
 
 
+def test_competition_score_scales_news_confidence_to_hundreds():
+    """News confidences are 0-1; competition scale converts to 0-100 for cross-agent ties."""
+    from signal_system.models import competition_score
+
+    news = _sig(ticker="AAPL", score=0.92, severity="ACTION_REQUIRED", agent="news_classifier")
+    discovery = _sig(ticker="MSFT", score=88.0, severity="ACTION_REQUIRED", agent="discovery_agent")
+
+    assert competition_score(news) == pytest.approx(92.0)
+    assert competition_score(discovery) == pytest.approx(88.0)
+    assert competition_score(news) > competition_score(discovery)
+
+
+def test_cross_agent_ar_competition_uses_competition_scale(monkeypatch):
+    """news 0.92 (→92) beats discovery 88 on the unified scale for the single AR slot."""
+    monkeypatch.setattr(repository, "count_delivered_today", lambda: {})
+    news = _sig(ticker="AAPL", score=0.92, severity="ACTION_REQUIRED", agent="news_classifier")
+    discovery = _sig(ticker="MSFT", score=88.0, severity="ACTION_REQUIRED", agent="discovery_agent")
+
+    results = route_signals([discovery, news])
+    delivered = [t for t in results if t[1] == "DELIVERED"]
+    assert delivered[0][0].ticker == "AAPL"  # news wins AR
+    assert delivered[0][0].severity == "ACTION_REQUIRED"
+    assert delivered[0][2] is None
+    # discovery demoted to INFO, delivered with demoted_from
+    assert delivered[1][0].ticker == "MSFT"
+    assert delivered[1][0].severity == "INFORMATIONAL"
+    assert delivered[1][2] == "ACTION_REQUIRED"
+
+
+def test_cross_agent_ar_tie_breaks_by_ticker(monkeypatch):
+    """Equal competition scores (news 0.80 vs discovery 80) tiebreak alphabetically."""
+    monkeypatch.setattr(repository, "count_delivered_today", lambda: {})
+    news = _sig(ticker="ZZZ", score=0.80, severity="ACTION_REQUIRED", agent="news_classifier")
+    discovery = _sig(ticker="AAA", score=80.0, severity="ACTION_REQUIRED", agent="discovery_agent")
+
+    results = route_signals([news, discovery])
+    delivered = [t for t in results if t[1] == "DELIVERED"]
+    assert delivered[0][0].ticker == "AAA"  # alphabetically first wins AR
+
+
 # ---------------------------------------------------------------------------
 # T-AR-07: empty input
 # ---------------------------------------------------------------------------
@@ -233,11 +273,16 @@ def test_mixed_batch_allocation(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# T-AR-03: cross-run — DB already has 1 AR DELIVERED → new AR → cap_exhausted
+# T-AR-03: cross-run — DB already has 1 AR DELIVERED → new AR → demote-then-compete
 # ---------------------------------------------------------------------------
 
 def test_cross_run_ar_full(db, monkeypatch):
-    """No eviction: if DB has 1 AR DELIVERED today, new AR gets cap_exhausted."""
+    """AR budget already consumed today: new AR is demoted to INFO, not suppressed outright.
+
+    Demote-before-suppress (suppressed-signals-spec): an AR that can't get an AR
+    slot is still worth delivering as INFO if INFO has room. With INFO room free,
+    the demoted AR is DELIVERED as INFORMATIONAL carrying demoted_from.
+    """
     from zoneinfo import ZoneInfo
     today_et = datetime.now(ZoneInfo("America/New_York"))
     prior_sig = Signal(
@@ -257,9 +302,34 @@ def test_cross_run_ar_full(db, monkeypatch):
     results = route_signals([new_sig])
     assert len(results) == 1
     _, rs, dmf, reason = results[0]
+    assert rs == "DELIVERED"
+    assert dmf == "ACTION_REQUIRED"
+    assert reason is None
+    assert results[0][0].severity == "INFORMATIONAL"
+
+
+def test_cross_run_ar_full_and_info_full_demoted_then_suppressed(db, monkeypatch):
+    """Both budgets exhausted today: demoted AR competes for INFO, loses, carries both fields."""
+    from zoneinfo import ZoneInfo
+    today_et = datetime.now(ZoneInfo("America/New_York"))
+    new_sig = Signal(
+        ticker="NEW", score=95.0, severity="ACTION_REQUIRED", agent="ag",
+        timestamp=today_et,
+        alert_id=compute_alert_id("NEW", today_et.date().isoformat(), "r2", "ag"),
+        title="new",
+    )
+    # Both budgets already fully consumed today via count_delivered_today
+    monkeypatch.setattr(
+        repository, "count_delivered_today",
+        lambda: {"ACTION_REQUIRED": 1, "INFORMATIONAL": BUDGET_INFO},
+    )
+    results = route_signals([new_sig])
+    assert len(results) == 1
+    sig, rs, dmf, reason = results[0]
     assert rs == "SUPPRESSED"
-    assert dmf is None
+    assert dmf == "ACTION_REQUIRED"
     assert reason == "cap_exhausted"
+    assert sig.severity == "INFORMATIONAL"
 
 
 # ---------------------------------------------------------------------------

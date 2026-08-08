@@ -10,7 +10,7 @@ allows arbitrary Python object construction (threat T-01-01).
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 

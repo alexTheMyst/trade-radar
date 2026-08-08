@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from signal_system.data import universe
+from signal_system.discovery.discovery_agent import ScoreResult
 from signal_system.models import Signal, compute_alert_id
 from signal_system.state import repository
 
@@ -19,6 +20,19 @@ def db(tmp_path, monkeypatch):
     monkeypatch.setattr(repository, "DB_PATH", tmp_path / "test.db")
     repository.init_db()
     return tmp_path / "test.db"
+
+
+@pytest.fixture(autouse=True)
+def _no_network_general_news(monkeypatch):
+    """Every news-morning run test must not hit the live general-news endpoint.
+
+    Individual tests that specifically exercise general news override this by
+    patching fetch_general_news themselves later in their own patch context.
+    """
+    monkeypatch.setattr(
+        "signal_system.jobs.news_morning.fetch_general_news",
+        lambda *a, **kw: [],
+    )
 
 
 def test_core_holdings_filters_to_core_only_and_preserves_csv_order(tmp_path, monkeypatch):
@@ -320,6 +334,66 @@ def test_render_digest_suppressed_section_sorted_by_score_descending():
     assert nvda_pos < cde_pos
 
 
+def test_render_digest_monitoring_breakdown_renders_all_categories():
+    from signal_system.jobs.common import render_digest
+
+    delivered = _sig(ticker="AAPL", severity="INFORMATIONAL", score=0.75)
+    payload = render_digest(
+        job_name="news-morning",
+        scanned_tickers=3,
+        routed_signals=[(delivered, "DELIVERED", None, None)],
+        held_tickers=set(),
+        score_deltas={},
+        status_counts={"DELIVERED": 1, "SUPPRESSED": 0, "MONITORING": 5},
+        monitoring_breakdown={
+            "off_thesis": 2,
+            "parse_failure": 1,
+            "volume_cap": 1,
+            "reconciled": 1,
+        },
+    )
+
+    assert (
+        "Monitoring: 5 (off-thesis 2, parse-fail 1, volume-cap 1, reconciled 1)"
+        in payload.body
+    )
+
+
+def test_render_digest_monitoring_breakdown_omits_zero_categories():
+    from signal_system.jobs.common import render_digest
+
+    payload = render_digest(
+        job_name="news-morning",
+        scanned_tickers=2,
+        routed_signals=[],
+        held_tickers=set(),
+        score_deltas={},
+        status_counts={"DELIVERED": 0, "SUPPRESSED": 0, "MONITORING": 2},
+        monitoring_breakdown={"off_thesis": 2},
+    )
+
+    assert "Monitoring: 2 (off-thesis 2)" in payload.body
+    assert "parse-fail" not in payload.body
+    assert "volume-cap" not in payload.body
+    assert "reconciled" not in payload.body
+
+
+def test_render_digest_monitoring_breakdown_none_renders_bare_count():
+    from signal_system.jobs.common import render_digest
+
+    payload = render_digest(
+        job_name="news-morning",
+        scanned_tickers=2,
+        routed_signals=[],
+        held_tickers=set(),
+        score_deltas={},
+        status_counts={"DELIVERED": 0, "SUPPRESSED": 0, "MONITORING": 3},
+    )
+
+    assert "Monitoring: 3" in payload.body
+    assert "(off-thesis" not in payload.body
+
+
 def test_news_morning_requires_previous_daily_close_before_fetch_or_delivery(db):
     from signal_system.jobs import news_morning
 
@@ -585,6 +659,218 @@ def test_news_morning_digest_counts_zero_alert_and_mismatch_guard(db):
     mismatch_send.assert_not_called()
 
 
+def test_news_morning_digest_monitoring_breakdown_composed_end_to_end(db):
+    from signal_system.jobs import news_morning
+
+    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
+    previous_close = datetime(2026, 5, 16, 20, 0, tzinfo=timezone.utc)
+    off_thesis = _sig(ticker="AAPL", severity="MONITORING", agent="news_classifier")
+    off_thesis = Signal(
+        ticker=off_thesis.ticker,
+        score=off_thesis.score,
+        severity=off_thesis.severity,
+        agent=off_thesis.agent,
+        timestamp=off_thesis.timestamp,
+        alert_id=off_thesis.alert_id,
+        title="[off_thesis] unrelated story",
+        body="not about a pillar",
+    )
+    reconciled_loser = _sig(ticker="AAPL", severity="INFORMATIONAL", agent="news_classifier")
+
+    items = []
+    for index in range(51):
+        items.append(
+            _news_item(
+                f"Headline {index:02d}",
+                previous_close.replace(hour=20 + (index // 60), minute=index % 60),
+            )
+        )
+
+    with patch("signal_system.jobs.news_morning.heartbeat.heartbeat", _noop_heartbeat), \
+         patch("signal_system.jobs.news_morning._now_et", return_value=fixed_now), \
+         patch("signal_system.jobs.news_morning.get_core_holdings", return_value=["AAPL"]), \
+         patch("signal_system.jobs.news_morning.get_position_weights", return_value={"AAPL": 10.0}), \
+         patch("signal_system.jobs.news_morning.repository.get_latest_successful_run_date", return_value=date(2026, 5, 16)), \
+         patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
+         patch("signal_system.jobs.news_morning.fetch_company_news", return_value=items), \
+         patch("signal_system.jobs.news_morning.classify_headlines", return_value=[off_thesis]), \
+         patch("signal_system.jobs.news_morning.route_signals", return_value=[]), \
+         patch(
+             "signal_system.jobs.news_morning.reconcile_directions",
+             return_value=([], [reconciled_loser]),
+         ), \
+         patch("signal_system.jobs.news_morning.telegram_sender.send_message") as mock_send:
+        news_morning.run()
+
+    assert mock_send.call_count == 1
+    body = mock_send.call_args.args[0]
+    assert "Monitoring: 3 (off-thesis 1, volume-cap 1, reconciled 1)" in body
+
+
+def test_news_morning_appends_unacted_nag_when_overdue(db):
+    from signal_system.jobs import news_morning
+
+    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
+
+    with patch("signal_system.jobs.news_morning.heartbeat.heartbeat", _noop_heartbeat), \
+         patch("signal_system.jobs.news_morning._now_et", return_value=fixed_now), \
+         patch("signal_system.jobs.news_morning.get_core_holdings", return_value=["AAPL"]), \
+         patch("signal_system.jobs.news_morning.get_position_weights", return_value={"AAPL": 10.0}), \
+         patch("signal_system.jobs.news_morning.repository.get_latest_successful_run_date", return_value=date(2026, 5, 16)), \
+         patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
+         patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[]), \
+         patch("signal_system.jobs.news_morning.classify_headlines", return_value=[]), \
+         patch("signal_system.jobs.news_morning.route_signals", return_value=[]), \
+         patch("signal_system.jobs.news_morning.repository.count_unacted_delivered_older_than", return_value=3), \
+         patch("signal_system.jobs.news_morning.telegram_sender.send_message") as mock_send:
+        news_morning.run()
+
+    body = mock_send.call_args.args[0]
+    assert "3 delivered signal(s) from 7+ days ago are unreviewed" in body
+
+
+def test_news_morning_no_nag_when_none_unacted(db):
+    from signal_system.jobs import news_morning
+
+    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
+
+    with patch("signal_system.jobs.news_morning.heartbeat.heartbeat", _noop_heartbeat), \
+         patch("signal_system.jobs.news_morning._now_et", return_value=fixed_now), \
+         patch("signal_system.jobs.news_morning.get_core_holdings", return_value=["AAPL"]), \
+         patch("signal_system.jobs.news_morning.get_position_weights", return_value={"AAPL": 10.0}), \
+         patch("signal_system.jobs.news_morning.repository.get_latest_successful_run_date", return_value=date(2026, 5, 16)), \
+         patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
+         patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[]), \
+         patch("signal_system.jobs.news_morning.classify_headlines", return_value=[]), \
+         patch("signal_system.jobs.news_morning.route_signals", return_value=[]), \
+         patch("signal_system.jobs.news_morning.repository.count_unacted_delivered_older_than", return_value=0), \
+         patch("signal_system.jobs.news_morning.telegram_sender.send_message") as mock_send:
+        news_morning.run()
+
+    body = mock_send.call_args.args[0]
+    assert "unreviewed" not in body
+
+
+def test_news_morning_macro_headline_renders_macro_in_digest(db):
+    """A classified macro headline (ticker=None) renders as MACRO in the digest."""
+    from signal_system.jobs import news_morning
+
+    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
+    macro_signal = Signal(
+        ticker=None, score=0.9, severity="ACTION_REQUIRED", agent="news_classifier",
+        timestamp=fixed_now, alert_id=compute_alert_id(None, "2026-05-19", "r", "news_classifier"),
+        title="Fed hikes: rates",
+    )
+
+    with patch("signal_system.jobs.news_morning.heartbeat.heartbeat", _noop_heartbeat), \
+         patch("signal_system.jobs.news_morning._now_et", return_value=fixed_now), \
+         patch("signal_system.jobs.news_morning.get_core_holdings", return_value=["AAPL"]), \
+         patch("signal_system.jobs.news_morning.get_position_weights", return_value={"AAPL": 10.0}), \
+         patch("signal_system.jobs.news_morning.repository.get_latest_successful_run_date", return_value=date(2026, 5, 16)), \
+         patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
+         patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[]), \
+         patch("signal_system.jobs.news_morning.fetch_general_news", return_value=[_news_item("Fed hikes", fixed_now)]), \
+         patch("signal_system.jobs.news_morning.classify_headlines", return_value=[macro_signal]), \
+         patch("signal_system.jobs.news_morning.route_signals", return_value=[(macro_signal, "DELIVERED", None, None)]), \
+         patch("signal_system.jobs.news_morning.repository.count_unacted_delivered_older_than", return_value=0), \
+         patch("signal_system.jobs.news_morning.telegram_sender.send_message") as mock_send:
+        news_morning.run()
+
+    body = mock_send.call_args.args[0]
+    assert "MACRO — ACTION_REQUIRED" in body
+
+
+def test_news_morning_cross_feed_dedup_keeps_one(db):
+    """The same article id in both company and general feeds alerts only once."""
+    from signal_system.jobs import news_morning
+
+    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
+    previous_close = datetime(2026, 5, 16, 20, 0, tzinfo=timezone.utc)
+    item = {**_news_item("Shared Fed story", previous_close), "id": 7777}
+
+    with patch("signal_system.jobs.news_morning.heartbeat.heartbeat", _noop_heartbeat), \
+         patch("signal_system.jobs.news_morning._now_et", return_value=fixed_now), \
+         patch("signal_system.jobs.news_morning.get_core_holdings", return_value=["AAPL"]), \
+         patch("signal_system.jobs.news_morning.get_position_weights", return_value={"AAPL": 10.0}), \
+         patch("signal_system.jobs.news_morning.repository.get_latest_successful_run_date", return_value=date(2026, 5, 16)), \
+         patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
+         patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[item]), \
+         patch("signal_system.jobs.news_morning.fetch_general_news", return_value=[item]), \
+         patch("signal_system.jobs.news_morning.classify_headlines") as mock_classify, \
+         patch("signal_system.jobs.news_morning.route_signals", return_value=[]), \
+         patch("signal_system.jobs.news_morning.repository.count_unacted_delivered_older_than", return_value=0), \
+         patch("signal_system.jobs.news_morning.telegram_sender.send_message"):
+        news_morning.run()
+
+    assert mock_classify.call_count == 1, "Cross-feed dedup should classify the article once"
+
+
+def test_news_morning_general_cap_independent_of_company_cap(db):
+    """General news is capped at 20 independently of the 50-company cap."""
+    from signal_system.jobs import news_morning
+
+    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
+    previous_close = datetime(2026, 5, 16, 20, 0, tzinfo=timezone.utc)
+    general_items = [
+        {**_news_item(f"General story {i}", previous_close), "id": 1000 + i}
+        for i in range(25)
+    ]
+    captured: list[tuple] = []
+
+    with patch("signal_system.jobs.news_morning.heartbeat.heartbeat", _noop_heartbeat), \
+         patch("signal_system.jobs.news_morning._now_et", return_value=fixed_now), \
+         patch("signal_system.jobs.news_morning.get_core_holdings", return_value=["AAPL"]), \
+         patch("signal_system.jobs.news_morning.get_position_weights", return_value={"AAPL": 10.0}), \
+         patch("signal_system.jobs.news_morning.repository.get_latest_successful_run_date", return_value=date(2026, 5, 16)), \
+         patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
+         patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[]), \
+         patch("signal_system.jobs.news_morning.fetch_general_news", return_value=general_items), \
+         patch("signal_system.jobs.news_morning.classify_headlines",
+               side_effect=lambda ticker, headlines, **kw: captured.extend(headlines) or []), \
+         patch("signal_system.jobs.news_morning.route_signals", return_value=[]), \
+         patch("signal_system.jobs.news_morning.repository.count_unacted_delivered_older_than", return_value=0), \
+         patch("signal_system.jobs.news_morning.telegram_sender.send_message"):
+        news_morning.run()
+
+    assert len(captured) == 20, f"General cap should keep 20, classified {len(captured)}"
+
+
+def test_news_morning_macro_reconciliation_groups_macro_headlines(db):
+    """Two contradicting macro headlines on one pillar reconcile (one loser)."""
+    from signal_system.jobs import news_morning
+
+    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
+    pos = Signal(
+        ticker=None, score=0.95, severity="INFORMATIONAL", agent="news_classifier",
+        timestamp=fixed_now, alert_id=compute_alert_id(None, "2026-05-19", "pos", "news_classifier"),
+        title="Fed cuts: positive", direction="positive", pillar="monetary_policy",
+    )
+    neg = Signal(
+        ticker=None, score=0.60, severity="INFORMATIONAL", agent="news_classifier",
+        timestamp=fixed_now, alert_id=compute_alert_id(None, "2026-05-19", "neg", "news_classifier"),
+        title="Fed hikes: negative", direction="negative", pillar="monetary_policy",
+    )
+    routed: list = []
+
+    with patch("signal_system.jobs.news_morning.heartbeat.heartbeat", _noop_heartbeat), \
+         patch("signal_system.jobs.news_morning._now_et", return_value=fixed_now), \
+         patch("signal_system.jobs.news_morning.get_core_holdings", return_value=["AAPL"]), \
+         patch("signal_system.jobs.news_morning.get_position_weights", return_value={"AAPL": 10.0}), \
+         patch("signal_system.jobs.news_morning.repository.get_latest_successful_run_date", return_value=date(2026, 5, 16)), \
+         patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
+         patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[]), \
+         patch("signal_system.jobs.news_morning.fetch_general_news", return_value=[]), \
+         patch("signal_system.jobs.news_morning._classify_kept_headlines",
+               return_value=([pos, neg], {"off_thesis": 0, "parse_failure": 0}, 0)), \
+         patch("signal_system.jobs.news_morning.route_signals",
+               side_effect=lambda sigs: routed.extend(sigs) or []), \
+         patch("signal_system.jobs.news_morning.repository.count_unacted_delivered_older_than", return_value=0), \
+         patch("signal_system.jobs.news_morning.telegram_sender.send_message"):
+        news_morning.run()
+
+    assert len(routed) == 1, "Only the reconciled winner should reach the router"
+
+
 def test_discovery_routes_persists_and_sends_digest(db):
     from signal_system.jobs import discovery
 
@@ -608,7 +894,7 @@ def test_discovery_routes_persists_and_sends_digest(db):
          patch("signal_system.jobs.discovery.get_core_holdings", return_value=["MSFT"]), \
          patch(
              "signal_system.jobs.discovery.score_universe",
-             return_value=[delivered_signal, suppressed_signal],
+             return_value=ScoreResult(signals=[delivered_signal, suppressed_signal]),
          ), \
          patch(
              "signal_system.jobs.discovery.route_signals",
@@ -679,7 +965,7 @@ def test_discovery_zero_alert_digest_even_when_score_returns_empty(db):
          patch("signal_system.jobs.discovery.heartbeat.heartbeat", _noop_heartbeat), \
          patch("signal_system.jobs.discovery.get_todays_universe", return_value=["AAPL"]), \
          patch("signal_system.jobs.discovery.get_core_holdings", return_value=[]), \
-         patch("signal_system.jobs.discovery.score_universe", return_value=[]), \
+         patch("signal_system.jobs.discovery.score_universe", return_value=ScoreResult()), \
          patch("signal_system.jobs.discovery.route_signals", return_value=[]) as mock_route, \
          patch("signal_system.jobs.discovery.telegram_sender.send_message") as mock_send:
         discovery.run()
@@ -707,7 +993,7 @@ def test_discovery_fails_on_digest_count_mismatch(db):
          patch("signal_system.jobs.discovery.heartbeat.heartbeat", _noop_heartbeat), \
          patch("signal_system.jobs.discovery.get_todays_universe", return_value=["AAPL"]), \
          patch("signal_system.jobs.discovery.get_core_holdings", return_value=[]), \
-         patch("signal_system.jobs.discovery.score_universe", return_value=[routed_signal]), \
+         patch("signal_system.jobs.discovery.score_universe", return_value=ScoreResult(signals=[routed_signal])), \
          patch(
              "signal_system.jobs.discovery.route_signals",
              return_value=[(routed_signal, "DELIVERED", None, None)],
@@ -760,6 +1046,65 @@ def test_discovery_fails_loudly_on_empty_universe(db):
     status = conn.execute("SELECT status FROM runs WHERE job = 'discovery'").fetchone()
     conn.close()
     assert status == ("failed",)
+
+
+def test_discovery_digest_includes_industry_rollup_section(db, monkeypatch):
+    """The discovery digest renders the industry momentum section when industries exist."""
+    from signal_system.jobs import discovery
+
+    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
+    delivered = _sig(ticker="NVDA", agent="discovery_agent", score=88.0)
+
+    with patch("signal_system.jobs.discovery.get_industries",
+               return_value={"NVDA": "Semiconductors", "AMD": "Semiconductors", "AVGO": "Semiconductors"}), \
+         patch("signal_system.jobs.discovery._now_et", return_value=fixed_now), \
+         patch("signal_system.jobs.discovery.heartbeat.heartbeat", _noop_heartbeat), \
+         patch("signal_system.jobs.discovery.get_todays_universe", return_value=["NVDA", "AMD", "AVGO"]), \
+         patch("signal_system.jobs.discovery.get_core_holdings", return_value=[]), \
+         patch(
+             "signal_system.jobs.discovery.score_universe",
+             return_value=ScoreResult(
+                 signals=[delivered],
+                 composite_by_ticker={"NVDA": 88.0, "AMD": 60.0, "AVGO": 30.0},
+             ),
+         ), \
+         patch(
+             "signal_system.jobs.discovery.route_signals",
+             return_value=[(delivered, "DELIVERED", None, None)],
+         ), \
+         patch("signal_system.jobs.discovery.telegram_sender.send_message") as mock_send:
+        discovery.run()
+
+    body = mock_send.call_args.args[0]
+    assert "Industry momentum (median composite, n>=3)" in body
+    assert "Semiconductors: 60" in body
+
+
+def test_discovery_digest_no_industry_section_without_industries(db, monkeypatch):
+    """No industry section when universe.csv lacks industry columns (pre-4.3)."""
+    from signal_system.jobs import discovery
+
+    fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
+    delivered = _sig(ticker="NVDA", agent="discovery_agent", score=88.0)
+
+    with patch("signal_system.jobs.discovery.get_industries", return_value={}), \
+         patch("signal_system.jobs.discovery._now_et", return_value=fixed_now), \
+         patch("signal_system.jobs.discovery.heartbeat.heartbeat", _noop_heartbeat), \
+         patch("signal_system.jobs.discovery.get_todays_universe", return_value=["NVDA"]), \
+         patch("signal_system.jobs.discovery.get_core_holdings", return_value=[]), \
+         patch(
+             "signal_system.jobs.discovery.score_universe",
+             return_value=ScoreResult(signals=[delivered], composite_by_ticker={"NVDA": 88.0}),
+         ), \
+         patch(
+             "signal_system.jobs.discovery.route_signals",
+             return_value=[(delivered, "DELIVERED", None, None)],
+         ), \
+         patch("signal_system.jobs.discovery.telegram_sender.send_message") as mock_send:
+        discovery.run()
+
+    body = mock_send.call_args.args[0]
+    assert "Industry momentum" not in body
 
 
 def test_news_morning_fails_loudly_on_empty_universe(db):
@@ -1099,7 +1444,7 @@ def test_discovery_computes_deltas_before_persisting(db):
          patch("signal_system.jobs.discovery.heartbeat.heartbeat", _noop_heartbeat), \
          patch("signal_system.jobs.discovery.get_todays_universe", return_value=["MSFT"]), \
          patch("signal_system.jobs.discovery.get_core_holdings", return_value=["MSFT"]), \
-         patch("signal_system.jobs.discovery.score_universe", return_value=[suppressed_signal]), \
+         patch("signal_system.jobs.discovery.score_universe", return_value=ScoreResult(signals=[suppressed_signal])), \
          patch(
              "signal_system.jobs.discovery.route_signals",
              return_value=[(suppressed_signal, "SUPPRESSED", None, "cap_exhausted")],

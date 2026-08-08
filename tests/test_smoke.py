@@ -88,7 +88,7 @@ def test_compute_alert_id_deterministic():
 
 
 def test_daily_close_smoke(tmp_path, monkeypatch):
-    """daily_close.run() must write a DAILY_CLOSE signal row with score == SPY close price."""
+    """daily_close.run() must write a SPY benchmark_prices row, not a signal row."""
     monkeypatch.setattr(repository, "DB_PATH", tmp_path / "test.db")
     repository.init_db()
 
@@ -107,13 +107,16 @@ def test_daily_close_smoke(tmp_path, monkeypatch):
 
     conn = sqlite3.connect(tmp_path / "test.db")
     row = conn.execute(
-        "SELECT ticker, score FROM signals WHERE agent='DAILY_CLOSE'"
+        "SELECT ticker, date, close, source FROM benchmark_prices WHERE ticker='SPY'"
     ).fetchone()
+    signal_row = conn.execute("SELECT COUNT(*) FROM signals").fetchone()
     conn.close()
 
     assert row is not None
     assert row[0] == "SPY"
-    assert abs(row[1] - 591.42) < 0.01
+    assert row[3] == "finnhub_quote"
+    assert abs(row[2] - 591.42) < 0.01
+    assert signal_row[0] == 0, "daily-close must no longer write a signals row"
 
 
 def test_daily_close_finnhub_failure(tmp_path, monkeypatch):
@@ -141,7 +144,7 @@ def test_daily_close_finnhub_failure(tmp_path, monkeypatch):
 
 
 def test_daily_close_delivery_failure(tmp_path, monkeypatch):
-    """When Telegram delivery fails after signal insert, run is marked failed and signal row is retained."""
+    """When Telegram delivery fails after benchmark insert, run is marked failed and benchmark row is retained."""
     monkeypatch.setattr(repository, "DB_PATH", tmp_path / "test.db")
     repository.init_db()
 
@@ -154,12 +157,12 @@ def test_daily_close_delivery_failure(tmp_path, monkeypatch):
         with pytest.raises(urllib.error.HTTPError):
             daily_close.run()
 
-    # Signal was inserted before delivery failed — row should exist
+    # Benchmark was inserted before delivery failed — row should exist
     conn = sqlite3.connect(tmp_path / "test.db")
-    signal_row = conn.execute("SELECT ticker FROM signals WHERE agent='DAILY_CLOSE'").fetchone()
+    benchmark_row = conn.execute("SELECT ticker FROM benchmark_prices WHERE ticker='SPY'").fetchone()
     run_row = conn.execute("SELECT status FROM runs").fetchone()
     conn.close()
-    assert signal_row is not None, "Signal should be persisted even if delivery fails"
+    assert benchmark_row is not None, "Benchmark should be persisted even if delivery fails"
     assert run_row[0] == "failed"
 
 
@@ -240,6 +243,7 @@ def test_init_db_idempotent_and_new_schema(tmp_path, monkeypatch):
         "thesis_version_hash",
         "demoted_from",
         "suppression_reason",
+        "weight_version",
     ):
         assert col in col_names, f"Column {col!r} missing from signals"
 
@@ -251,6 +255,7 @@ def test_init_db_idempotent_and_new_schema(tmp_path, monkeypatch):
     }
     assert "wash_sale" in table_names, "wash_sale table not found"
     assert "llm_calls" in table_names, "llm_calls table not found"
+    assert "benchmark_prices" in table_names, "benchmark_prices table not found"
     conn.close()
 
 
@@ -480,6 +485,30 @@ def test_get_todays_universe_excludes_k1(tmp_path, monkeypatch):
     assert "USO" not in result, "USO (K-1 ETF) must be excluded"
     assert "UNG" not in result, "UNG (K-1 ETF) must be excluded"
     assert "AAPL" in result, "AAPL (core holding) must always be included"
+
+
+def test_k1_denylist_excludes_unflagged_rows(tmp_path, monkeypatch):
+    """The hardcoded denylist excludes K-1 tickers even when k1_etf is unset in the CSV."""
+    import signal_system.data.universe as universe_mod
+
+    # USO/UNG are NOT flagged k1_etf here — the denylist must catch them anyway.
+    csv_content = (
+        "ticker,core_holding,k1_etf,weight_pct\n"
+        "AAPL,1,0,10.0\n"
+        "USO,1,,5.0\n"
+        "DBC,1,,5.0\n"
+        "NVDA,0,0,\n"
+    )
+    csv_path = tmp_path / "universe.csv"
+    csv_path.write_text(csv_content)
+    monkeypatch.setattr(universe_mod, "UNIVERSE_PATH", csv_path)
+
+    assert "USO" not in universe_mod.get_todays_universe()
+    assert "DBC" not in universe_mod.get_todays_universe()
+    assert "USO" not in universe_mod.get_core_holdings()
+    weights = universe_mod.get_position_weights()
+    assert "USO" not in weights and "DBC" not in weights
+    assert weights["AAPL"] == 10.0
 
 
 def test_get_todays_universe_includes_core_excludes_off_partition(tmp_path, monkeypatch):
@@ -733,6 +762,67 @@ def test_company_news_date_format(monkeypatch):
 
     assert captured["from_str"] == "2026-05-01", f"Bad from_str: {captured['from_str']!r}"
     assert captured["to_str"] == "2026-05-15", f"Bad to_str: {captured['to_str']!r}"
+
+
+def test_general_news_returns_list(monkeypatch):
+    """fetch_general_news returns a list with headline and source keys."""
+    import signal_system.data.finnhub_client as fc
+
+    fake_news = [
+        {
+            "headline": "Fed signals rate path",
+            "source": "Reuters",
+            "datetime": 1700000000,
+            "url": "",
+            "summary": "",
+            "id": 99,
+            "image": "",
+            "category": "general",
+            "related": "",
+        }
+    ]
+    monkeypatch.setattr(fc, "_acquire_slot", lambda: None)
+    mock_client = MagicMock()
+    mock_client.general_news.return_value = fake_news
+    monkeypatch.setattr(fc, "_get_client", lambda: mock_client)
+
+    result = fc.fetch_general_news("general")
+    assert isinstance(result, list)
+    assert len(result) == 1
+    assert result[0]["headline"] == "Fed signals rate path"
+    assert result[0]["source"] == "Reuters"
+
+
+def test_general_news_empty_on_paid_tier(monkeypatch):
+    """fetch_general_news returns [] on 403 paid-tier error (no exception propagates)."""
+    import signal_system.data.finnhub_client as fc
+
+    exc = _make_finnhub_exc(403)
+    monkeypatch.setattr(fc, "_acquire_slot", lambda: None)
+    mock_client = MagicMock()
+    mock_client.general_news.side_effect = exc
+    monkeypatch.setattr(fc, "_get_client", lambda: mock_client)
+
+    result = fc.fetch_general_news("general")
+    assert result == []
+
+
+def test_general_news_passes_category_and_min_id(monkeypatch):
+    """fetch_general_news calls general_news(category) and passes min_id when given."""
+    import signal_system.data.finnhub_client as fc
+
+    captured = {}
+
+    def fake_raw(category, min_id):
+        captured["category"] = category
+        captured["min_id"] = min_id
+        return []
+
+    monkeypatch.setattr(fc, "_fetch_general_news_raw", fake_raw)
+
+    fc.fetch_general_news("general", min_id=123)
+    assert captured["category"] == "general"
+    assert captured["min_id"] == 123
 
 
 # ---------------------------------------------------------------------------
@@ -1173,15 +1263,45 @@ def test_classify_returns_signal_with_stamped_fields(monkeypatch):
     assert signal.severity == "ACTION_REQUIRED"  # 0.9 >= 0.85
 
 
-def test_classify_returns_none_when_pillar_name_none(monkeypatch):
+def test_classify_returns_monitoring_signal_when_pillar_name_none(monkeypatch):
     from signal_system.classifier.news_classifier import classify_headline, ClassificationResult
+    from signal_system import config
     parsed = ClassificationResult(pillar_name=None, confidence=0.3, direction="neutral", rationale="off-thesis")
     mock_client = _make_mock_anthropic(parsed)
     monkeypatch.setattr("signal_system.classifier.news_classifier._get_client", lambda: mock_client)
     monkeypatch.setattr("signal_system.classifier.news_classifier.repository.insert_llm_call", MagicMock())
     thesis = _make_test_thesis()
     result = classify_headline("AAPL", {"headline": "Weather report"}, thesis, "abc", "SYS")
-    assert result is None
+    assert result is not None
+    assert result.severity == "MONITORING"
+    assert result.title.startswith("[off_thesis]")
+    assert result.body == "off-thesis"
+    assert result.score == 0.3
+    assert result.direction == "neutral"
+    assert result.pillar is None
+    assert result.model_version == config.ANTHROPIC_MODEL
+    assert result.thesis_version_hash == "abc"
+
+
+def test_classify_off_thesis_alert_id_matches_on_thesis(monkeypatch):
+    """The same headline gets the same alert_id whether on- or off-thesis."""
+    from signal_system.classifier.news_classifier import classify_headline, ClassificationResult
+
+    on_thesis = ClassificationResult(pillar_name="growth", confidence=0.9, direction="positive", rationale="x")
+    mock_on = _make_mock_anthropic(on_thesis)
+    monkeypatch.setattr("signal_system.classifier.news_classifier._get_client", lambda: mock_on)
+    monkeypatch.setattr("signal_system.classifier.news_classifier.repository.insert_llm_call", MagicMock())
+    thesis = _make_test_thesis()
+    on_signal = classify_headline("AAPL", {"headline": "Apple beats earnings"}, thesis, "abc", "SYS")
+
+    off_thesis = ClassificationResult(pillar_name=None, confidence=0.2, direction="neutral", rationale="off")
+    mock_off = _make_mock_anthropic(off_thesis)
+    monkeypatch.setattr("signal_system.classifier.news_classifier._get_client", lambda: mock_off)
+    off_signal = classify_headline("AAPL", {"headline": "Apple beats earnings"}, thesis, "abc", "SYS")
+
+    assert on_signal is not None and off_signal is not None
+    assert off_signal.severity == "MONITORING"
+    assert off_signal.alert_id == on_signal.alert_id
 
 
 def test_classify_coerces_none_cache_counts_to_zero(monkeypatch):

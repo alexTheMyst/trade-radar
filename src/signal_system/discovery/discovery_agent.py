@@ -9,6 +9,8 @@ adjusts severity thresholds per ticker.
 from __future__ import annotations
 
 import logging
+import statistics
+from dataclasses import dataclass, field
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -36,6 +38,36 @@ _FACTOR_LABELS: dict[str, str] = {
     "momentum_5d": "mom5",
     "range_vs_20d": "range",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class ScoreResult:
+    """Score universe output: emitted signals + composite score per scored ticker.
+
+    composite_by_ticker includes sub-threshold tickers so the industry rollup
+    can aggregate over the full universe, not just emitted signals.
+    """
+    signals: list[Signal] = field(default_factory=list)
+    composite_by_ticker: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class IndustryRollup:
+    """One industry's median composite momentum."""
+    industry: str
+    median_composite: float
+    member_count: int
+
+# Scoring-regime stamp for IC interpretability. NULL in the DB = legacy-mixed
+# regime (pre-2026-05-31 single-day scores + early unstamped 50/30/20 signals).
+# Bumped to v3 when the absolute momentum gates landed (Phase 3.3).
+WEIGHT_VERSION: str = "xsect-50/30/20-absgate-v3"
+
+# Absolute momentum gates — Discovery is cross-sectional, so a top-of-falling-
+# universe ranker still scores ~100. These gate on raw momentum_20d so the
+# scarce AR slot never fires in a broad downtrend.
+ABS_GATE_AR_MOMENTUM_20D: float = 0.05
+ABS_GATE_INFO_MOMENTUM_20D: float = 0.0
 
 
 def _rank_values(values: dict[str, float]) -> dict[str, float]:
@@ -87,17 +119,19 @@ def _compute_factors(df: pd.DataFrame) -> dict[str, float] | None:
     }
 
 
-def score_universe(tickers: list[str], run_id: str, date_iso: str) -> list[Signal]:
+def score_universe(tickers: list[str], run_id: str, date_iso: str) -> ScoreResult:
     """Score tickers using cross-sectional multi-day momentum ranking.
 
     Fetches historical candles via yfinance (batch), computes factors,
     ranks cross-sectionally, applies position-weight severity amplifier.
-    Returns list[Signal] for the router.
+    Returns ScoreResult (signals + composite_by_ticker) for the router and the
+    industry rollup. composite_by_ticker covers every scored ticker, including
+    sub-threshold ones, so industry momentum aggregates over the full universe.
     """
     tickers_scanned = len(tickers)
     if not tickers:
         repository.update_run_counts(run_id, 0, 0)
-        return []
+        return ScoreResult()
 
     history = fetch_history(tickers, days=26)
     weights = get_position_weights()
@@ -116,7 +150,7 @@ def score_universe(tickers: list[str], run_id: str, date_iso: str) -> list[Signa
 
     if not raw_factors:
         repository.update_run_counts(run_id, tickers_scanned, 0)
-        return []
+        return ScoreResult()
 
     momentum_20d_ranks = _rank_values({t: f["momentum_20d"] for t, f in raw_factors.items()})
     momentum_5d_ranks = _rank_values({t: f["momentum_5d"] for t, f in raw_factors.items()})
@@ -124,6 +158,7 @@ def score_universe(tickers: list[str], run_id: str, date_iso: str) -> list[Signa
 
     results: list[Signal] = []
     signals_emitted: list[Signal] = []
+    composite_by_ticker: dict[str, float] = {}
     timestamp = datetime.now(_ET)
 
     for ticker in raw_factors:
@@ -134,6 +169,7 @@ def score_universe(tickers: list[str], run_id: str, date_iso: str) -> list[Signa
         ]
         weight_sum = sum(w for _, w, _ in factors)
         composite = 100.0 * sum(w * r for _, w, r in factors) / weight_sum
+        composite_by_ticker[ticker] = composite
 
         severity = adjusted_severity(
             score=composite,
@@ -144,6 +180,19 @@ def score_universe(tickers: list[str], run_id: str, date_iso: str) -> list[Signa
 
         if severity == "MONITORING":
             continue
+
+        momentum_20d = raw_factors[ticker]["momentum_20d"]
+
+        # Absolute momentum gates: no alert in a broad downtrend, and AR only
+        # on genuine strength. These are the "absolute" backstop on top of the
+        # cross-sectional rank.
+        if momentum_20d < ABS_GATE_INFO_MOMENTUM_20D:
+            continue  # negative momentum — not emitted even as INFORMATIONAL
+        if severity == "ACTION_REQUIRED" and momentum_20d < ABS_GATE_AR_MOMENTUM_20D:
+            severity = "INFORMATIONAL"
+            gate_marker = " gate=abs_mom_ar"
+        else:
+            gate_marker = ""
 
         alert_id = compute_alert_id(ticker, date_iso, "discovery", "discovery_agent")
 
@@ -161,15 +210,47 @@ def score_universe(tickers: list[str], run_id: str, date_iso: str) -> list[Signa
             timestamp=timestamp,
             alert_id=alert_id,
             title=f"{ticker}: Discovery score {composite:.0f}",
-            body=f"weights={weights_str} {rank_str}",
+            body=f"weights={weights_str} {rank_str}{gate_marker}",
             sub_scores={name: rank for name, _, rank in factors},
             model_version=None,
             thesis_version_hash=None,
             signal_price_snapshot=price_snapshot,
+            weight_version=WEIGHT_VERSION,
         )
 
         signals_emitted.append(signal)
         results.append(signal)
 
     repository.update_run_counts(run_id, tickers_scanned, len(signals_emitted))
-    return results
+    return ScoreResult(signals=results, composite_by_ticker=composite_by_ticker)
+
+
+def industry_rollup(
+    composite_by_ticker: dict[str, float],
+    industries: dict[str, str],
+    *,
+    min_members: int = 3,
+    top_n: int = 5,
+) -> list[IndustryRollup]:
+    """Median composite momentum per industry, sorted desc, top_n.
+
+    Industries with fewer than *min_members* mapped tickers are skipped.
+    """
+    by_industry: dict[str, list[float]] = {}
+    for ticker, composite in composite_by_ticker.items():
+        industry = industries.get(ticker)
+        if not industry:
+            continue
+        by_industry.setdefault(industry, []).append(composite)
+
+    rollups = [
+        IndustryRollup(
+            industry=industry,
+            median_composite=statistics.median(composites),
+            member_count=len(composites),
+        )
+        for industry, composites in by_industry.items()
+        if len(composites) >= min_members
+    ]
+    rollups.sort(key=lambda r: (-r.median_composite, r.industry))
+    return rollups[:top_n]

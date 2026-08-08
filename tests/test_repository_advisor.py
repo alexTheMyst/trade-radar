@@ -155,29 +155,35 @@ def test_insert_advice_row_is_queryable(tmp_path, monkeypatch):
     assert result == ("NVDA", "BUY", 0)  # held=False stored as 0
 
 
-def test_get_delivered_discovery_signals_excludes_held(tmp_path, monkeypatch):
+def test_get_routable_discovery_signals_includes_suppressed_and_excludes_held(tmp_path, monkeypatch):
     monkeypatch.setattr(repository, "DB_PATH", tmp_path / "test.db")
     repository.init_db()
 
     conn = sqlite3.connect(tmp_path / "test.db")
-    for ticker, alert_id in [("NVDA", "d1"), ("FCX", "d2"), ("AAPL", "d3")]:
+    for ticker, alert_id, routing_status in [
+        ("NVDA", "d1", "DELIVERED"),
+        ("FCX", "d2", "SUPPRESSED"),
+        ("AAPL", "d3", "DELIVERED"),
+        ("SKIP", "d4", "MONITORING"),
+    ]:
         conn.execute(
             """INSERT INTO signals
                (alert_id, timestamp, agent, severity, ticker, title, score, routing_status)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (alert_id, "2026-05-28T10:00:00-04:00", "discovery_agent",
-             "INFORMATIONAL", ticker, f"{ticker} momentum", 0.85, "DELIVERED"),
+             "INFORMATIONAL", ticker, f"{ticker} momentum", 0.85, routing_status),
         )
     conn.commit()
     conn.close()
 
-    results = repository.get_delivered_discovery_signals(
+    results = repository.get_routable_discovery_signals(
         date(2026, 5, 20), excluded_tickers={"FCX"}
     )
     tickers = [r["ticker"] for r in results]
-    assert "FCX" not in tickers
+    assert "FCX" not in tickers  # excluded_tickers still honored
     assert "NVDA" in tickers
     assert "AAPL" in tickers
+    assert "SKIP" not in tickers  # MONITORING never reaches the advisor funnel
 
 
 def test_update_advice_outcomes_fills_without_overwriting(tmp_path, monkeypatch):

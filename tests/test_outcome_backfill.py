@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
 from signal_system import __main__
+from signal_system.data import yahoo_client
 from signal_system.state import repository
 
 
@@ -211,6 +212,11 @@ def test_outcome_backfill_job_is_registered(tmp_path):
     assert "outcome-backfill" in __main__.JOBS
 
 
+def test_backfill_benchmark_command_importable():
+    """backfill-benchmark is a special-case CLI command (no JOBS entry)."""
+    assert hasattr(__main__, "backfill_benchmark")
+
+
 def test_default_fetch_close_on_date_handles_tz_naive_index(monkeypatch):
     """Regression: tz-naive DataFrame index vs tz-aware target must not raise TypeError."""
     import pandas as pd
@@ -258,3 +264,94 @@ def test_outcome_backfill_monitoring_not_measured(tmp_path, monkeypatch):
     assert result.filled_30d == 0
     assert result.filled_90d == 0
     fetch_close.assert_not_called()
+
+
+def _benchmark_df(start: str = "2026-04-01", periods: int = 60) -> "object":
+    import pandas as pd
+    dates = pd.date_range(start, periods=periods, freq="B")
+    return pd.DataFrame({"Close": [500.0 + i for i in range(periods)]}, index=dates)
+
+
+def _read_benchmarks(db: str) -> list[tuple[str, str, float, str]]:
+    conn = sqlite3.connect(db)
+    rows = conn.execute(
+        "SELECT ticker, date, close, source FROM benchmark_prices ORDER BY date"
+    ).fetchall()
+    conn.close()
+    return rows
+
+
+def test_backfill_benchmark_upserts_spy_history_since_earliest_signal(tmp_path, monkeypatch):
+    from signal_system.jobs import outcome_backfill
+
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(repository, "DB_PATH", db_path)
+    repository.init_db()
+
+    # Earliest signal is 2026-05-15
+    _insert_signal(
+        str(db_path),
+        alert_id="oldest-signal",
+        ticker="AAPL",
+        timestamp=datetime(2026, 5, 15, 9, 0, tzinfo=_ET),
+        routing_status="DELIVERED",
+    )
+
+    df = _benchmark_df(start="2026-04-01", periods=60)  # covers Apr–Jun
+    monkeypatch.setattr(
+        yahoo_client, "fetch_history",
+        lambda tickers, days: {"SPY": df} if tickers == ["SPY"] else {},
+    )
+
+    result = outcome_backfill.backfill_benchmark()
+
+    rows = _read_benchmarks(str(db_path))
+    assert all(row[0] == "SPY" for row in rows)
+    assert all(row[3] == "yfinance_backfill" for row in rows)
+    # Backfill starts at the earliest signal date (2026-05-15), not earlier
+    assert rows[0][1] == "2026-05-15"
+    # The 2026-05-15 close from the fabricated df: idx 32 (2026-04-01 + 32 business days)
+    assert rows[0][2] == 532.0
+    assert result > 0
+
+
+def test_backfill_benchmark_overwrites_finnhub_quote_row(tmp_path, monkeypatch):
+    from signal_system.jobs import outcome_backfill as ob
+
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(repository, "DB_PATH", db_path)
+    repository.init_db()
+
+    _insert_signal(
+        str(db_path),
+        alert_id="oldest-signal",
+        ticker="AAPL",
+        timestamp=datetime(2026, 5, 15, 9, 0, tzinfo=_ET),
+        routing_status="DELIVERED",
+    )
+    # daily-close already wrote a quote row for a backfilled date
+    repository.upsert_benchmark_price(
+        ticker="SPY", date_iso="2026-05-15", close=999.0, source="finnhub_quote"
+    )
+
+    df = _benchmark_df(start="2026-05-01", periods=30)
+    monkeypatch.setattr(yahoo_client, "fetch_history", lambda tickers, days: {"SPY": df})
+
+    ob.backfill_benchmark()
+
+    rows = _read_benchmarks(str(db_path))
+    assert rows[0][1] == "2026-05-15"
+    assert rows[0][3] == "yfinance_backfill"
+    assert rows[0][2] == 510.0  # 2026-05-15 idx 10 in the May df
+
+
+def test_backfill_benchmark_no_signal_history_returns_zero(tmp_path, monkeypatch):
+    from signal_system.jobs import outcome_backfill as ob
+
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(repository, "DB_PATH", db_path)
+    repository.init_db()
+
+    result = ob.backfill_benchmark()
+    assert result == 0
+    assert _read_benchmarks(str(db_path)) == []

@@ -34,7 +34,7 @@ def _compute_shift(weight: float, median_weight: float) -> float:
 
 def adjusted_severity(
     score: float,
-    ticker: str,
+    ticker: str | None,
     weights: dict[str, float],
     base_thresholds: tuple[float, float],
 ) -> Severity:
@@ -42,7 +42,8 @@ def adjusted_severity(
 
     Args:
         score: Raw composite score or confidence (0-100 scale).
-        ticker: Ticker symbol to look up in weights.
+        ticker: Ticker symbol to look up in weights; None (macro headline)
+            always resolves to no shift (confidence-only thresholds).
         weights: {ticker: weight_pct} from universe.csv.
         base_thresholds: (action_required_threshold, informational_threshold).
 

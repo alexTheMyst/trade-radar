@@ -97,7 +97,7 @@ def run() -> None:
                 get_recent_signals=lambda ticker, since: repository.get_recent_signals(
                 ticker, since, agent=NEWS_CLASSIFIER_AGENT
             ),
-                get_discovery_candidates=lambda since, excl: repository.get_delivered_discovery_signals(
+                get_discovery_candidates=lambda since, excl: repository.get_routable_discovery_signals(
                     since, excluded_tickers=excl
                 ),
                 thesis_text=_thesis_text(thesis),

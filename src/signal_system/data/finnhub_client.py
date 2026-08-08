@@ -162,3 +162,37 @@ def fetch_company_news(ticker: str, from_date: date, to_date: date) -> list[dict
     except Exception as exc:
         logger.error("Giving up on news for %r after exhausted retries: %s", ticker, exc)
         return []
+
+
+@_RETRY_DECORATOR
+def _fetch_general_news_raw(category: str, min_id: int) -> list[dict]:
+    """Rate-limited, retried general-news fetch. Returns [] on paid-tier 403/404."""
+    _acquire_slot()
+    try:
+        result = _get_client().general_news(category, min_id)
+    except FinnhubAPIException as exc:
+        if exc.status_code in PAID_TIER_STATUS_CODES:
+            logger.warning(
+                "General news unavailable (HTTP %s) — paid tier or unknown, returning []",
+                exc.status_code,
+            )
+            return []
+        raise
+    return result if isinstance(result, list) else []
+
+
+def fetch_general_news(category: str = "general", min_id: int = 0) -> list[dict]:
+    """Fetch macro/general news headlines (the Finnhub /news general feed).
+
+    Args:
+        category: News category ('general', 'forex', 'crypto', 'merger', 'earnings').
+        min_id: Minimum article id — pass the max id from a prior fetch to page forward.
+
+    Returns:
+        List of news item dicts. Returns [] on paid-tier error or exhausted retries.
+    """
+    try:
+        return _fetch_general_news_raw(category, min_id)
+    except Exception as exc:
+        logger.error("Giving up on general news after exhausted retries: %s", exc)
+        return []

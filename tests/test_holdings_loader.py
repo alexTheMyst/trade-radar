@@ -94,3 +94,60 @@ def test_require_non_empty_holdings_is_alias(tmp_path):
     result = require_non_empty_holdings(csv_path)
     assert len(result) == 1
     assert result[0].ticker == "FCX"
+
+
+def test_holdings_universe_drift_flags_missing_core(tmp_path, monkeypatch):
+    from signal_system.data.holdings import holdings_universe_drift, Holding
+
+    holdings = [
+        Holding(ticker="FCX", shares=40, cost_basis=38.1, account="schwab_main"),
+        Holding(ticker="NVDA", shares=10, cost_basis=850.0, account="roth_ira"),
+    ]
+    core = {"NVDA", "AAPL"}
+    assert holdings_universe_drift(holdings, core) == ["FCX"]
+
+
+def test_holdings_universe_drift_empty_when_all_core():
+    from signal_system.data.holdings import holdings_universe_drift, Holding
+
+    holdings = [Holding(ticker="NVDA", shares=10, cost_basis=850.0, account="roth_ira")]
+    assert holdings_universe_drift(holdings, {"NVDA"}) == []
+
+
+def test_holdings_universe_drift_default_loads_never_raises(tmp_path, monkeypatch):
+    """With missing holdings.csv the helper returns [] rather than raising."""
+    from signal_system.data import holdings as holdings_mod
+    from signal_system.data.holdings import holdings_universe_drift
+
+    monkeypatch.setattr(holdings_mod, "HOLDINGS_PATH", tmp_path / "missing.csv")
+    assert holdings_universe_drift() == []
+
+
+def test_holdings_universe_drift_malformed_csv_never_raises(tmp_path, monkeypatch):
+    """Malformed holdings.csv rows (bad floats) must not raise post-LLM-call."""
+    from signal_system.data import holdings as holdings_mod
+    from signal_system.data.holdings import holdings_universe_drift
+
+    bad_path = tmp_path / "holdings.csv"
+    bad_path.write_text(
+        "ticker,shares,cost_basis,account,thesis_pillar\n"
+        "FCX,not-a-number,38.10,schwab_main,\n"
+    )
+    monkeypatch.setattr(holdings_mod, "HOLDINGS_PATH", bad_path)
+    monkeypatch.setattr("signal_system.data.universe.get_core_holdings", lambda: [])
+    assert holdings_universe_drift() == []
+
+
+def test_holdings_universe_drift_short_row_never_raises(tmp_path, monkeypatch):
+    """Short rows (missing columns → None fields) must not raise AttributeError."""
+    from signal_system.data import holdings as holdings_mod
+    from signal_system.data.holdings import holdings_universe_drift
+
+    bad_path = tmp_path / "holdings.csv"
+    bad_path.write_text(
+        "ticker,shares,cost_basis,account,thesis_pillar\n"
+        "FCX\n"  # short row: thesis_pillar key exists but is None
+    )
+    monkeypatch.setattr(holdings_mod, "HOLDINGS_PATH", bad_path)
+    monkeypatch.setattr("signal_system.data.universe.get_core_holdings", lambda: [])
+    assert holdings_universe_drift() == []
