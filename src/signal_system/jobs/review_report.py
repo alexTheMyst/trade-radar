@@ -78,6 +78,27 @@ def _render_report_text() -> str:
             )
             lines.append(f"  weight_version: {breakdown}")
 
+    news_metrics = result.per_agent.get("news_classifier")
+    if news_metrics and news_metrics.calibration:
+        lines.append("")
+        lines.append("Confidence calibration (news)")
+        for label, bucket in news_metrics.calibration.items():
+            hit = "N/A" if bucket["hit_rate"] is None else f"{bucket['hit_rate']:.0%}"
+            mean = "N/A" if bucket["mean_signed_excess"] is None else _fmt_pct(bucket["mean_signed_excess"])
+            lines.append(
+                f"  {label:<12} n={bucket['n']:<4} hit={hit:<5} mean_signed_excess={mean}"
+            )
+        if news_metrics.calibration_out_of_range:
+            lines.append(
+                f"  out-of-range (conf<0.60): {news_metrics.calibration_out_of_range}"
+            )
+
+    if result.calibration_flags:
+        lines.append("")
+        lines.append("CALIBRATION FLAGS")
+        for flag in result.calibration_flags:
+            lines.append(f"  ! {flag}")
+
     if result.router_flags:
         lines.append("")
         lines.append("ROUTER FLAGS")
