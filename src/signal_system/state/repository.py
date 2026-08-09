@@ -961,6 +961,56 @@ def list_signals_for_review() -> list[dict]:
         conn.close()
 
 
+def count_signals() -> int:
+    """Return the total number of rows in the signals table."""
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM signals")
+        row = cursor.fetchone()
+        return int(row[0]) if row is not None else 0
+    finally:
+        conn.close()
+
+
+def backup_database(dest_dir: Path) -> tuple[Path, int]:
+    """Back up the live database to a dated signals-YYYYMMDD.db file.
+
+    Uses ``VACUUM INTO`` rather than a plain file copy: in WAL mode an active
+    -wal file can hold committed pages a raw copy would miss, and copying the
+    -wal alongside the main file can hand back an inconsistent snapshot.
+    VACUUM INTO reads a consistent logical snapshot including WAL content.
+
+    The destination file is named with the ET date (``signals-YYYYMMDD.db``).
+    VACUUM INTO refuses to overwrite, so any same-day file is unlinked first
+    (a same-day rerun replaces yesterday's backup — the weekly schedule makes
+    collision between genuinely different days impossible).
+
+    Returns (path, row_count) where row_count is the sanity-checked COUNT(*)
+    from the backup file itself — the caller should compare it against
+    count_signals() on the live database.
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    date_stamp = datetime.now(ZoneInfo("America/New_York")).date().strftime("%Y%m%d")
+    target = dest_dir / f"signals-{date_stamp}.db"
+    target.unlink(missing_ok=True)
+
+    conn = _connect()
+    try:
+        conn.execute("VACUUM INTO ?", (str(target),))
+    finally:
+        conn.close()
+
+    backup_conn = sqlite3.connect(target)
+    try:
+        row = backup_conn.execute("SELECT COUNT(*) FROM signals").fetchone()
+        count = int(row[0]) if row is not None else 0
+    finally:
+        backup_conn.close()
+
+    return target, count
+
+
 def get_llm_call_summary() -> list[dict]:
     """Aggregate llm_calls per job: call count and token sums."""
     conn = _connect()

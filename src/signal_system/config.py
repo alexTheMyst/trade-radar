@@ -51,5 +51,8 @@ ANTHROPIC_API_KEY = _require("ANTHROPIC_API_KEY")
 ANTHROPIC_MODEL: str = _require("ANTHROPIC_MODEL")  # e.g. "claude-sonnet-4-6"
 THESIS_PATH: str = _optional("THESIS_PATH", "thesis.yaml")
 
+# Backup destination (relative paths are anchored at repo root by jobs/backup.py)
+BACKUP_DIR: str = _optional("BACKUP_DIR", "state/backups")
+
 # Advisor phase -- set ADVISOR_SHADOW_MODE=false after IC review validates the matrix
 ADVISOR_SHADOW_MODE: bool = _optional("ADVISOR_SHADOW_MODE", "true").lower() != "false"
