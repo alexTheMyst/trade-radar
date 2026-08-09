@@ -29,6 +29,11 @@ _OPERATOR_COLUMNS: tuple[str, ...] = (
     "core_holding", "weight_pct", "k1_etf",
 )
 
+# Fixed output columns, always present and always first in this order.
+_BASE_COLUMNS: tuple[str, ...] = (
+    "ticker", "name", "sector", "industry", "core_holding", "weight_pct", "k1_etf",
+)
+
 
 def _read_csv(path: Path) -> list[dict]:
     if not path.exists():
@@ -104,6 +109,12 @@ def build_merged_universe() -> list[dict]:
         base["industry"] = base.get("industry", "")
         for col in _OPERATOR_COLUMNS:
             base[col] = (op or {}).get(col, "")
+        # Round-trip any other operator-authored columns (e.g. pillar,
+        # scan_group, account, notes) verbatim — unknown to this module,
+        # but not ours to discard.
+        for col, val in (op or {}).items():
+            if col and col not in base:
+                base[col] = val
 
         if ticker in K1_DENYLIST:
             base["k1_etf"] = "1"
@@ -135,7 +146,12 @@ def build_merged_universe() -> list[dict]:
 
 
 def _rows_to_csv(rows: list[dict]) -> str:
-    columns = ["ticker", "name", "sector", "industry", "core_holding", "weight_pct", "k1_etf"]
+    extra_columns: list[str] = []
+    for row in rows:
+        for col in row:
+            if col and col not in _BASE_COLUMNS and col not in extra_columns:
+                extra_columns.append(col)
+    columns = list(_BASE_COLUMNS) + extra_columns
     import io as _io
     buffer = _io.StringIO()
     writer = csv.writer(buffer)
