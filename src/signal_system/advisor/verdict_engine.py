@@ -19,6 +19,10 @@ SMA_SHORT_DAYS: int = 50
 SMA_LONG_DAYS: int = 200
 HISTORY_DAYS: int = 400        # calendar days -> ~285 trading days; enough for 200d SMA
 NEWS_LOOKBACK_DAYS: int = 14
+# IRS 30-day wash-sale window (26 USC 1091): a loss realized on a sale is
+# disallowed if substantially identical securities are repurchased within 30
+# days before or after. The advisor flags the repurchase side of that window.
+WASH_SALE_WINDOW_DAYS: int = 30
 
 NEWS_BULLISH_THRESHOLD: float = 0.15   # net score above this -> bullish
 NEWS_BEARISH_THRESHOLD: float = -0.15  # net score below this -> bearish
@@ -95,6 +99,7 @@ def compute_verdict(
     cost_basis: float | None,
     held: bool,
     thesis_break: bool = False,
+    recent_loss_sale: bool = False,
 ) -> VerdictResult:
     """Apply the two-axis matrix and overlays to produce a verdict.
 
@@ -108,6 +113,9 @@ def compute_verdict(
         cost_basis: Average cost per share; None for not-held candidates.
         held: True = evaluate as held position; False = evaluate as new-buy candidate.
         thesis_break: True if a high-confidence negative news hit was detected.
+        recent_loss_sale: True if a logged sell occurred in any account within the
+            30-day wash-sale window — flags BUY verdicts so the repurchase side of
+            the wash-sale rule is surfaced (complements wash_sale_caution on SELL).
     """
     mom_axis = classify_trend(price, sma50, sma200)
     news_axis = classify_news(news_net)
@@ -150,6 +158,12 @@ def compute_verdict(
     else:
         # Not-held: only trend-bullish + news not-bearish -> BUY; everything else -> PASS
         verdict = "BUY" if mom_axis == "bullish" and news_axis in ("bullish", "neutral") else "PASS"
+
+    # Overlay 4: wash-sale window on repurchase. Applies to BUY verdicts — a
+    # held add-to and a new buy alike. PASS discards flags by construction (the
+    # warning rides on the actionable BUY case, never on an ignored candidate).
+    if verdict == "BUY" and recent_loss_sale:
+        flags.append("wash_sale_window")
 
     return VerdictResult(
         verdict=verdict,

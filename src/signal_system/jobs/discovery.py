@@ -54,7 +54,7 @@ def _render_industry_rollup_section(composite_by_ticker: dict[str, float]) -> st
 def run() -> None:
     run_id = repository.insert_run("discovery")
     try:
-        with heartbeat.heartbeat():
+        with heartbeat.heartbeat(job="discovery"):
             now_et = _now_et()
             tickers = require_non_empty_universe(get_todays_universe(), job="discovery")
             score_result = score_universe(tickers, run_id, now_et.date().isoformat())

@@ -19,7 +19,11 @@ from signal_system.advisor.advisor_agent import (
 )
 from signal_system.classifier.news_classifier import NEWS_CLASSIFIER_AGENT
 from signal_system.advisor.rationale import generate_rationale
-from signal_system.advisor.verdict_engine import NEWS_LOOKBACK_DAYS, compute_verdict
+from signal_system.advisor.verdict_engine import (
+    NEWS_LOOKBACK_DAYS,
+    WASH_SALE_WINDOW_DAYS,
+    compute_verdict,
+)
 from signal_system.data.holdings import EmptyHoldingsError, require_non_empty_holdings
 from signal_system.data.thesis_loader import load_thesis
 from signal_system.data.yahoo_client import fetch_history
@@ -82,11 +86,16 @@ def _render_digest(advice_rows: list[dict], shadow_mode: bool) -> str:
     return "\n".join(lines)
 
 
+def _recent_loss_sales(ticker: str, since) -> list[dict]:
+    """Wrap the wash-sale ledger lookup for the advisor's repurchase-window check."""
+    return repository.get_recent_trades(ticker, since=since, side="sell")
+
+
 def run() -> None:
     """Entry point for scheduled advisor job (heartbeat-wrapped)."""
     run_id = repository.insert_run("advisor")
     try:
-        with heartbeat():
+        with heartbeat(job="advisor"):
             thesis, thesis_version_hash = load_thesis(config.THESIS_PATH)
             holdings = require_non_empty_holdings()
 
@@ -104,6 +113,7 @@ def run() -> None:
                 thesis_version_hash=thesis_version_hash,
                 run_id=run_id,
                 shadow_mode=config.ADVISOR_SHADOW_MODE,
+                get_recent_sales=_recent_loss_sales,
             )
 
             for row in advice_rows:
@@ -159,11 +169,14 @@ def advise_ticker(ticker: str) -> None:
     net = compute_news_net(news_sigs)
     t_break = has_thesis_break(news_sigs)
 
+    since_sales = datetime.now(_ET).date() - timedelta(days=WASH_SALE_WINDOW_DAYS)
+    recent_sales = repository.get_recent_trades(ticker, since=since_sales, side="sell")
     result = compute_verdict(
         price=price, sma50=sma50, sma200=sma200, news_net=net,
         close_high_20d=close_high_20d, close_low_20d=close_low_20d,
         cost_basis=holding.cost_basis if holding else None,
         held=held, thesis_break=t_break,
+        recent_loss_sale=bool(recent_sales),
     )
 
     thesis_text = _thesis_text(thesis)

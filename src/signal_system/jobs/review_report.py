@@ -15,6 +15,12 @@ from signal_system.state import repository
 
 logger = logging.getLogger(__name__)
 
+_AGENT_LABELS: dict[str, str] = {
+    "discovery_agent": "Discovery Agent",
+    "news_classifier": "News Classifier",
+    "exit_sentinel": "Exit Sentinel",
+}
+
 
 def _fmt_pct(value: float | None) -> str:
     return "N/A" if value is None else f"{value:+.2%}"
@@ -25,7 +31,7 @@ def _render_report_text() -> str:
     lines = ["Review Report", "=" * 20]
 
     for agent, metrics in result.per_agent.items():
-        label = "Discovery Agent" if agent == "discovery_agent" else "News Classifier"
+        label = _AGENT_LABELS.get(agent, agent)
         lines.append("")
         lines.append(f"{label} ({agent})")
         lines.append(f"  n: {metrics.n_30d} (30d) / {metrics.n_90d} (90d)")
@@ -72,6 +78,27 @@ def _render_report_text() -> str:
             )
             lines.append(f"  weight_version: {breakdown}")
 
+    news_metrics = result.per_agent.get("news_classifier")
+    if news_metrics and news_metrics.calibration:
+        lines.append("")
+        lines.append("Confidence calibration (news)")
+        for label, bucket in news_metrics.calibration.items():
+            hit = "N/A" if bucket["hit_rate"] is None else f"{bucket['hit_rate']:.0%}"
+            mean = "N/A" if bucket["mean_signed_excess"] is None else _fmt_pct(bucket["mean_signed_excess"])
+            lines.append(
+                f"  {label:<12} n={bucket['n']:<4} hit={hit:<5} mean_signed_excess={mean}"
+            )
+        if news_metrics.calibration_out_of_range:
+            lines.append(
+                f"  out-of-range (conf<0.60): {news_metrics.calibration_out_of_range}"
+            )
+
+    if result.calibration_flags:
+        lines.append("")
+        lines.append("CALIBRATION FLAGS")
+        for flag in result.calibration_flags:
+            lines.append(f"  ! {flag}")
+
     if result.router_flags:
         lines.append("")
         lines.append("ROUTER FLAGS")
@@ -99,7 +126,7 @@ def _render_report_text() -> str:
 def run() -> None:
     run_id = repository.insert_run("review-report")
     try:
-        with heartbeat():
+        with heartbeat(job="review-report"):
             text = _render_report_text()
             logger.info("review-report:\n%s", text)
             print(text)

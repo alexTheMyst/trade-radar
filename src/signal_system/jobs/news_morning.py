@@ -225,7 +225,7 @@ def _send_digest_once(*, subject: str, body: str) -> None:
 def run() -> None:
     run_id = repository.insert_run("news-morning")
     try:
-        with heartbeat.heartbeat():
+        with heartbeat.heartbeat(job="news-morning"):
             previous_close_date = repository.get_latest_successful_run_date("daily-close")
             if previous_close_date is None:
                 raise RuntimeError(

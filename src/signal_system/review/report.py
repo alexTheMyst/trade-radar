@@ -12,15 +12,25 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-import pandas as pd
-
+from signal_system.review.stats import spearman_ic
 from signal_system.state import repository
 
 _ET = ZoneInfo("America/New_York")
 
-_AGENTS: tuple[str, ...] = ("discovery_agent", "news_classifier")
+_AGENTS: tuple[str, ...] = ("discovery_agent", "news_classifier", "exit_sentinel")
 _NEWS_NEUTRAL: str = "neutral"
 _IC_MIN_N: int = 10
+
+# News-classifier confidence calibration buckets (news only). The amplifier can
+# deliver confidences below 0.60, so everything under the first bucket's lower
+# edge is counted, not silently dropped.
+_CAL_BUCKETS: tuple[tuple[str, float, float], ...] = (
+    ("[0.60,0.70)", 0.60, 0.70),
+    ("[0.70,0.80)", 0.70, 0.80),
+    ("[0.80,0.85)", 0.80, 0.85),
+    ("[0.85,1.00]", 0.85, 1.00),
+)
+_CAL_FLAG_MIN_N: int = 10
 
 
 @dataclass
@@ -45,6 +55,8 @@ class AgentMetrics:
     acted_split_90d: dict = field(default_factory=dict)
     weight_version_counts: dict[str, int] = field(default_factory=dict)
     unacted_count: int = 0
+    calibration: dict[str, dict] = field(default_factory=dict)
+    calibration_out_of_range: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +65,7 @@ class ReportResult:
     router_flags: list[str] = field(default_factory=list)
     llm_summary: list[dict] = field(default_factory=list)
     cache_warning: bool = False
+    calibration_flags: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -81,7 +94,10 @@ def _raw_return(snapshot: float, outcome: float) -> float:
 
 
 def _signed_excess(excess: float, direction: str | None, agent: str) -> float:
-    if agent == "news_classifier" and direction == "negative":
+    # Direction-aware sign: for negative-directional agents a price FALL is a
+    # hit. exit_sentinel is always direction="negative" — a sentinel hit means
+    # the price fell after the alert.
+    if agent in ("news_classifier", "exit_sentinel") and direction == "negative":
         return -excess
     return excess
 
@@ -100,16 +116,86 @@ def _hit_rate(values: list[float]) -> float | None:
     return sum(1 for v in values if v > 0) / len(values)
 
 
-def _spearman_ic(scores: list[float], excesses: list[float]) -> float | None:
-    if len(scores) < _IC_MIN_N or len(scores) != len(excesses):
-        return None
-    if len(set(excesses)) < 2:
-        return None
-    # Spearman = Pearson on ranks. pandas corr(method="spearman") pulls in scipy,
-    # which is out of scope — rank manually instead.
-    frame = pd.DataFrame({"score": scores, "signed_excess": excesses})
-    ranked = frame.rank()
-    return float(ranked["score"].corr(ranked["signed_excess"], method="pearson"))
+def _bucket_for(score: float) -> str | None:
+    """Return the calibration bucket label for *score*, or None if out of range."""
+    for label, low, high in _CAL_BUCKETS:
+        if low <= score < high or (score == high and high == 1.00):
+            return label
+    return None
+
+
+def _compute_calibration(rows: list[dict]) -> tuple[dict[str, dict], int]:
+    """Build news-classifier confidence calibration from routed rows.
+
+    Returns (bucket_stats, out_of_range) where each bucket maps label ->
+    {n, hit_rate, mean_signed_excess} over the 30d signed-excess pipeline
+    (neutral excluded, same as hit-rate/IC). Out-of-range counts confidences
+    below 0.60 — the amplifier can deliver them and they must not vanish.
+    """
+    stats: dict[str, dict] = {
+        label: {"n": 0, "hit_rate": None, "mean_signed_excess": None}
+        for label, _, _ in _CAL_BUCKETS
+    }
+    excess_by_bucket: dict[str, list[float]] = {label: [] for label, _, _ in _CAL_BUCKETS}
+    out_of_range = 0
+
+    for row in rows:
+        if row.get("direction") == _NEWS_NEUTRAL:
+            continue
+        outcome = row.get("outcome_price_30d")
+        if outcome is None:
+            continue
+        spy_at_signal = repository.get_benchmark_close_on_or_after("SPY", _signal_date(row))
+        spy_at_horizon = repository.get_benchmark_close_on_or_after("SPY", _horizon_date(row, 30))
+        if spy_at_signal is None or spy_at_horizon is None:
+            continue
+        raw = _raw_return(row["signal_price_snapshot"], outcome)
+        excess = raw - (spy_at_horizon / spy_at_signal - 1.0)
+        signed = _signed_excess(excess, row.get("direction"), "news_classifier")
+
+        score = row.get("score")
+        if score is None:
+            continue
+        label = _bucket_for(float(score))
+        if label is None:
+            out_of_range += 1
+            continue
+        excess_by_bucket[label].append(signed)
+
+    for label, _low, _high in _CAL_BUCKETS:
+        values = excess_by_bucket[label]
+        stats[label]["n"] = len(values)
+        if values:
+            stats[label]["hit_rate"] = _hit_rate(values)
+            stats[label]["mean_signed_excess"] = _mean(values)
+    return stats, out_of_range
+
+
+def _calibration_flags(per_agent: dict[str, AgentMetrics]) -> list[str]:
+    """Flag news-classifier miscalibration: top bucket beat by a lower bucket.
+
+    Only fires when both buckets have n >= _CAL_FLAG_MIN_N — a single lucky
+    low-confidence hit is noise, not evidence.
+    """
+    flags: list[str] = []
+    news = per_agent.get("news_classifier")
+    if news is None:
+        return flags
+    cal = news.calibration
+    top_label, _, _ = _CAL_BUCKETS[-1]
+    top = cal.get(top_label)
+    if top is None or top["n"] < _CAL_FLAG_MIN_N or top["hit_rate"] is None:
+        return flags
+    for label, _, _ in _CAL_BUCKETS[:-1]:
+        lower = cal.get(label)
+        if lower is None or lower["n"] < _CAL_FLAG_MIN_N or lower["hit_rate"] is None:
+            continue
+        if lower["hit_rate"] > top["hit_rate"]:
+            flags.append(
+                f"MISCALIBRATION: {top_label} hit rate {top['hit_rate']:.0%} < "
+                f"{label} hit rate {lower['hit_rate']:.0%} (both n>={_CAL_FLAG_MIN_N})"
+            )
+    return flags
 
 
 def _accumulate_horizon(rows: list[dict], agent: str, days: int) -> _HorizonStats:
@@ -158,7 +244,7 @@ def _compute_agent_metrics(rows: list[dict], agent: str) -> AgentMetrics:
     metrics.mean_signed_excess_30d = _mean(stats_30.excesses)
     metrics.median_signed_excess_30d = _median(stats_30.excesses)
     metrics.hit_rate_30d = _hit_rate(stats_30.excesses)
-    metrics.ic_30d = _spearman_ic(stats_30.scores, stats_30.excesses)
+    metrics.ic_30d = spearman_ic(stats_30.scores, stats_30.excesses, min_n=_IC_MIN_N)
     metrics.neutral_count_30d = stats_30.neutral
     metrics.missing_benchmark_30d = stats_30.missing
 
@@ -166,7 +252,7 @@ def _compute_agent_metrics(rows: list[dict], agent: str) -> AgentMetrics:
     metrics.mean_signed_excess_90d = _mean(stats_90.excesses)
     metrics.median_signed_excess_90d = _median(stats_90.excesses)
     metrics.hit_rate_90d = _hit_rate(stats_90.excesses)
-    metrics.ic_90d = _spearman_ic(stats_90.scores, stats_90.excesses)
+    metrics.ic_90d = spearman_ic(stats_90.scores, stats_90.excesses, min_n=_IC_MIN_N)
     metrics.neutral_count_90d = stats_90.neutral
     metrics.missing_benchmark_90d = stats_90.missing
 
@@ -201,6 +287,9 @@ def _compute_agent_metrics(rows: list[dict], agent: str) -> AgentMetrics:
         "ignored_mean": _mean(ignored_excess),
     }
     metrics.unacted_count = unacted
+
+    if agent == "news_classifier":
+        metrics.calibration, metrics.calibration_out_of_range = _compute_calibration(rows)
     return metrics
 
 
@@ -240,4 +329,5 @@ def compute_report() -> ReportResult:
         router_flags=_router_flags(per_agent),
         llm_summary=llm_summary,
         cache_warning=_cache_warning(llm_summary),
+        calibration_flags=_calibration_flags(per_agent),
     )

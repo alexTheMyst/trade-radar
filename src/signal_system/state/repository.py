@@ -17,6 +17,14 @@ from signal_system.models import Signal
 
 DB_PATH = Path(__file__).parents[3] / "state" / "signals.db"
 
+# Mirrors the wash_sale.account CHECK literals — single source for validation.
+WASH_SALE_ACCOUNTS: tuple[str, ...] = (
+    "schwab_main",
+    "schwab_secondary",
+    "roth_ira",
+    "hsa",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class OutcomeBackfillCandidate:
@@ -164,6 +172,12 @@ def init_db() -> None:
                 created_at TEXT NOT NULL
             )
         """)
+
+        # Wash-sale ledger: `side` (buy/sell) and per-share trade price.
+        # cost_basis is reused as the per-share trade price — the table's
+        # original column name is retained to keep the schema migration simple;
+        # it is documented as price-per-share, not total cost.
+        _ensure_column(cursor, "wash_sale", "side", "TEXT")
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS llm_calls (
@@ -882,6 +896,91 @@ def update_signal_acted(
         conn.close()
 
 
+def insert_wash_sale_trade(
+    *,
+    ticker: str,
+    account: str,
+    trade_date: date,
+    side: str,
+    quantity: float,
+    price: float,
+    notes: str | None = None,
+) -> None:
+    """Log one executed trade to the wash-sale ledger.
+
+    *price* is the per-share trade price, stored in the legacy `cost_basis`
+    column (documented at the schema: that column is reused as price-per-share,
+    not total cost). *side* is 'buy' or 'sell'. *account* must be one of
+    WASH_SALE_ACCOUNTS — a friendly ValueError beats a raw IntegrityError, but
+    the CHECK constraint remains the backstop.
+    """
+    if side not in ("buy", "sell"):
+        raise ValueError(f"wash_sale side must be 'buy' or 'sell', got {side!r}")
+    if account not in WASH_SALE_ACCOUNTS:
+        raise ValueError(
+            f"wash_sale account must be one of {WASH_SALE_ACCOUNTS}, got {account!r}"
+        )
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO wash_sale
+                (ticker, account, trade_date, quantity, cost_basis, notes, side, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                ticker.upper(),
+                account,
+                trade_date.isoformat(),
+                quantity,
+                price,
+                notes,
+                side,
+                datetime.now(ZoneInfo("America/New_York")).isoformat(),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_recent_trades(
+    ticker: str,
+    *,
+    since: date,
+    side: str | None = None,
+) -> list[dict]:
+    """Return logged trades for *ticker* on or after *since*.
+
+    Deliberately NO account filter — the IRS wash-sale rule applies across all
+    accounts held by the same taxpayer, so a loss realized in one Schwab
+    account disallows a repurchase in another. The operator's ledger must see
+    the cross-account picture or the whole table is worthless.
+
+    Rows are returned oldest-first with keys ticker/account/trade_date/
+    quantity/price/notes/side.
+    """
+    query = """
+        SELECT ticker, account, trade_date, quantity, cost_basis AS price, notes, side
+        FROM wash_sale
+        WHERE ticker = ? AND trade_date >= ?
+    """
+    params: list = [ticker.upper(), since.isoformat()]
+    if side is not None:
+        query += " AND side = ?"
+        params.append(side)
+    query += " ORDER BY trade_date ASC"
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        columns = [col[0] for col in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
 def list_recent_delivered_signals(
     days: int = 14, *, now: datetime | None = None
 ) -> list[dict]:
@@ -935,9 +1034,10 @@ def count_unacted_delivered_older_than(
 def list_signals_for_review() -> list[dict]:
     """Return routable signals with price snapshots for the review report.
 
-    Agents discovery_agent/news_classifier, routing DELIVERED/SUPPRESSED,
-    signal_price_snapshot NOT NULL (excludes legacy DAILY_CLOSE rows by
-    construction since they carry no snapshot). Excludes MONITORING corpus.
+    Agents discovery_agent/news_classifier/exit_sentinel, routing
+    DELIVERED/SUPPRESSED, signal_price_snapshot NOT NULL (excludes legacy
+    DAILY_CLOSE rows by construction since they carry no snapshot). Excludes
+    MONITORING corpus.
     """
     conn = _connect()
     try:
@@ -948,12 +1048,90 @@ def list_signals_for_review() -> list[dict]:
                    routing_status, signal_price_snapshot, outcome_price_30d,
                    outcome_price_90d, direction, acted, weight_version
             FROM signals
-            WHERE agent IN ('discovery_agent', 'news_classifier')
+            WHERE agent IN ('discovery_agent', 'news_classifier', 'exit_sentinel')
               AND routing_status IN ('DELIVERED', 'SUPPRESSED')
               AND signal_price_snapshot IS NOT NULL
               AND signal_price_snapshot > 0
             ORDER BY timestamp ASC
             """
+        )
+        columns = [col[0] for col in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def count_signals() -> int:
+    """Return the total number of rows in the signals table."""
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM signals")
+        row = cursor.fetchone()
+        return int(row[0]) if row is not None else 0
+    finally:
+        conn.close()
+
+
+def backup_database(dest_dir: Path) -> tuple[Path, int]:
+    """Back up the live database to a dated signals-YYYYMMDD.db file.
+
+    Uses ``VACUUM INTO`` rather than a plain file copy: in WAL mode an active
+    -wal file can hold committed pages a raw copy would miss, and copying the
+    -wal alongside the main file can hand back an inconsistent snapshot.
+    VACUUM INTO reads a consistent logical snapshot including WAL content.
+
+    The destination file is named with the ET date (``signals-YYYYMMDD.db``).
+    VACUUM INTO refuses to overwrite, so any same-day file is unlinked first
+    (a same-day rerun replaces yesterday's backup — the weekly schedule makes
+    collision between genuinely different days impossible).
+
+    Returns (path, row_count) where row_count is the sanity-checked COUNT(*)
+    from the backup file itself — the caller should compare it against
+    count_signals() on the live database.
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    date_stamp = datetime.now(ZoneInfo("America/New_York")).date().strftime("%Y%m%d")
+    target = dest_dir / f"signals-{date_stamp}.db"
+    target.unlink(missing_ok=True)
+
+    conn = _connect()
+    try:
+        conn.execute("VACUUM INTO ?", (str(target),))
+    finally:
+        conn.close()
+
+    backup_conn = sqlite3.connect(target)
+    try:
+        row = backup_conn.execute("SELECT COUNT(*) FROM signals").fetchone()
+        count = int(row[0]) if row is not None else 0
+    finally:
+        backup_conn.close()
+
+    return target, count
+
+
+def get_signal_meta_by_alert_ids(alert_ids: list[str]) -> list[dict]:
+    """Return routing-relevant metadata for the given alert_ids.
+
+    Returns ``{alert_id, severity, demoted_from, routing_status, timestamp}``
+    for each existing alert_id, excluding MONITORING rows (they bypass the
+    router and must not suppress a fresh trigger). Empty input returns [].
+    """
+    if not alert_ids:
+        return []
+    placeholders = ", ".join("?" for _ in alert_ids)
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT alert_id, severity, demoted_from, routing_status, timestamp
+            FROM signals
+            WHERE alert_id IN ({placeholders})
+              AND routing_status != 'MONITORING'
+            """,
+            alert_ids,
         )
         columns = [col[0] for col in cursor.description]
         return [dict(zip(columns, row)) for row in cursor.fetchall()]

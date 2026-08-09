@@ -185,6 +185,7 @@ _MONITORING_CATEGORY_LABELS: tuple[tuple[str, str], ...] = (
     ("parse_failure", "parse-fail"),
     ("volume_cap", "volume-cap"),
     ("reconciled", "reconciled"),
+    ("cooldown", "cooldown"),
 )
 
 
@@ -195,7 +196,8 @@ def _monitoring_line(
 
     Zero categories are omitted; an empty/None breakdown renders the bare count.
     The category labels are the title-prefix taxonomy used across the jobs
-    ([off_thesis], [parse_failure], [volume_cap]) plus reconciled losers.
+    ([off_thesis], [parse_failure], [volume_cap], [cooldown]) plus reconciled
+    losers.
     """
     line = f"Monitoring: {monitoring_count}"
     if not breakdown:

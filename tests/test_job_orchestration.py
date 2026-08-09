@@ -50,6 +50,21 @@ def test_core_holdings_filters_to_core_only_and_preserves_csv_order(tmp_path, mo
     assert universe.get_core_holdings() == ["SPY", "AAPL"]
 
 
+def test_get_all_tickers_includes_all_non_k1_sorted(tmp_path, monkeypatch):
+    csv_path = tmp_path / "universe.csv"
+    with csv_path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["ticker", "core_holding", "k1_etf", "weight_pct"])
+        writer.writeheader()
+        writer.writerow({"ticker": "MSFT", "core_holding": "1", "k1_etf": "0", "weight_pct": "10"})
+        writer.writerow({"ticker": "AAPL", "core_holding": "1", "k1_etf": "0", "weight_pct": "8"})
+        writer.writerow({"ticker": "USO", "core_holding": "0", "k1_etf": "1", "weight_pct": "5"})
+        writer.writerow({"ticker": "ZZZ", "core_holding": "0", "k1_etf": "0", "weight_pct": ""})
+
+    monkeypatch.setattr(universe, "UNIVERSE_PATH", csv_path)
+
+    assert universe.get_all_tickers() == ["AAPL", "MSFT", "ZZZ"]
+
+
 def test_latest_successful_run_date_returns_newest_success_only(db):
     conn = sqlite3.connect(db)
     conn.executemany(
@@ -104,7 +119,7 @@ def _news_item(headline: str, dt: datetime) -> dict:
 
 
 @contextmanager
-def _noop_heartbeat():
+def _noop_heartbeat(*_a, **_k):
     yield
 
 

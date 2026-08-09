@@ -104,6 +104,9 @@ def _template_rationale(
         notes += " Position is extended near 20-day highs -- not chasing."
     if "wash_sale_caution" in flags:
         notes += " Verify 30-day wash-sale window across all accounts before executing."
+    if "wash_sale_window" in flags:
+        notes += (" Recent logged sell in the wash-sale window — a repurchase here "
+                  "may disallow the loss. Confirm the 30-day window across all accounts.")
     if "no_data" in flags:
         return f"{ticker}: insufficient price history -- manual review required."
     return (

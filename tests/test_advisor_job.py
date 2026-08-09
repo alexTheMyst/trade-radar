@@ -22,7 +22,7 @@ def _make_df(n_rows: int = 250, base_price: float = 100.0) -> pd.DataFrame:
 
 
 @contextmanager
-def _noop_heartbeat():
+def _noop_heartbeat(*_a, **_k):
     yield
 
 
@@ -178,3 +178,81 @@ def test_main_advise_subcommand_not_in_jobs():
     """advise TICKER is handled separately, not as a JOBS entry."""
     from signal_system import __main__
     assert "advise" not in __main__.JOBS
+
+
+def test_advise_ticker_wash_sale_window_flagged(tmp_path, monkeypatch, capsys):
+    """advise_ticker surfaces wash_sale_window when a recent sell is logged."""
+    from signal_system.state import repository
+    from signal_system.jobs import advisor as advisor_job
+    from signal_system.data.holdings import EmptyHoldingsError
+
+    monkeypatch.setattr(repository, "DB_PATH", tmp_path / "test.db")
+    repository.init_db()
+
+    repository.insert_wash_sale_trade(
+        ticker="FCX", account="schwab_main", trade_date=date(2026, 5, 20),
+        side="sell", quantity=10, price=95.0,
+    )
+
+    monkeypatch.setattr(
+        advisor_job, "load_thesis",
+        lambda path: (MagicMock(pillars=[], review_due=date(2027, 1, 1)), "abc123"),
+    )
+    monkeypatch.setattr(
+        advisor_job, "require_non_empty_holdings",
+        lambda: [Holding(ticker="FCX", shares=40, cost_basis=38.10, account="schwab_main")],
+    )
+    monkeypatch.setattr(
+        advisor_job, "fetch_history",
+        lambda tickers, days: {t: _make_df(250) for t in tickers},
+    )
+    monkeypatch.setattr(advisor_job, "_finnhub_close", lambda t: 148.0)
+    monkeypatch.setattr(
+        advisor_job, "repository",
+        type("R", (), {
+            "get_recent_signals": lambda t, s, agent=None: [(1.0, 0.5)],
+            "get_recent_trades": lambda t, since, side=None: [{"side": "sell"}],
+        }),
+    )
+
+    advisor_job.advise_ticker("FCX")
+    captured = capsys.readouterr().out
+    assert "wash_sale_window" in captured
+
+
+def test_advise_ticker_wash_sale_lookup_uses_30_day_window(tmp_path, monkeypatch):
+    """advise_ticker must query get_recent_trades with a 30-day since, not 14."""
+    from datetime import timedelta
+    from signal_system.advisor.verdict_engine import WASH_SALE_WINDOW_DAYS
+    from signal_system.state import repository
+    from signal_system.jobs import advisor as advisor_job
+
+    monkeypatch.setattr(repository, "DB_PATH", tmp_path / "test.db")
+    repository.init_db()
+
+    captured: list = []
+
+    monkeypatch.setattr(
+        advisor_job, "load_thesis",
+        lambda path: (MagicMock(pillars=[], review_due=date(2027, 1, 1)), "abc123"),
+    )
+    monkeypatch.setattr(
+        advisor_job, "require_non_empty_holdings",
+        lambda: [Holding(ticker="FCX", shares=40, cost_basis=38.10, account="schwab_main")],
+    )
+    monkeypatch.setattr(
+        advisor_job, "fetch_history",
+        lambda tickers, days: {t: _make_df(250) for t in tickers},
+    )
+    monkeypatch.setattr(advisor_job, "_finnhub_close", lambda t: 148.0)
+    monkeypatch.setattr(
+        advisor_job, "repository",
+        type("R", (), {
+            "get_recent_signals": lambda t, s, agent=None: [(1.0, 0.5)],
+            "get_recent_trades": lambda t, since, side=None: (captured.append(since) or [{"side": "sell"}]),
+        }),
+    )
+
+    advisor_job.advise_ticker("FCX")
+    assert captured, "advise_ticker must call get_recent_trades"
+    assert captured[0] == date.today() - timedelta(days=WASH_SALE_WINDOW_DAYS)

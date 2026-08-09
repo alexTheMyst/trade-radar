@@ -19,6 +19,11 @@ Severity = Literal["ACTION_REQUIRED", "INFORMATIONAL", "MONITORING"]
 # the literal "discovery_agent" used at Signal construction.
 NEWS_CLASSIFIER_AGENT: str = "news_classifier"
 DISCOVERY_AGENT: str = "discovery_agent"
+EXIT_SENTINEL_AGENT: str = "exit_sentinel"
+
+# The sentinel emits native 0-100 scores (raw passthrough), so it sits on the
+# same competition scale as Discovery. An agent NOT on 0-100 loses every slot
+# competition — competition_score() only rescales news_classifier confidences.
 
 
 def competition_score(signal: Signal) -> float:
