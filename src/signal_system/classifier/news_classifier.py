@@ -303,7 +303,6 @@ def _classify_one_call(
     response = _get_client().messages.parse(
         model=config.ANTHROPIC_MODEL,
         max_tokens=512,
-        temperature=0.0,
         system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": headline_text}],
         output_format=ClassificationResult,
@@ -332,7 +331,6 @@ def _fetch_raw_text_on_parse_failure(headline_text: str, system_prompt: str) -> 
     response = _get_client().messages.create(
         model=config.ANTHROPIC_MODEL,
         max_tokens=512,
-        temperature=0.0,
         system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": headline_text}],
     )

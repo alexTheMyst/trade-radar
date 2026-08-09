@@ -241,7 +241,6 @@ src/signal_system/
 **Model Configuration:**
 - Keep the repo-configured model in `config.ANTHROPIC_MODEL`; for Phase 06, standardize on `claude-sonnet-4-6` unless the operator overrides it in `.env`.
 - Classification call shape should stay:
-  - `temperature=0.0`
   - `max_tokens=512`
   - `output_format=ClassificationResult`
   - `system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]`
@@ -364,7 +363,6 @@ Use it exactly with the Anthropic SDK's structured-output path:
 parsed = client.messages.parse(
     model=config.ANTHROPIC_MODEL,
     max_tokens=512,
-    temperature=0.0,
     system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
     messages=[{"role": "user", "content": sanitized_headline}],
     output_format=HeadlineClassification,
@@ -401,7 +399,7 @@ The Anthropic SDK supports `AsyncAnthropic`, but this repo is intentionally sync
 ### Cost and Latency Budget
 
 - Discovery costs **0 LLM calls** in Phase 06; only `news-morning` spends tokens.
-- Budget for **at most 50 Claude calls per `news-morning` run** after dedup/cap. With short headlines, `temperature=0`, and a cached system prompt, the expected spend is **low single-digit cents per normal run and should remain under roughly $0.10 even on a full-cap day**; verify against Anthropic's current pricing page before go-live.
+- Budget for **at most 50 Claude calls per `news-morning` run** after dedup/cap. With short headlines and a cached system prompt, the expected spend is **low single-digit cents per normal run and should remain under roughly $0.10 even on a full-cap day**; verify against Anthropic's current pricing page before go-live.
 - Track actual spend via `llm_calls` rows, not guesswork. Alert on unexpected call-count growth before switching models.
 - Use two caching layers:
   1. **Exact-match semantic equivalent:** the existing headline dedup key prevents duplicate classification calls.

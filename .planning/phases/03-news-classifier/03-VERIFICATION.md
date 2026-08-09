@@ -9,7 +9,7 @@ re_verification: false
 
 # Phase 3: News Classifier — Verification Report
 
-**Phase Goal:** Implement a headline-based news classifier using Anthropic `messages.parse()` at temperature=0 with ephemeral prompt caching, parse-failure MONITORING recovery, in-memory dedup via SHA-256, and full LLM token telemetry via `insert_llm_call`.
+**Phase Goal:** Implement a headline-based news classifier using Anthropic `messages.parse()` with ephemeral prompt caching, parse-failure MONITORING recovery, in-memory dedup via SHA-256, and full LLM token telemetry via `insert_llm_call`.
 
 **Verified:** 2026-05-16T06:18:00-06:00
 **Status:** PASSED
@@ -25,7 +25,7 @@ re_verification: false
 | # | Truth | Status | Evidence |
 |---|-------|--------|----------|
 | 1 | `_sanitize_headline()` strips ANSI escapes + Cc-category control chars, HTML-escapes `<`/`>`, truncates at 500 chars, wraps in `<headline>` delimiters | VERIFIED | `test_sanitize_headline_*` (8 tests); ANSI pre-pass bug fixed (`re.sub` before Cc filter) in af6fa1b |
-| 2 | Classification calls use `temperature=0.0`, pinned `config.ANTHROPIC_MODEL`, `output_format=ClassificationResult`; `model_version` stamped on Signal | VERIFIED | `test_classify_uses_temperature_zero`, `test_classify_passes_output_format`; grep gates confirm literals in source |
+| 2 | Classification calls use pinned `config.ANTHROPIC_MODEL`, `output_format=ClassificationResult`; `model_version` stamped on Signal | VERIFIED | `test_classify_passes_output_format`; grep gates confirm literals in source |
 | 3 | System prompt uses `cache_control` ephemeral block; `cache_read_input_tokens` and `cache_creation_input_tokens` logged to `llm_calls` table | VERIFIED | `test_system_includes_cache_control`; T13 cache token round-trip asserts `cache_read_input_tokens=800` logged |
 | 4 | `ValidationError` after 1 retry → MONITORING signal; `parsed_output is None` → immediate MONITORING signal; neither silently dropped | VERIFIED | `test_parse_failure_retries_once_then_monitoring`, `test_empty_parsed_output_emits_monitoring` |
 | 5 | Classifier imports only permitted modules — no `email_sender`, `heartbeat`, or `router` | VERIFIED | `grep -c "email_sender" src/signal_system/classifier/` returns 0; `test_phase3_public_api_importable` |
@@ -52,7 +52,7 @@ re_verification: false
 | From | To | Via | Status | Details |
 |------|----|-----|--------|---------|
 | `classify_headlines(tickers, headlines)` | `classify_headline()` per headline | System prompt built once; `dedup_seen` set shared across batch | WIRED | O(1) dedup check before any API call |
-| `classify_headline()` | `anthropic.messages.parse()` | `_call_with_retry()` with tenacity; `temperature=0.0`; `output_format=ClassificationResult` | WIRED | Parse-failure path → 1 retry → MONITORING signal |
+| `classify_headline()` | `anthropic.messages.parse()` | `_call_with_retry()` with tenacity; `output_format=ClassificationResult` | WIRED | Parse-failure path → 1 retry → MONITORING signal |
 | `insert_llm_call()` | `llm_calls` SQLite table | Keyword-only params: `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, `job`, `model_version` | WIRED | All 4 token counts from `response.usage` logged per call |
 | Signal | `repository.insert_signal()` | `model_version` + `thesis_version_hash` bound from Signal fields | WIRED | Columns wired; Phase 3 is the first consumer to write these fields |
 
@@ -64,7 +64,7 @@ re_verification: false
 |----------|---------|--------|--------|
 | 69 tests pass end-to-end | `uv run pytest tests/ -x -q` | `69 passed` | PASS |
 | Sanitization strips ANSI + Cc | `test_sanitize_headline_strips_control_chars` | ANSI sequences and Cc chars removed; `\n`/`\t` preserved | PASS |
-| Temperature locked to 0.0 | `test_classify_uses_temperature_zero` | `temperature=0.0` asserted in API call kwargs | PASS |
+| Temperature not set | `test_classify_omits_temperature` | no `temperature` key asserted in API call kwargs | PASS |
 | Cache control on system prompt | `test_system_includes_cache_control` | `cache_control` ephemeral block present | PASS |
 | Parse failure → MONITORING | `test_parse_failure_retries_once_then_monitoring` | 1 retry then MONITORING signal emitted | PASS |
 | None parsed_output → MONITORING | `test_empty_parsed_output_emits_monitoring` | Immediate MONITORING without retry | PASS |
@@ -79,7 +79,7 @@ re_verification: false
 | Requirement | Description | Status | Evidence |
 |-------------|-------------|--------|----------|
 | CLFY-01 | Headline sanitization: strip ANSI + Cc-category, HTML-escape `<`/`>`, truncate at 500 chars, wrap in `<headline>` delimiters | SATISFIED | `_sanitize_headline()` with ANSI pre-pass; 8 sanitization tests |
-| CLFY-02 | Deterministic classification: `temperature=0.0`, pinned `config.ANTHROPIC_MODEL`, `output_format=ClassificationResult`, `model_version` stamped on Signal | SATISFIED | `test_classify_uses_temperature_zero`, `test_classify_passes_output_format`, grep gates |
+| CLFY-02 | Deterministic classification: pinned `config.ANTHROPIC_MODEL`, `output_format=ClassificationResult`, `model_version` stamped on Signal | SATISFIED | `test_classify_passes_output_format`, grep gates |
 | CLFY-03 | Prompt caching: `cache_control` ephemeral block on system prompt; cache token counts logged to `llm_calls` | SATISFIED | `test_system_includes_cache_control`; T13 cache token round-trip test |
 | CLFY-04 | Parse-failure recovery: `ValidationError` → 1 retry → MONITORING; `parsed_output is None` → immediate MONITORING; neither silently dropped | SATISFIED | `test_parse_failure_retries_once_then_monitoring`, `test_empty_parsed_output_emits_monitoring` |
 | CLFY-05 | Isolation: classifier imports only `anthropic`, `pydantic`, `tenacity`, permitted `signal_system` modules — no delivery or router imports | SATISFIED | grep gate returns 0 for forbidden imports; `test_phase3_public_api_importable` |

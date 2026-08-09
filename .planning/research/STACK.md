@@ -163,5 +163,4 @@ Schema columns to add to existing `signals` table:
 
 - Exact minimum token threshold for Anthropic prompt caching (verify against current docs at implementation)
 - Which Finnhub free-tier endpoints are available for the 35/30/25/10 Discovery scoring weights — validate empirically before writing scoring code
-- Whether `messages.parse()` supports `temperature=0.0` alongside `output_format` (likely yes — verify at implementation; classification calls must be deterministic)
 - Does `/stock/candle` support `adjusted=False` on Finnhub free tier? (needed for outcome backfill)
