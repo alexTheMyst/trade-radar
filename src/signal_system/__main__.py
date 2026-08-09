@@ -346,7 +346,8 @@ if __name__ == "__main__":
         print("Usage: python -m signal_system <job>  |  advise <TICKER>  |  "
               "list-signals [--days N]  |  log-action <prefix> --acted|--passed  |  "
               "log-trade <TICKER> --buy|--sell --account <lit> --qty N --price P  |  "
-              "backfill-benchmark  |  replay-weights [--days N] [--weights A/B/C] [--horizons H1,H2] [--gates on|off]")
+              "backfill-benchmark  |  replay-weights [--days N] [--weights A/B/C] [--horizons H1,H2] [--gates on|off]  |  "
+              "eval-classifier")
         print(f"Available jobs: {list(JOBS)}")
         sys.exit(2)
 
