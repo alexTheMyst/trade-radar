@@ -100,6 +100,8 @@ def build_merged_universe() -> list[dict]:
         base = dict(bundle_row) if bundle_row else {}
         base["ticker"] = ticker
         base["name"] = base.get("name", "")
+        base["sector"] = base.get("sector", "")
+        base["industry"] = base.get("industry", "")
         for col in _OPERATOR_COLUMNS:
             base[col] = (op or {}).get(col, "")
 
