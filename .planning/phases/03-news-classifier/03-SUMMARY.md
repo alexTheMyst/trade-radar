@@ -33,7 +33,7 @@ metrics:
 
 # Phase 3 Plan 01: News Classifier Summary
 
-**One-liner:** News headline classifier using Anthropic `messages.parse()` at temperature=0 with ephemeral prompt caching, parse-failure MONITORING recovery, in-memory dedup, and full LLM token telemetry via `insert_llm_call`.
+**One-liner:** News headline classifier using Anthropic `messages.parse()` with ephemeral prompt caching, parse-failure MONITORING recovery, in-memory dedup, and full LLM token telemetry via `insert_llm_call`.
 
 ## What Was Built
 

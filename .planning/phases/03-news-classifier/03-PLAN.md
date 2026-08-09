@@ -6,7 +6,7 @@ type: execute
 wave: 1
 depends_on: ["01-01", "02-01"]
 autonomous: true
-objective: "Build src/signal_system/classifier/news_classifier.py: sanitize Finnhub headlines, classify against thesis pillars via Anthropic messages.parse() (temperature=0, pinned model, cached system prompt), log every call to llm_calls, recover from pydantic.ValidationError + parsed_output is None as MONITORING signals, dedupe within a run, and return list[Signal]. Also extend Signal/insert_signal to carry model_version + thesis_version_hash and add repository.insert_llm_call helper."
+objective: "Build src/signal_system/classifier/news_classifier.py: sanitize Finnhub headlines, classify against thesis pillars via Anthropic messages.parse() (pinned model, cached system prompt), log every call to llm_calls, recover from pydantic.ValidationError + parsed_output is None as MONITORING signals, dedupe within a run, and return list[Signal]. Also extend Signal/insert_signal to carry model_version + thesis_version_hash and add repository.insert_llm_call helper."
 files_modified:
   - src/signal_system/models.py
   - src/signal_system/state/repository.py
@@ -19,7 +19,7 @@ tags: [classifier, anthropic, pydantic, tenacity, prompt-caching, llm_calls, san
 must_haves:
   truths:
     - "classify_headlines(ticker, headlines, thesis, thesis_version_hash) returns list[Signal] only — never sends email, never invokes router"
-    - "Every Anthropic call uses temperature=0.0, model=config.ANTHROPIC_MODEL, output_format=ClassificationResult, and system=[{type:text, text:<prompt>, cache_control:{type:ephemeral}}]"
+    - "Every Anthropic call uses model=config.ANTHROPIC_MODEL, output_format=ClassificationResult, and system=[{type:text, text:<prompt>, cache_control:{type:ephemeral}}]"
     - "Every Anthropic call records one row in llm_calls with all four token counts (None coerced to 0)"
     - "pydantic.ValidationError from messages.parse() is retried exactly once via tenacity; second failure produces a MONITORING Signal with raw_response captured in body (title prefix '[parse_failure]')"
     - "ParsedMessage.parsed_output is None is treated as a parse failure (no retry) and produces a MONITORING Signal"
@@ -42,7 +42,7 @@ must_haves:
       exports: [classify_headlines, ClassificationResult]
     - path: "tests/test_smoke.py"
       provides: "All CLFY-01..06 unit tests + dataclass extension tests + insert_llm_call tests + integration smoke"
-      contains: "test_signal_model_version_field, test_insert_llm_call_persists_all_columns, test_sanitize_headline_strips_control_chars, test_classify_uses_temperature_zero, test_system_includes_cache_control, test_parse_failure_emits_monitoring, test_empty_parsed_output_emits_monitoring, test_dedup_skips_duplicate, test_classify_headlines_dedup, test_phase3_public_api_importable"
+      contains: "test_signal_model_version_field, test_insert_llm_call_persists_all_columns, test_sanitize_headline_strips_control_chars, test_classify_omits_temperature, test_system_includes_cache_control, test_parse_failure_emits_monitoring, test_empty_parsed_output_emits_monitoring, test_dedup_skips_duplicate, test_classify_headlines_dedup, test_phase3_public_api_importable"
   key_links:
     - from: "Signal dataclass (frozen)"
       to: "repository.insert_signal SQL parameters"
@@ -67,7 +67,7 @@ must_haves:
 ---
 
 <objective>
-Build the News Classifier (`src/signal_system/classifier/news_classifier.py`) that consumes Finnhub headlines and emits typed `Signal` objects classified against `thesis.yaml` pillars via `Anthropic.messages.parse()`. The classifier sanitizes each headline (defense-in-depth against prompt injection), calls the API with `temperature=0` + pinned model + cached system prompt, logs token telemetry to `llm_calls`, and recovers from parse failure as MONITORING signals. It never sends email and never invokes the router.
+Build the News Classifier (`src/signal_system/classifier/news_classifier.py`) that consumes Finnhub headlines and emits typed `Signal` objects classified against `thesis.yaml` pillars via `Anthropic.messages.parse()`. The classifier sanitizes each headline (defense-in-depth against prompt injection), calls the API with pinned model + cached system prompt, logs token telemetry to `llm_calls`, and recovers from parse failure as MONITORING signals. It never sends email and never invokes the router.
 
 Phase 3 also closes three Phase 1 schema gaps surfaced by `03-RESEARCH.md §1`:
   1. Extend the frozen `Signal` dataclass with `model_version` and `thesis_version_hash` fields (default None — backwards compatible).
@@ -455,7 +455,7 @@ Expected: ≥ 1 FAILED with ModuleNotFoundError or similar.
 uv run pytest tests/test_smoke.py -k "sanitize_headline or build_system_prompt" --tb=no -q 2>&1 | grep -E "failed|error" | head -5
 # Must show ≥ 1 failed (RED)
 
-uv run pytest tests/test_smoke.py -x -q -k "not (sanitize_headline or build_system_prompt or classify or parse_failure or empty_parsed_output or dedup or phase3 or system_includes_cache or temperature_zero or output_format or insert_llm_call)"
+uv run pytest tests/test_smoke.py -x -q -k "not (sanitize_headline or build_system_prompt or classify or parse_failure or empty_parsed_output or dedup or phase3 or system_includes_cache or omits_temperature or output_format or insert_llm_call)"
 # Phase 1/2 tests still pass — no regressions
     </automated>
   </verify>
@@ -551,7 +551,7 @@ Commit message: `feat(03): create classifier package skeleton; sanitization + sy
 uv run pytest tests/test_smoke.py -k "sanitize_headline or build_system_prompt" -x -q
 # All T5 tests must now PASS
 
-uv run pytest -x -q -k "not (classify_headlines or classify_uses_temperature or output_format or system_includes_cache or parse_failure or empty_parsed_output or dedup_skips_duplicate or phase3_public)"
+uv run pytest -x -q -k "not (classify_headlines or classify_omits_temperature or output_format or system_includes_cache or parse_failure or empty_parsed_output or dedup_skips_duplicate or phase3_public)"
 # All other tests still pass; only the not-yet-implemented orchestration tests remain
 
 # Module structure
@@ -601,7 +601,7 @@ grep -c "heartbeat" src/signal_system/classifier/news_classifier.py || true
   <name>T7 (RED): Failing tests for classify_headline single-headline + API kwargs + llm_calls logging</name>
   <files>tests/test_smoke.py</files>
   <behavior>
-    - test_classify_uses_temperature_zero: build a MagicMock Anthropic client whose messages.parse() returns a MagicMock ParsedMessage with `.parsed_output = ClassificationResult(pillar_name="growth", confidence=0.9, direction="positive", rationale="x")` and `.usage = MagicMock(input_tokens=100, output_tokens=10, cache_read_input_tokens=0, cache_creation_input_tokens=0)`. Monkeypatch `news_classifier._get_client` to return this mock. Monkeypatch `repository.insert_llm_call` to a MagicMock so it's a no-op. Call `classify_headline("AAPL", {"headline":"Apple beats earnings"}, thesis, thesis_version_hash="abc", system_prompt="SYS")`. Inspect the mock's recorded call: assert `mock.messages.parse.call_args.kwargs["temperature"] == 0.0` and `mock.messages.parse.call_args.kwargs["model"] == config.ANTHROPIC_MODEL`.
+    - test_classify_omits_temperature: build a MagicMock Anthropic client whose messages.parse() returns a MagicMock ParsedMessage with `.parsed_output = ClassificationResult(pillar_name="growth", confidence=0.9, direction="positive", rationale="x")` and `.usage = MagicMock(input_tokens=100, output_tokens=10, cache_read_input_tokens=0, cache_creation_input_tokens=0)`. Monkeypatch `news_classifier._get_client` to return this mock. Monkeypatch `repository.insert_llm_call` to a MagicMock so it's a no-op. Call `classify_headline("AAPL", {"headline":"Apple beats earnings"}, thesis, thesis_version_hash="abc", system_prompt="SYS")`. Inspect the mock's recorded call: assert `"temperature" not in mock.messages.parse.call_args.kwargs` and `mock.messages.parse.call_args.kwargs["model"] == config.ANTHROPIC_MODEL`.
     - test_classify_passes_output_format: assert `mock.messages.parse.call_args.kwargs["output_format"] is ClassificationResult`.
     - test_system_includes_cache_control: assert `mock.messages.parse.call_args.kwargs["system"]` is a list of length 1; the single block is a dict with `{"type":"text","text":"SYS","cache_control":{"type":"ephemeral"}}` (or equivalent — verify each key).
     - test_classify_user_message_has_sanitized_headline: assert `mock.messages.parse.call_args.kwargs["messages"]` is `[{"role":"user","content":"<headline>Apple beats earnings</headline>"}]` (sanitized, delimited). The raw headline MUST appear inside `<headline>` tags, not bare.
@@ -646,12 +646,12 @@ NOTE: classify_headline is the SINGLE-headline path. The signature you're testin
 Commit message: `test(03): RED — classify_headline API kwargs, llm_calls logging, signal stamping`
 
 Confirm RED:
-  uv run pytest tests/test_smoke.py -k "classify_uses_temperature or output_format or system_includes_cache or sanitized_headline or logs_llm_call or stamped_fields or pillar_name_none or coerces_none_cache" --tb=no -q 2>&1 | grep -E "failed|error" | head -5
+uv run pytest tests/test_smoke.py -k "omits_temperature or output_format or system_includes_cache or sanitized_headline or logs_llm_call or stamped_fields or pillar_name_none or coerces_none_cache" --tb=no -q 2>&1 | grep -E "failed|error" | head -5
 Expected: ≥ 1 FAILED.
   </action>
   <verify>
     <automated>
-uv run pytest tests/test_smoke.py -k "classify_uses_temperature or output_format or system_includes_cache or sanitized_headline or logs_llm_call or stamped_fields or pillar_name_none or coerces_none_cache" --tb=no -q 2>&1 | grep -E "failed|error" | head -5
+uv run pytest tests/test_smoke.py -k "omits_temperature or output_format or system_includes_cache or sanitized_headline or logs_llm_call or stamped_fields or pillar_name_none or coerces_none_cache" --tb=no -q 2>&1 | grep -E "failed|error" | head -5
 # Must show ≥ 1 failed (RED)
     </automated>
   </verify>
@@ -683,7 +683,6 @@ Add three module-level helpers and one public function to `news_classifier.py`. 
    - Call `_get_client().messages.parse(...)` with these EXACT kwargs (the kwargs are the test contract — see T7):
        model=config.ANTHROPIC_MODEL,
        max_tokens=512,
-       temperature=0.0,
        system=[{"type":"text", "text": system_prompt, "cache_control":{"type":"ephemeral"}}],
        messages=[{"role":"user", "content": headline_text}],
        output_format=ClassificationResult,
@@ -734,7 +733,7 @@ Commit message: `feat(03): implement classify_headline single-call path with tel
   </action>
   <verify>
     <automated>
-uv run pytest tests/test_smoke.py -k "classify_uses_temperature or output_format or system_includes_cache or sanitized_headline or logs_llm_call or stamped_fields or pillar_name_none or coerces_none_cache" -x -q
+uv run pytest tests/test_smoke.py -k "omits_temperature or output_format or system_includes_cache or sanitized_headline or logs_llm_call or stamped_fields or pillar_name_none or coerces_none_cache" -x -q
 # All T7 tests must now PASS
 
 uv run pytest -x -q -k "not (parse_failure or empty_parsed_output or dedup_skips_duplicate or phase3_public or classify_headlines_dedup)"
@@ -744,10 +743,8 @@ uv run pytest -x -q -k "not (parse_failure or empty_parsed_output or dedup_skips
 grep -c "_ACTION_REQUIRED_THRESHOLD" src/signal_system/classifier/news_classifier.py
 # Must return ≥ 2 (definition + usage in _severity_from_confidence)
 
-# messages.parse called with the four required kwargs (verify by source inspection)
+# messages.parse called with the required kwargs (verify by source inspection)
 grep -c "output_format=ClassificationResult" src/signal_system/classifier/news_classifier.py
-# Must return ≥ 1
-grep -c "temperature=0.0" src/signal_system/classifier/news_classifier.py
 # Must return ≥ 1
 grep -c 'cache_control.*ephemeral' src/signal_system/classifier/news_classifier.py
 # Must return ≥ 1
@@ -768,7 +765,7 @@ grep -cE "from signal_system.delivery|from signal_system.monitoring|import signa
   <done>
     - classify_headline returns Signal with stamped model_version + thesis_version_hash for happy path
     - All T7 tests pass; no regressions in prior phases
-    - All four messages.parse kwargs present in source (temperature=0.0, model from config, output_format, cache_control ephemeral)
+    - All messages.parse kwargs present in source (model from config, output_format, cache_control ephemeral)
     - insert_llm_call called with all four token counts (coerced via `or 0`)
     - No email_sender / heartbeat / delivery imports
   </done>
@@ -863,7 +860,6 @@ Modify `news_classifier.py`. Do NOT change `_classify_one_call` body — wrap it
        response = _get_client().messages.create(
            model=config.ANTHROPIC_MODEL,
            max_tokens=512,
-           temperature=0.0,
            system=[{"type":"text", "text": system_prompt, "cache_control":{"type":"ephemeral"}}],
            messages=[{"role":"user", "content": headline_text}],
        )
@@ -1348,7 +1344,7 @@ These assumptions are flagged in 03-RESEARCH.md "Assumptions Log" and require ru
 | ROADMAP Success Criterion | Covered By | How Verified |
 |--------------------------|------------|-------------|
 | 1. Running the classifier produces `Signal` objects with per-pillar confidence scores — no email sent | T6 (skeleton, no email/heartbeat import), T8 (Signal returned), T12 (classify_headlines returns list) | T13 test_phase3_public_api_importable; grep gate confirms `email_sender` not imported; T13 end-to-end test asserts returned objects are Signal instances |
-| 2. API uses `temperature=0`, pinned model, `cache_control: {type: "ephemeral"}` — verified via `cache_read_input_tokens > 0` on repeat runs | T7/T8 (T7 asserts kwargs, T8 implements), T13 (end-to-end persists `cache_read_input_tokens=800`) | T7 tests: test_classify_uses_temperature_zero, test_system_includes_cache_control; T13 test_phase3_end_to_end_mocked asserts cache hit persisted. Runtime validation R-03-A1. |
+| 2. API uses pinned model, `cache_control: {type: "ephemeral"}` — verified via `cache_read_input_tokens > 0` on repeat runs | T7/T8 (T7 asserts kwargs, T8 implements), T13 (end-to-end persists `cache_read_input_tokens=800`) | T7 tests: test_classify_omits_temperature, test_system_includes_cache_control; T13 test_phase3_end_to_end_mocked asserts cache hit persisted. Runtime validation R-03-A1. |
 | 3. Malformed headline (control chars, 800-char string) is sanitized — raw never reaches API | T5/T6 | T5 tests: test_sanitize_headline_strips_control_chars, test_sanitize_headline_truncates_at_500, test_sanitize_headline_html_escapes_angle_brackets; grep gate in T6 confirms HTML-escape present |
 | 4. Unparseable JSON → MONITORING signal inserted with raw_response captured — no silent drop | T9/T10 | T9 tests: test_parse_failure_retries_once_then_monitoring, test_empty_parsed_output_emits_monitoring; T10 implements tenacity + `_make_parse_failure_signal`; T13 test_phase3_end_to_end_parse_failure_persists asserts persistence |
 | 5. Running classifier twice on same ticker+day produces same alert_id values; duplicate headlines not re-classified | T11/T12 (T11 asserts, T12 implements dedup) | T11 tests: test_classify_headlines_dedup_skips_duplicate, test_classify_headlines_dedup_normalizes_whitespace, test_classify_headlines_alert_id_stable_across_runs; T13 end-to-end test asserts INSERT OR IGNORE idempotency |
@@ -1358,7 +1354,7 @@ These assumptions are flagged in 03-RESEARCH.md "Assumptions Log" and require ru
 | Req ID | Tasks | Verified By |
 |--------|-------|-------------|
 | CLFY-01 | T5 (sanitization tests), T6 (sanitization impl), T8 (sanitized text reaches API), T11/T12 (integrated into classify_headlines) | test_sanitize_headline_* (8 tests), test_classify_user_message_has_sanitized_headline |
-| CLFY-02 | T7 (kwargs tests), T8 (impl with temperature=0 + pinned model + output_format) | test_classify_uses_temperature_zero, test_classify_passes_output_format, grep gates for `temperature=0.0`, `model=config.ANTHROPIC_MODEL`, `output_format=ClassificationResult` |
+| CLFY-02 | T7 (kwargs tests), T8 (impl with pinned model + output_format) | test_classify_omits_temperature, test_classify_passes_output_format, grep gates for `model=config.ANTHROPIC_MODEL`, `output_format=ClassificationResult` |
 | CLFY-03 | T7 (cache_control assertion), T8 (impl), T13 (end-to-end cache hit persisted) | test_system_includes_cache_control, T13 cache_read_input_tokens=800 round-trip |
 | CLFY-04 | T9 (retry + MONITORING tests), T10 (tenacity + recovery impl) | test_parse_failure_retries_once_then_monitoring (asserts 2 attempts + MONITORING + raw in body), test_empty_parsed_output_emits_monitoring |
 | CLFY-05 | T6 (no email_sender/heartbeat import), T12 (returns list[Signal]) | grep gate: `grep -c "email_sender" classifier/` returns 0; T13 test_phase3_public_api_importable confirms return type |
@@ -1399,8 +1395,6 @@ print('Phase 3 public API: OK')
 
 # 4. CLFY-02 enforcement — required kwargs literally present in source
 grep -c "output_format=ClassificationResult" src/signal_system/classifier/news_classifier.py
-# expect ≥ 1
-grep -c "temperature=0.0" src/signal_system/classifier/news_classifier.py
 # expect ≥ 1
 grep -c 'model=config.ANTHROPIC_MODEL' src/signal_system/classifier/news_classifier.py
 # expect ≥ 1
@@ -1464,7 +1458,7 @@ Phase 3 is complete when:
 3. `from signal_system.state.repository import insert_llm_call` succeeds and the function has keyword-only signature
 4. `Signal` has `model_version` and `thesis_version_hash` attributes (default None) and remains frozen
 5. `repository.insert_signal` persists `model_version` and `thesis_version_hash` from the Signal (not hardcoded None) — verified by T1/T2 round-trip tests
-6. Every messages.parse call uses: `temperature=0.0`, `model=config.ANTHROPIC_MODEL`, `output_format=ClassificationResult`, `system=[{"type":"text",...,"cache_control":{"type":"ephemeral"}}]` — verified by grep gates + T7 mock-call assertions
+6. Every messages.parse call uses: `model=config.ANTHROPIC_MODEL`, `output_format=ClassificationResult`, `system=[{"type":"text",...,"cache_control":{"type":"ephemeral"}}]` — verified by grep gates + T7 mock-call assertions
 7. Every API call results in one `insert_llm_call` row with all 4 token counts (None coerced to 0)
 8. `pydantic.ValidationError` triggers exactly one retry (tenacity stop_after_attempt(2)); second failure produces a MONITORING Signal with raw text in `body` and `[parse_failure]` in `title`
 9. `ParsedMessage.parsed_output is None` produces a MONITORING Signal without retry

@@ -200,7 +200,6 @@ def run_synthesis(
     response = client.messages.parse(
         model=model_version,
         max_tokens=2000,
-        temperature=0.0,
         system=[{"type": "text", "text": system_prompt}],
         messages=[{"role": "user", "content": items_text}],
         output_format=SynthesisResult,

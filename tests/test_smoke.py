@@ -1174,7 +1174,7 @@ def test_build_system_prompt_is_deterministic():
 # Phase 3: T7 — classify_headline API kwargs + llm_calls logging (RED)
 # ---------------------------------------------------------------------------
 
-def test_classify_uses_temperature_zero(monkeypatch):
+def test_classify_omits_temperature(monkeypatch):
     from signal_system.classifier.news_classifier import classify_headline, ClassificationResult
     from signal_system import config
     parsed = ClassificationResult(pillar_name="growth", confidence=0.9, direction="positive", rationale="x")
@@ -1183,7 +1183,7 @@ def test_classify_uses_temperature_zero(monkeypatch):
     monkeypatch.setattr("signal_system.classifier.news_classifier.repository.insert_llm_call", MagicMock())
     thesis = _make_test_thesis()
     classify_headline("AAPL", {"headline": "Apple beats earnings"}, thesis, "abc", "SYS")
-    assert mock_client.messages.parse.call_args.kwargs["temperature"] == 0.0
+    assert "temperature" not in mock_client.messages.parse.call_args.kwargs
     assert mock_client.messages.parse.call_args.kwargs["model"] == config.ANTHROPIC_MODEL
 
 

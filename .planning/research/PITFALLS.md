@@ -13,7 +13,6 @@
 **Consequences:** Signal quality measurement becomes meaningless. The 7-day operator annotation cycle compares apples to oranges. Pillar-delta scoring loses calibration.
 
 **Prevention:**
-- Pass `temperature=0` to every Claude API call in the classifier
 - Pin exact model ID string (e.g., `claude-sonnet-4-6`) in `config.py`, never a floating alias
 - Log `model_version` and `thesis_version_hash` on every row in the `signals` table
 
@@ -235,7 +234,7 @@
 
 | Phase | Pitfall | Mitigation |
 |-------|---------|------------|
-| News Classifier | Non-deterministic classification (#1) | temperature=0, pin model ID string |
+| News Classifier | Non-deterministic classification (#1) | pin model ID string |
 | News Classifier | Structured output parse failure (#2) | Tool-use API, MONITORING row on parse error |
 | News Classifier | Cost runaway (#3) | Prompt caching, headline cap, token logging |
 | News Classifier | thesis.yaml schema drift (#7) | Load once, Pydantic validation, hard-fail on review_due |
