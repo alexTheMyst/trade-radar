@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -30,6 +31,8 @@ from signal_system.models import (
     Signal,
     compute_alert_id,
 )
+
+_ET = ZoneInfo("America/New_York")
 
 # --- Tunable thresholds (initial guesses — quarterly review) ---
 DRAWDOWN_INFO: float = 0.10
@@ -187,7 +190,7 @@ def build_signal(
         score=score,
         severity=severity,
         agent=EXIT_SENTINEL_AGENT,
-        timestamp=datetime.now(),
+        timestamp=datetime.now(_ET),
         alert_id=alert_id,
         title=f"{ticker}: {primary} breach {breached[primary]:.1%}",
         body=body,
@@ -219,7 +222,7 @@ def _no_breach_signal(
         score=0.0,
         severity="MONITORING",
         agent=EXIT_SENTINEL_AGENT,
-        timestamp=datetime.now(),
+        timestamp=datetime.now(_ET),
         alert_id=alert_id,
         title=f"[no_breach] {ticker}",
         body=f"cost_basis={cost_basis:.2f}",

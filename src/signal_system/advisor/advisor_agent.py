@@ -19,6 +19,7 @@ from signal_system import config
 from signal_system.advisor.verdict_engine import (
     HISTORY_DAYS,
     NEWS_LOOKBACK_DAYS,
+    WASH_SALE_WINDOW_DAYS,
     compute_verdict,
 )
 from signal_system.advisor.rationale import generate_rationale
@@ -107,13 +108,14 @@ def produce_advice(
         today = now.date()
 
     since_news = today - timedelta(days=NEWS_LOOKBACK_DAYS)
+    since_sales = today - timedelta(days=WASH_SALE_WINDOW_DAYS)
     held_tickers: set[str] = {h.ticker for h in holdings}
     advice_rows: list[dict] = []
 
     def _recent_loss_sale(ticker: str, held: bool) -> bool:
         if get_recent_sales is None:
             return False
-        sales = get_recent_sales(ticker, since_news)
+        sales = get_recent_sales(ticker, since_sales)
         # A logged in-window sale is conservative evidence: the ledger lacks the
         # original basis, so any recent sell could make a repurchase a wash sale.
         return bool(sales)

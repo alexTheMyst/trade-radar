@@ -41,6 +41,7 @@ class ReplayCell:
     n_pairs: int
     n_emittable: int
     spy_dropped: int
+    gapped: int
 
 
 def parse_weights(spec: str) -> list[float]:
@@ -123,7 +124,7 @@ def run_replay(
     spy: pd.DataFrame,
     weight_sets: list[list[float]] | None = None,
     horizons: list[int] | None = None,
-    gates_on: bool = False,
+    gates_on: bool = True,
 ) -> list[ReplayCell]:
     """Replay cross-sectional Discovery scoring across weight sets and horizons.
 
@@ -135,12 +136,14 @@ def run_replay(
     Per cell:
       - ic: Spearman over all pooled pairs (needs >=10 by spearman_ic).
       - n_emittable / hit_rate: the would-be-emitted set (composite >=
-        SCORE_THRESHOLD_INFORM, and momentum_20d >= ABS_GATE_INFO_MOMENTUM_20D
-        when gates are on); hit_rate = fraction with positive excess.
+        SCORE_THRESHOLD_INFORM); hit_rate = fraction with positive excess.
+        Gates drop pairs from the pool BEFORE storage, so IC, hit-rate, and
+        n_emittable all describe the SAME (gate-filtered) population.
       - spy_dropped: pairs skipped because SPY lacked a matching date.
+      - gapped: pairs skipped because the ticker lacked the union-calendar date.
 
     Missing SPY dates drop the pair and count toward spy_dropped rather than
-    being silently excluded.
+    being silently excluded; tickers missing a trading day count toward gapped.
     """
     if weight_sets is None:
         weight_sets = [_DEFAULT_WEIGHTS]
@@ -156,6 +159,9 @@ def run_replay(
         (wk, h): 0 for wk in weight_keys for h in horizons
     }
     spy_dropped: dict[tuple[tuple[float, ...], int], int] = {
+        (wk, h): 0 for wk in weight_keys for h in horizons
+    }
+    gapped: dict[tuple[tuple[float, ...], int], int] = {
         (wk, h): 0 for wk in weight_keys for h in horizons
     }
 
@@ -203,8 +209,20 @@ def run_replay(
                 composite = 100.0 * sum(w * r for w, r in zip(wk, rank_tuple)) / weight_sum
                 for horizon in horizons:
                     frame = frames[t]
+                    # The union calendar may contain dates this ticker did not
+                    # trade (halt, listing gap). get_indexer returns -1 for
+                    # missing dates — UNCHECKED it silently anchors "now" at the
+                    # series' last row and feeds a corrupt pair into IC/hit-rate.
                     i = frame.index.get_indexer([day])[0]
+                    if i < 0:
+                        gapped[(wk, horizon)] += 1
+                        continue
                     if i + horizon >= len(frame):
+                        continue
+                    # Absolute momentum gate drops the pair from the pool
+                    # entirely (IC, hit-rate, and n_emit alike) — the live
+                    # system never emits in a broad downtrend.
+                    if gates_on and f["momentum_20d"] < ABS_GATE_INFO_MOMENTUM_20D:
                         continue
                     excess, dropped = _forward_excess(frame, spy_norm, i, horizon)
                     key = (wk, horizon)
@@ -212,8 +230,7 @@ def run_replay(
                         spy_dropped[key] += 1
                         continue
                     pair_buckets[key].append((composite, excess))
-                    gated = gates_on and f["momentum_20d"] < ABS_GATE_INFO_MOMENTUM_20D
-                    if composite >= SCORE_THRESHOLD_INFORM and not gated:
+                    if composite >= SCORE_THRESHOLD_INFORM:
                         emit_counts[key] += 1
 
     cells: list[ReplayCell] = []
@@ -244,15 +261,23 @@ def run_replay(
                     n_pairs=len(pairs),
                     n_emittable=emit_counts[key],
                     spy_dropped=spy_dropped[key],
+                    gapped=gapped[key],
                 )
             )
     return cells
 
 
 def fetch_replay_inputs(days: int) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
-    """Fetch universe + SPY history in one yfinance batch (no DB access)."""
+    """Fetch universe + SPY history in one yfinance batch (no DB access).
+
+    *days* is the requested backtest window in trading days. yfinance's
+    period is calendar days, so the fetch is padded by ~1.5x (weekends/holidays)
+    plus a lookback/horizon buffer so the effective analysis window covers the
+    full *days* requested instead of silently shortchanging the backtest.
+    """
+    calendar_days = int(days * 1.5) + 45  # 1.5x calendar factor + 21-row lookback + max horizon
     tickers = get_all_tickers()
-    history = yahoo_client.fetch_history(tickers + ["SPY"], days=days)
+    history = yahoo_client.fetch_history(tickers + ["SPY"], days=calendar_days)
     spy = history.pop("SPY", pd.DataFrame())
     return history, spy
 
@@ -267,14 +292,14 @@ def _fmt_ic(value: float | None) -> str:
 
 def render_replay_table(cells: list[ReplayCell], gates_on: bool) -> str:
     """Render the replay stdout table plus mandatory caveat lines."""
-    header = f"{'weights':<14} {'horizon':<8} {'IC':<8} {'hit_rate':<9} {'n_pairs':<8} {'n_emit':<7} {'spy_drop':<9}"
+    header = f"{'weights':<14} {'horizon':<8} {'IC':<8} {'hit_rate':<9} {'n_pairs':<8} {'n_emit':<7} {'spy_drop':<9} {'gapped':<7}"
     lines = [header, "-" * len(header)]
     for cell in sorted(cells, key=lambda c: (c.weights, c.horizon)):
         weights_str = "/".join(str(int(w)) for w in cell.weights)
         lines.append(
             f"{weights_str:<14} {cell.horizon:<8} {_fmt_ic(cell.ic):<8} "
             f"{_fmt_pct(cell.hit_rate):<9} {cell.n_pairs:<8} "
-            f"{cell.n_emittable:<7} {cell.spy_dropped:<9}"
+            f"{cell.n_emittable:<7} {cell.spy_dropped:<9} {cell.gapped:<7}"
         )
     lines.extend(
         [

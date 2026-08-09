@@ -3,6 +3,7 @@ import sys
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from signal_system.advisor.verdict_engine import WASH_SALE_WINDOW_DAYS
 from signal_system.state import repository
 from signal_system.jobs.daily_close import run as run_daily_close
 from signal_system.jobs.discovery import run as run_discovery
@@ -168,7 +169,7 @@ def _parse_replay_weights(argv: list[str]) -> int:
     days = 180
     weight_specs: list[str] = []
     horizons: list[int] = [5, 20]
-    gates_on = False
+    gates_on = True
 
     i = 0
     while i < len(argv):
@@ -328,7 +329,7 @@ def _parse_log_trade(argv: list[str]) -> int:
 
     print(f"Logged {side.upper()} {ticker} {qty:g} @ {price:g} ({account}) on {trade_date.isoformat()}")
     if side == "sell":
-        since = trade_date - timedelta(days=30)
+        since = trade_date - timedelta(days=WASH_SALE_WINDOW_DAYS)
         recent_buys = repository.get_recent_trades(ticker, since=since, side="buy")
         if recent_buys:
             print(
@@ -375,5 +376,5 @@ if __name__ == "__main__":
         JOBS[cmd]()
     else:
         print(f"Unknown command: {cmd!r}")
-        print(f"Available jobs: {list(JOBS)}  |  advise <TICKER>  |  list-signals  |  log-action  |  build-universe  |  backfill-benchmark")
+        print(f"Available jobs: {list(JOBS)}  |  advise <TICKER>  |  list-signals  |  log-action  |  log-trade  |  build-universe  |  backfill-benchmark  |  replay-weights  |  eval-classifier")
         sys.exit(2)

@@ -1,11 +1,15 @@
 """Tests for the golden-set classifier eval harness.
 
-The harness itself is fully mocked here — the live API run is an operator
-action. These pin loading, grading, accuracy math, and the classify_headline
-call contract (ticker=None, weights={}, llm_job="eval_classifier").
+classify_headline() returns a Signal on every path — never a
+ClassificationResult — so grade_case must grade on signal.pillar/
+signal.direction with [parse_failure] title detection. These tests pin that
+contract with real Signal objects (the live API run is an operator action).
 """
 
 from __future__ import annotations
+
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import yaml
 
@@ -17,7 +21,17 @@ from signal_system.evals.classifier_eval import (
     load_eval_thesis,
     run_eval,
 )
-from signal_system.classifier.news_classifier import ClassificationResult
+from signal_system.models import Signal
+
+
+def _signal(**overrides) -> Signal:
+    defaults = dict(
+        ticker=None, score=0.9, severity="INFORMATIONAL", agent="news_classifier",
+        timestamp=datetime(2026, 1, 1, tzinfo=ZoneInfo("America/New_York")),
+        alert_id="a", title="case",
+    )
+    defaults.update(overrides)
+    return Signal(**defaults)
 
 
 def _case(cid: int, expected_pillar="monetary_policy", expected_direction="positive"):
@@ -52,62 +66,55 @@ def test_load_cases_reads_set_and_cases(tmp_path):
 
 
 def test_grade_case_pillar_match_direction_match():
-    result = ClassificationResult(pillar_name="monetary_policy", confidence=0.9,
-                                  direction="positive", rationale="x")
-    assert grade_case(_case(1), result) == (True, "")
+    signal = _signal(pillar="monetary_policy", direction="positive")
+    assert grade_case(_case(1), signal) == (True, "")
 
 
 def test_grade_case_pillar_mismatch():
-    result = ClassificationResult(pillar_name="ai_capex", confidence=0.9,
-                                  direction="positive", rationale="x")
-    passed, reason = grade_case(_case(1), result)
+    signal = _signal(pillar="ai_capex", direction="positive")
+    passed, reason = grade_case(_case(1), signal)
     assert passed is False
     assert "pillar" in reason
 
 
 def test_grade_case_off_thesis_expected_null():
     case = _case(2, expected_pillar=None, expected_direction=None)
-    result = ClassificationResult(pillar_name=None, confidence=0.4,
-                                  direction="neutral", rationale="off")
-    assert grade_case(case, result) == (True, "")
+    signal = _signal(pillar=None, direction="neutral")
+    assert grade_case(case, signal) == (True, "")
 
 
 def test_grade_case_off_thesis_wrong_when_classified():
     case = _case(2, expected_pillar=None, expected_direction=None)
-    result = ClassificationResult(pillar_name="monetary_policy", confidence=0.4,
-                                  direction="neutral", rationale="x")
-    passed, reason = grade_case(case, result)
+    signal = _signal(pillar="monetary_policy", direction="neutral")
+    passed, reason = grade_case(case, signal)
     assert passed is False
     assert "off-thesis" in reason
 
 
 def test_grade_case_direction_checked_only_when_non_null():
     case = _case(3, expected_pillar="monetary_policy", expected_direction=None)
-    result = ClassificationResult(pillar_name="monetary_policy", confidence=0.5,
-                                  direction="positive", rationale="x")
-    assert grade_case(case, result) == (True, "")  # direction unchecked
+    signal = _signal(pillar="monetary_policy", direction="positive")
+    assert grade_case(case, signal) == (True, "")  # direction unchecked
 
 
 def test_grade_case_direction_mismatch_fails():
     case = _case(4, expected_pillar="monetary_policy", expected_direction="negative")
-    result = ClassificationResult(pillar_name="monetary_policy", confidence=0.5,
-                                  direction="positive", rationale="x")
-    passed, reason = grade_case(case, result)
+    signal = _signal(pillar="monetary_policy", direction="positive")
+    passed, reason = grade_case(case, signal)
     assert passed is False
     assert "direction" in reason
 
 
 def test_grade_case_parse_failure_prefix_fails():
     case = _case(5)
-    result = "parse_failure_marker"
-    passed, reason = grade_case(case, result)
+    signal = _signal(title="[parse_failure] bad schema", pillar=None, direction=None)
+    passed, reason = grade_case(case, signal)
     assert passed is False
     assert "parse" in reason
 
 
 def test_run_eval_accuracy_math(monkeypatch, tmp_path, capsys):
     """run_eval calls classify_headline with the eval contract and prints accuracy."""
-    from signal_system import evals as evals_pkg
     from signal_system.evals import classifier_eval as ce
 
     cases = [_case(1), _case(2, expected_pillar=None, expected_direction=None)]
@@ -119,10 +126,8 @@ def test_run_eval_accuracy_math(monkeypatch, tmp_path, capsys):
         # Headline 2 is off-thesis → null pillar; headline 1 is monetary_policy.
         headline = kwargs["headline_dict"]["headline"]
         if "2" in headline:
-            return ClassificationResult(pillar_name=None, confidence=0.4,
-                                        direction="neutral", rationale="off")
-        return ClassificationResult(pillar_name="monetary_policy", confidence=0.9,
-                                    direction="positive", rationale="ok")
+            return _signal(pillar=None, direction="neutral", title="[off_thesis] x")
+        return _signal(pillar="monetary_policy", direction="positive", title="[monetary_policy] x")
 
     captured_calls = []
 
@@ -141,7 +146,21 @@ def test_run_eval_accuracy_math(monkeypatch, tmp_path, capsys):
     assert all(c["llm_job"] == "eval_classifier" for c in captured_calls)
 
 
-def _fake_classify_all_pass(ticker, headline_dict, thesis, thesis_version_hash,
-                            system_prompt, weights=None, llm_job="news_classifier"):
-    return ClassificationResult(pillar_name="monetary_policy", confidence=0.9,
-                                direction="positive", rationale="ok")
+def test_run_eval_exception_does_not_crash(monkeypatch, capsys):
+    """A failing classify_headline call must not take down the readout (exit-0 contract)."""
+    from signal_system.evals import classifier_eval as ce
+
+    cases = [_case(1), _case(2, expected_pillar=None, expected_direction=None)]
+    monkeypatch.setattr(ce, "load_cases", lambda *a, **k: (cases, 1))
+    monkeypatch.setattr(ce, "load_eval_thesis", lambda *a, **k: (object(), "hash"))
+    monkeypatch.setattr(ce, "build_system_prompt", lambda thesis: "SYS")
+    monkeypatch.setattr(
+        ce, "classify_headline",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("rate limited")),
+    )
+
+    rc = run_eval(ce.EVAL_DIR)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Accuracy: 0/2" in out
+    assert "exception" in out

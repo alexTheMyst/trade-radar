@@ -15,7 +15,6 @@ from pathlib import Path
 
 from signal_system import config
 from signal_system.classifier.news_classifier import (
-    ClassificationResult,
     build_system_prompt,
     classify_headline,
 )
@@ -37,33 +36,37 @@ def load_cases(path: Path = GOLDEN_PATH) -> tuple[list[dict], int]:
     return data["cases"], int(data["set_version"])
 
 
-def grade_case(case: dict, result) -> tuple[bool, str]:
-    """Grade one case against a classification result.
+def grade_case(case: dict, signal: object) -> tuple[bool, str]:
+    """Grade one case against the Signal returned by classify_headline().
 
-    *result* may be a ClassificationResult (happy path) or a MONITORING
-    Signal with a [parse_failure] title. Returns (passed, reason).
+    *signal* is the Signal that classify_headline() actually returns on every
+    path: happy-path on/off-thesis signals carry ``pillar`` and ``direction``
+    (the values that matter for grading), while a parse failure produces a
+    ``[parse_failure]``-titled MONITORING Signal. Returns (passed, reason).
 
     A case passes when the pillar matches exactly (including null-for-off-
     thesis) AND the direction matches whenever the case specifies one.
     """
-    if not isinstance(result, ClassificationResult):
+    title = getattr(signal, "title", "") or ""
+    if title.startswith("[parse_failure]"):
         return False, "parse_failure (no structured output)"
 
     expected_pillar = case.get("expected_pillar")
     expected_direction = case.get("expected_direction")
 
-    if result.pillar_name != expected_pillar:
+    got_pillar = getattr(signal, "pillar", None)
+    got_direction = getattr(signal, "direction", None)
+
+    if got_pillar != expected_pillar:
         if expected_pillar is None:
-            return False, (
-                f"expected off-thesis (null pillar), got {result.pillar_name!r}"
-            )
+            return False, f"expected off-thesis (null pillar), got {got_pillar!r}"
         return False, (
-            f"pillar mismatch: expected {expected_pillar!r}, got {result.pillar_name!r}"
+            f"pillar mismatch: expected {expected_pillar!r}, got {got_pillar!r}"
         )
 
-    if expected_direction is not None and result.direction != expected_direction:
+    if expected_direction is not None and got_direction != expected_direction:
         return False, (
-            f"direction mismatch: expected {expected_direction!r}, got {result.direction!r}"
+            f"direction mismatch: expected {expected_direction!r}, got {got_direction!r}"
         )
     return True, ""
 
@@ -81,16 +84,19 @@ def run_eval(eval_dir: Path = EVAL_DIR) -> int:
 
     results: list[tuple[dict, bool, str]] = []
     for case in cases:
-        signal = classify_headline(
-            ticker=None,
-            headline_dict={"headline": case["headline"]},
-            thesis=thesis,
-            thesis_version_hash=version_hash,
-            system_prompt=system_prompt,
-            weights={},
-            llm_job="eval_classifier",
-        )
-        passed, reason = grade_case(case, signal)
+        try:
+            signal = classify_headline(
+                ticker=None,
+                headline_dict={"headline": case["headline"]},
+                thesis=thesis,
+                thesis_version_hash=version_hash,
+                system_prompt=system_prompt,
+                weights={},
+                llm_job="eval_classifier",
+            )
+            passed, reason = grade_case(case, signal)
+        except Exception as exc:  # a transient API error must not crash the readout
+            passed, reason = False, f"exception: {type(exc).__name__}: {exc}"
         results.append((case, passed, reason))
 
     passed_count = sum(1 for _, p, _ in results if p)

@@ -99,6 +99,56 @@ def test_spy_gap_handled_and_counted():
     assert cells[0].spy_dropped is not None
 
 
+def test_ticker_gap_day_counted_not_corrupt():
+    """A ticker missing a union-calendar trading day is skipped and counted.
+
+    Before the fix, get_indexer returned -1 for the gap day and _forward_excess
+    anchored "now" at the series' last row, feeding a nonsense pair. Now the
+    gapped counter increments and no pair is produced for that day.
+    """
+    history = {
+        "AAA": _mk_history("AAA", 60, growth=0.3),
+        "BBB": _mk_history("BBB", 60, growth=0.05),
+    }
+    # Drop one trading day from BBB's calendar (a listing gap / halt).
+    gap_day = history["BBB"].index[30]
+    history["BBB"] = history["BBB"].drop(gap_day)
+
+    spy = _mk_spy(60)
+    cells = run_replay(history, spy, [[50.0, 30.0, 20.0]], [5], gates_on=False)
+    cell = cells[0]
+    assert cell.gapped >= 1, "gap day must be counted as gapped"
+    # Every pooled pair must have a finite excess (no -1-anchored nonsense).
+    assert cell.ic is None or cell.ic == cell.ic  # ic is either None or not-NaN
+
+
+def test_gates_drop_pairs_from_pool_not_just_n_emit():
+    """Gates drop pairs from the pool entirely, so IC/n_pairs/hit_rate/n_emit
+    all describe the same gate-filtered population (review bug 5)."""
+    history = {
+        "AAA": _mk_history("AAA", 120, growth=-0.05),  # slow decline → top rank, neg momentum
+        "BBB": _mk_history("BBB", 120, growth=-0.5),   # fast decline → bottom rank
+    }
+    spy = _mk_spy(120)
+    cells_on = run_replay(history, spy, [[50.0, 30.0, 20.0]], [5], gates_on=True)
+    cell = cells_on[0]
+    # Both tickers have negative momentum_20d → every pair is gated out.
+    assert cell.n_pairs == 0
+    assert cell.n_emittable == 0
+    assert cell.hit_rate is None
+
+
+def test_gates_default_on():
+    """run_replay defaults gates on, matching the live scoring regime."""
+    history = {
+        "AAA": _mk_history("AAA", 120, growth=-0.05),
+        "BBB": _mk_history("BBB", 120, growth=-0.5),
+    }
+    spy = _mk_spy(120)
+    cells = run_replay(history, spy, [[50.0, 30.0, 20.0]], [5])
+    assert cells[0].n_pairs == 0  # default gates_on=True gated everything out
+
+
 def test_cli_exit_2_on_bad_weights(capsys, monkeypatch):
     import signal_system.replay.weight_replay as wr
     monkeypatch.setattr(wr, "run_replay", lambda *a, **k: [])

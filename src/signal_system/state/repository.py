@@ -1034,9 +1034,10 @@ def count_unacted_delivered_older_than(
 def list_signals_for_review() -> list[dict]:
     """Return routable signals with price snapshots for the review report.
 
-    Agents discovery_agent/news_classifier, routing DELIVERED/SUPPRESSED,
-    signal_price_snapshot NOT NULL (excludes legacy DAILY_CLOSE rows by
-    construction since they carry no snapshot). Excludes MONITORING corpus.
+    Agents discovery_agent/news_classifier/exit_sentinel, routing
+    DELIVERED/SUPPRESSED, signal_price_snapshot NOT NULL (excludes legacy
+    DAILY_CLOSE rows by construction since they carry no snapshot). Excludes
+    MONITORING corpus.
     """
     conn = _connect()
     try:

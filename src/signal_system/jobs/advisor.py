@@ -19,7 +19,11 @@ from signal_system.advisor.advisor_agent import (
 )
 from signal_system.classifier.news_classifier import NEWS_CLASSIFIER_AGENT
 from signal_system.advisor.rationale import generate_rationale
-from signal_system.advisor.verdict_engine import NEWS_LOOKBACK_DAYS, compute_verdict
+from signal_system.advisor.verdict_engine import (
+    NEWS_LOOKBACK_DAYS,
+    WASH_SALE_WINDOW_DAYS,
+    compute_verdict,
+)
 from signal_system.data.holdings import EmptyHoldingsError, require_non_empty_holdings
 from signal_system.data.thesis_loader import load_thesis
 from signal_system.data.yahoo_client import fetch_history
@@ -165,7 +169,8 @@ def advise_ticker(ticker: str) -> None:
     net = compute_news_net(news_sigs)
     t_break = has_thesis_break(news_sigs)
 
-    recent_sales = repository.get_recent_trades(ticker, since=since, side="sell")
+    since_sales = datetime.now(_ET).date() - timedelta(days=WASH_SALE_WINDOW_DAYS)
+    recent_sales = repository.get_recent_trades(ticker, since=since_sales, side="sell")
     result = compute_verdict(
         price=price, sma50=sma50, sma200=sma200, news_net=net,
         close_high_20d=close_high_20d, close_low_20d=close_low_20d,

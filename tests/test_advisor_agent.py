@@ -258,3 +258,29 @@ def test_wash_sale_window_not_on_demoted_extended_hold(tmp_path, monkeypatch):
     assert fcx[0]["verdict"] == "HOLD"
     assert "extended" in fcx[0]["flags"]
     assert "wash_sale_window" not in fcx[0]["flags"]
+
+
+def test_wash_sale_window_lookup_uses_30_day_window(tmp_path, monkeypatch):
+    """The sales lookup must query a 30-day window, not the 14-day news window."""
+    from datetime import timedelta
+    from signal_system.advisor.verdict_engine import WASH_SALE_WINDOW_DAYS
+
+    captured_since: list = []
+
+    def record_sales(ticker, since):
+        captured_since.append(since)
+        return [{"side": "sell", "ticker": ticker}]
+
+    _run(
+        holdings=[_FCX],
+        history_map={"FCX": _make_df(250)},
+        quotes={"FCX": 148.0},
+        news_map={"FCX": [(1.0, 0.5)]},
+        candidates=[],
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        get_recent_sales=record_sales,
+    )
+
+    # today=2026-06-01, so the 30-day window opens 2026-05-02.
+    assert captured_since and captured_since[0] == date(2026, 6, 1) - timedelta(days=WASH_SALE_WINDOW_DAYS)

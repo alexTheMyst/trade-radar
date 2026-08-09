@@ -162,6 +162,20 @@ def test_build_signal_secondary_breaches_ride_in_body():
     assert signal.alert_id == expected_id
 
 
+def test_build_signal_timestamp_is_et_aware():
+    """Signal timestamps must be ET-aware — the DB date-prefix logic depends on it."""
+    triggers = {"drawdown_20d": 0.12, "day_drop_1d": 0.0, "below_cost": 0.0}
+    signal = build_signal(
+        ticker="AAPL",
+        triggers=triggers,
+        cost_basis=100.0,
+        date_iso="2026-06-01",
+        snapshot=88.0,
+    )
+    assert signal.timestamp.tzinfo is not None
+    assert signal.timestamp.utcoffset() is not None
+
+
 def test_dedupe_holdings_weighted_basis():
     holdings = [
         Holding(ticker="AAPL", shares=100, cost_basis=90.0, account="schwab_main"),
