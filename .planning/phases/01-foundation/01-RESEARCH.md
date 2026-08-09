@@ -499,7 +499,6 @@ signal = Signal(
 
 ## Open Questions (Flagged for Later Phases — NOT BLOCKING)
 
-- **Q1 (Phase 3):** Does `messages.parse()` support `temperature=0.0` with `output_format`? — News Classifier concern.
 - **Q2 (Phase 3):** Anthropic prompt caching minimum token threshold — empirical validation needed.
 - **Q3 (Phase 4):** Which Finnhub free-tier endpoints actually work for the 35/30/25/10 Discovery scoring formula.
 - **Q4 (Phase 2):** Best pattern for the Finnhub rate-limit token bucket (preemptive sleep vs tenacity reactive).

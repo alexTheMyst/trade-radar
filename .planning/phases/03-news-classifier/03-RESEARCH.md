@@ -47,7 +47,7 @@ Three design decisions dominate the phase:
 | ID | Description | Research Support |
 |----|-------------|------------------|
 | CLFY-01 | Fetch + sanitize + classify against pillars | §1 (existing surfaces), §4 (sanitization), §8 (module structure) |
-| CLFY-02 | "Tool-use API with typed schema; temperature=0; pinned model" | §2 (`messages.parse()` resolution + verified syntax) |
+| CLFY-02 | "Tool-use API with typed schema; pinned model" | §2 (`messages.parse()` resolution + verified syntax) |
 | CLFY-03 | Cached `thesis.yaml` system prompt | §2 (system-as-list-of-text-blocks pattern with `cache_control`) |
 | CLFY-04 | Parse-failure → MONITORING signal with raw_response | §6 (tenacity decorator + MONITORING insert path; flags Phase 1 schema gap) |
 | CLFY-05 | Emits `Signal` objects, never sends email | §8 (return type, no email_sender import) |
@@ -150,13 +150,12 @@ def parse(
     model: ModelParam,
     output_format: Optional[type[ResponseFormatT]] | Omit = omit,
     system: Union[str, Iterable[TextBlockParam]] | Omit = omit,
-    temperature: float | Omit = omit,
     tools: Iterable[ToolUnionParam] | Omit = omit,
     ...
 ) -> ParsedMessage[ResponseFormatT]
 ```
 
-`temperature` is a top-level parameter on the same `MessageCreateParamsBase` schema; orthogonal to `output_format`. **`temperature=0.0` is supported alongside `output_format`.** `[VERIFIED: anthropic 0.102.0 message_create_params.py:174–183]`. (Anthropic notes: "even with temperature 0.0, results will not be fully deterministic" — acceptable for our IC-comparability needs as long as we stamp `model_version` and `thesis_version_hash`.)
+`output_format` is a top-level parameter on the `MessageCreateParamsBase` schema; determinism comes from the pinned model ID plus `model_version`/`thesis_version_hash` stamps on every signal row for IC comparability.
 
 ### `system=` with `cache_control`
 
@@ -237,7 +236,6 @@ def _classify_one_call(headline_text: str, system_prompt: str) -> tuple[Classifi
     response = _get_client().messages.parse(
         model=config.ANTHROPIC_MODEL,
         max_tokens=512,
-        temperature=0.0,
         system=[
             {
                 "type": "text",
@@ -726,7 +724,7 @@ This is a cheap, additive design — Phase 6 doesn't have to rebuild it.
 |--------|----------|-----------|-------------------|-------------|
 | CLFY-01 | Sanitize headline (control chars stripped, ≤500 chars, `<headline>` wrap) | unit | `uv run pytest -k test_sanitize_headline_strips_control_chars -x` | ❌ Wave 0 |
 | CLFY-01 | `<headline>` delimiter present in user message sent to API | unit (with mocked client) | `uv run pytest -k test_sanitize_wraps_in_delimiters -x` | ❌ Wave 0 |
-| CLFY-02 | API call uses `temperature=0`, pinned `ANTHROPIC_MODEL` | unit (mock + assert call kwargs) | `uv run pytest -k test_classify_uses_temperature_zero -x` | ❌ Wave 0 |
+| CLFY-02 | API call uses pinned `ANTHROPIC_MODEL`, omits temperature | unit (mock + assert call kwargs) | `uv run pytest -k test_classify_omits_temperature -x` | ❌ Wave 0 |
 | CLFY-02 | API call uses `output_format=ClassificationResult` | unit (mock + assert call kwargs) | `uv run pytest -k test_classify_passes_output_format -x` | ❌ Wave 0 |
 | CLFY-03 | `system=` is list with `cache_control={"type":"ephemeral"}` | unit (mock + assert system kwarg shape) | `uv run pytest -k test_system_includes_cache_control -x` | ❌ Wave 0 |
 | CLFY-04 | `pydantic.ValidationError` after retry → MONITORING signal returned | unit (mock raises ValidationError twice) | `uv run pytest -k test_parse_failure_emits_monitoring -x` | ❌ Wave 0 |
@@ -851,7 +849,6 @@ This is a cheap, additive design — Phase 6 doesn't have to rebuild it.
 **Confidence breakdown:**
 - Anthropic SDK API surface (parse, system, cache_control, usage): HIGH — direct source inspection of installed `anthropic==0.102.0`
 - Parse-failure exception type (`pydantic.ValidationError`): HIGH — traced through `parse_text` → `TypeAdapter.validate_json`
-- `temperature=0` compatibility with `output_format`: HIGH — both are top-level kwargs on the same params schema
 - Cache minimum token threshold: LOW — `[ASSUMED]` per protocol; no live docs reachable from harness
 - Phase 1/2 contract surfaces: HIGH — read directly from source
 - Confidence-band thresholds (0.85 / 0.60): LOW — design guesses, flagged for operator confirmation

@@ -72,7 +72,6 @@ def generate_rationale(
         response = _get_client().messages.parse(
             model=config.ANTHROPIC_MODEL,
             max_tokens=256,
-            temperature=0.0,
             system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": user_content}],
             output_format=_RationaleOutput,
