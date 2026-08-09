@@ -170,6 +170,65 @@ def test_wash_sale_caution_not_added_when_at_profit():
     assert "wash_sale_caution" not in result.flags
 
 
+# --- Overlay 4: wash-sale window on repurchase ---
+
+def test_wash_sale_window_flag_on_buy_with_recent_loss_sale():
+    """A BUY (held add-to or new buy) after a recent loss-sale flags the window."""
+    result = compute_verdict(
+        price=110.0, sma50=100.0, sma200=90.0, news_net=_BULL_NEWS,
+        close_high_20d=120.0, close_low_20d=85.0,
+        cost_basis=90.0, held=True, thesis_break=False,
+        recent_loss_sale=True,
+    )
+    assert result.verdict == "BUY"
+    assert "wash_sale_window" in result.flags
+
+
+def test_wash_sale_window_not_added_when_no_recent_loss_sale():
+    result = compute_verdict(
+        price=110.0, sma50=100.0, sma200=90.0, news_net=_BULL_NEWS,
+        close_high_20d=120.0, close_low_20d=85.0,
+        cost_basis=90.0, held=True, thesis_break=False,
+    )
+    assert result.verdict == "BUY"
+    assert "wash_sale_window" not in result.flags
+
+
+def test_wash_sale_window_not_added_on_hold_or_sell():
+    """Only a BUY verdict gets the repurchase-window flag."""
+    result = compute_verdict(
+        price=110.0, sma50=100.0, sma200=90.0, news_net=0.0,
+        close_high_20d=120.0, close_low_20d=85.0,
+        cost_basis=90.0, held=True, thesis_break=False,
+        recent_loss_sale=True,
+    )
+    assert result.verdict == "HOLD"
+    assert "wash_sale_window" not in result.flags
+
+
+def test_wash_sale_window_new_buy_candidate():
+    """New-buy BUY verdict carries the flag too (repurchase side of the rule)."""
+    result = compute_verdict(
+        price=110.0, sma50=100.0, sma200=90.0, news_net=_BULL_NEWS,
+        close_high_20d=120.0, close_low_20d=85.0,
+        cost_basis=None, held=False, thesis_break=False,
+        recent_loss_sale=True,
+    )
+    assert result.verdict == "BUY"
+    assert "wash_sale_window" in result.flags
+
+
+def test_wash_sale_window_default_false_at_all_call_sites():
+    """Default recent_loss_sale=False pins existing call sites (no regression)."""
+    # Held SELL path unaffected by the new param.
+    result = compute_verdict(
+        price=70.0, sma50=90.0, sma200=100.0, news_net=0.0,
+        close_high_20d=95.0, close_low_20d=68.0,
+        cost_basis=95.0, held=True, thesis_break=False,
+    )
+    assert "wash_sale_window" not in result.flags
+
+
 # --- Not-held candidates ---
 
 _NHELD = dict(

@@ -82,6 +82,11 @@ def _render_digest(advice_rows: list[dict], shadow_mode: bool) -> str:
     return "\n".join(lines)
 
 
+def _recent_loss_sales(ticker: str, since) -> list[dict]:
+    """Wrap the wash-sale ledger lookup for the advisor's repurchase-window check."""
+    return repository.get_recent_trades(ticker, since=since, side="sell")
+
+
 def run() -> None:
     """Entry point for scheduled advisor job (heartbeat-wrapped)."""
     run_id = repository.insert_run("advisor")
@@ -104,6 +109,7 @@ def run() -> None:
                 thesis_version_hash=thesis_version_hash,
                 run_id=run_id,
                 shadow_mode=config.ADVISOR_SHADOW_MODE,
+                get_recent_sales=_recent_loss_sales,
             )
 
             for row in advice_rows:
@@ -159,11 +165,13 @@ def advise_ticker(ticker: str) -> None:
     net = compute_news_net(news_sigs)
     t_break = has_thesis_break(news_sigs)
 
+    recent_sales = repository.get_recent_trades(ticker, since=since, side="sell")
     result = compute_verdict(
         price=price, sma50=sma50, sma200=sma200, news_net=net,
         close_high_20d=close_high_20d, close_low_20d=close_low_20d,
         cost_basis=holding.cost_basis if holding else None,
         held=held, thesis_break=t_break,
+        recent_loss_sale=bool(recent_sales),
     )
 
     thesis_text = _thesis_text(thesis)

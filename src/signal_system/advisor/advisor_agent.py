@@ -90,11 +90,17 @@ def produce_advice(
     run_id: str,
     shadow_mode: bool = True,
     today: date | None = None,
+    get_recent_sales: Callable[[str, date], list[dict]] | None = None,
 ) -> list[dict]:
     """Produce advice rows for all holdings and top new-buy candidates.
 
     Never raises -- degrades per-ticker. An unexpected error on one ticker
     produces a NO_DATA row so the rest of the run continues.
+
+    get_recent_sales(ticker, since) returns logged sell trades for the
+    wash-sale repurchase window; None disables the wash_sale_window overlay
+    (test seams and default behavior). A logged sell in ANY account within
+    the window flags BUY verdicts.
     """
     now = datetime.now(_ET)
     if today is None:
@@ -103,6 +109,14 @@ def produce_advice(
     since_news = today - timedelta(days=NEWS_LOOKBACK_DAYS)
     held_tickers: set[str] = {h.ticker for h in holdings}
     advice_rows: list[dict] = []
+
+    def _recent_loss_sale(ticker: str, held: bool) -> bool:
+        if get_recent_sales is None:
+            return False
+        sales = get_recent_sales(ticker, since_news)
+        # A logged in-window sale is conservative evidence: the ledger lacks the
+        # original basis, so any recent sell could make a repurchase a wash sale.
+        return bool(sales)
 
     # --- Held positions ---
     held_ticker_list = list(dict.fromkeys(h.ticker for h in holdings))  # preserve order, dedupe
@@ -139,6 +153,7 @@ def produce_advice(
                 price=price, sma50=sma50, sma200=sma200, news_net=net,
                 close_high_20d=close_high_20d, close_low_20d=close_low_20d,
                 cost_basis=holding.cost_basis, held=True, thesis_break=t_break,
+                recent_loss_sale=_recent_loss_sale(ticker, held=True),
             )
 
             rationale_text, rationale_source = generate_rationale(
@@ -206,6 +221,7 @@ def produce_advice(
                 price=price, sma50=sma50, sma200=sma200, news_net=net,
                 close_high_20d=close_high_20d, close_low_20d=close_low_20d,
                 cost_basis=None, held=False, thesis_break=False,
+                recent_loss_sale=_recent_loss_sale(ticker, held=False),
             )
             if result.verdict != "BUY":
                 continue

@@ -17,6 +17,14 @@ from signal_system.models import Signal
 
 DB_PATH = Path(__file__).parents[3] / "state" / "signals.db"
 
+# Mirrors the wash_sale.account CHECK literals — single source for validation.
+WASH_SALE_ACCOUNTS: tuple[str, ...] = (
+    "schwab_main",
+    "schwab_secondary",
+    "roth_ira",
+    "hsa",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class OutcomeBackfillCandidate:
@@ -164,6 +172,12 @@ def init_db() -> None:
                 created_at TEXT NOT NULL
             )
         """)
+
+        # Wash-sale ledger: `side` (buy/sell) and per-share trade price.
+        # cost_basis is reused as the per-share trade price — the table's
+        # original column name is retained to keep the schema migration simple;
+        # it is documented as price-per-share, not total cost.
+        _ensure_column(cursor, "wash_sale", "side", "TEXT")
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS llm_calls (
@@ -878,6 +892,91 @@ def update_signal_acted(
             ),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def insert_wash_sale_trade(
+    *,
+    ticker: str,
+    account: str,
+    trade_date: date,
+    side: str,
+    quantity: float,
+    price: float,
+    notes: str | None = None,
+) -> None:
+    """Log one executed trade to the wash-sale ledger.
+
+    *price* is the per-share trade price, stored in the legacy `cost_basis`
+    column (documented at the schema: that column is reused as price-per-share,
+    not total cost). *side* is 'buy' or 'sell'. *account* must be one of
+    WASH_SALE_ACCOUNTS — a friendly ValueError beats a raw IntegrityError, but
+    the CHECK constraint remains the backstop.
+    """
+    if side not in ("buy", "sell"):
+        raise ValueError(f"wash_sale side must be 'buy' or 'sell', got {side!r}")
+    if account not in WASH_SALE_ACCOUNTS:
+        raise ValueError(
+            f"wash_sale account must be one of {WASH_SALE_ACCOUNTS}, got {account!r}"
+        )
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO wash_sale
+                (ticker, account, trade_date, quantity, cost_basis, notes, side, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                ticker.upper(),
+                account,
+                trade_date.isoformat(),
+                quantity,
+                price,
+                notes,
+                side,
+                datetime.now(ZoneInfo("America/New_York")).isoformat(),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_recent_trades(
+    ticker: str,
+    *,
+    since: date,
+    side: str | None = None,
+) -> list[dict]:
+    """Return logged trades for *ticker* on or after *since*.
+
+    Deliberately NO account filter — the IRS wash-sale rule applies across all
+    accounts held by the same taxpayer, so a loss realized in one Schwab
+    account disallows a repurchase in another. The operator's ledger must see
+    the cross-account picture or the whole table is worthless.
+
+    Rows are returned oldest-first with keys ticker/account/trade_date/
+    quantity/price/notes/side.
+    """
+    query = """
+        SELECT ticker, account, trade_date, quantity, cost_basis AS price, notes, side
+        FROM wash_sale
+        WHERE ticker = ? AND trade_date >= ?
+    """
+    params: list = [ticker.upper(), since.isoformat()]
+    if side is not None:
+        query += " AND side = ?"
+        params.append(side)
+    query += " ORDER BY trade_date ASC"
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        columns = [col[0] for col in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
     finally:
         conn.close()
 

@@ -229,11 +229,121 @@ def _parse_replay_weights(argv: list[str]) -> int:
     return 0
 
 
+def _parse_log_trade(argv: list[str]) -> int:
+    """Parse and execute the log-trade operator command.
+
+    `log-trade <TICKER> --buy|--sell --account <literal> --qty N --price P
+    [--date YYYY-MM-DD] [--note "..."]`. Default date is ET today. Exits 2 on
+    any validation failure with the account literal list. On --sell, warns if
+    a buy in any account occurred within the prior 30 days (potential wash
+    sale if sold at a loss).
+    """
+    if not argv:
+        print("Usage: python -m signal_system log-trade <TICKER> --buy|--sell "
+              "--account <literal> --qty N --price P [--date YYYY-MM-DD] [--note \"...\"]")
+        sys.exit(2)
+
+    ticker = argv[0].upper()
+    side: str | None = None
+    account: str | None = None
+    qty: float | None = None
+    price: float | None = None
+    trade_date = datetime.now(_ET).date()
+    notes: str | None = None
+
+    i = 1
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--buy":
+            side = "buy"
+        elif arg == "--sell":
+            side = "sell"
+        elif arg == "--account":
+            if i + 1 >= len(argv):
+                print("--account requires a value")
+                sys.exit(2)
+            account = argv[i + 1]
+            i += 1
+        elif arg == "--qty":
+            if i + 1 >= len(argv):
+                print("--qty requires a value")
+                sys.exit(2)
+            try:
+                qty = float(argv[i + 1])
+            except ValueError:
+                print(f"Invalid --qty value: {argv[i + 1]!r}")
+                sys.exit(2)
+            i += 1
+        elif arg == "--price":
+            if i + 1 >= len(argv):
+                print("--price requires a value")
+                sys.exit(2)
+            try:
+                price = float(argv[i + 1])
+            except ValueError:
+                print(f"Invalid --price value: {argv[i + 1]!r}")
+                sys.exit(2)
+            i += 1
+        elif arg == "--date":
+            if i + 1 >= len(argv):
+                print("--date requires a value (YYYY-MM-DD)")
+                sys.exit(2)
+            try:
+                trade_date = datetime.strptime(argv[i + 1], "%Y-%m-%d").date()
+            except ValueError:
+                print(f"Invalid --date value: {argv[i + 1]!r} (expected YYYY-MM-DD)")
+                sys.exit(2)
+            i += 1
+        elif arg == "--note":
+            if i + 1 >= len(argv):
+                print("--note requires a value")
+                sys.exit(2)
+            notes = argv[i + 1]
+            i += 1
+        else:
+            print(f"Unknown log-trade argument: {arg!r}")
+            sys.exit(2)
+        i += 1
+
+    if side is None:
+        print("Must specify either --buy or --sell")
+        sys.exit(2)
+    if account is None or account not in repository.WASH_SALE_ACCOUNTS:
+        print(f"--account must be one of: {', '.join(repository.WASH_SALE_ACCOUNTS)}")
+        sys.exit(2)
+    if qty is None or price is None:
+        print("--qty and --price are required")
+        sys.exit(2)
+
+    repository.insert_wash_sale_trade(
+        ticker=ticker,
+        account=account,
+        trade_date=trade_date,
+        side=side,
+        quantity=qty,
+        price=price,
+        notes=notes,
+    )
+
+    print(f"Logged {side.upper()} {ticker} {qty:g} @ {price:g} ({account}) on {trade_date.isoformat()}")
+    if side == "sell":
+        since = trade_date - timedelta(days=30)
+        recent_buys = repository.get_recent_trades(ticker, since=since, side="buy")
+        if recent_buys:
+            print(
+                f"WARNING: {len(recent_buys)} buy(s) for {ticker} in the prior 30 days "
+                f"(any account) — potential wash sale if sold at a loss. "
+                "Review IRS rule 26 USC 1091 before acting."
+            )
+    return 0
+
+
 if __name__ == "__main__":
     repository.init_db()
     if len(sys.argv) < 2:
         print("Usage: python -m signal_system <job>  |  advise <TICKER>  |  "
               "list-signals [--days N]  |  log-action <prefix> --acted|--passed  |  "
+              "log-trade <TICKER> --buy|--sell --account <lit> --qty N --price P  |  "
               "backfill-benchmark  |  replay-weights [--days N] [--weights A/B/C] [--horizons H1,H2] [--gates on|off]")
         print(f"Available jobs: {list(JOBS)}")
         sys.exit(2)
@@ -251,6 +361,8 @@ if __name__ == "__main__":
         _cmd_build_universe(sys.argv[2:])
     elif cmd == "log-action":
         _parse_log_action(sys.argv[2:])
+    elif cmd == "log-trade":
+        _parse_log_trade(sys.argv[2:])
     elif cmd == "backfill-benchmark":
         written = backfill_benchmark()
         print(f"backfill-benchmark complete: {written} SPY benchmark rows written")

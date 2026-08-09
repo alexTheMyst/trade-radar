@@ -29,7 +29,8 @@ _FCX = Holding(ticker="FCX", shares=40, cost_basis=38.10, account="schwab_main")
 
 
 def _run(
-    holdings, history_map, quotes, news_map, candidates, monkeypatch, tmp_path
+    holdings, history_map, quotes, news_map, candidates, monkeypatch, tmp_path,
+    get_recent_sales=None,
 ) -> list[dict]:
     from signal_system.state import repository
     from signal_system.advisor import advisor_agent
@@ -56,6 +57,7 @@ def _run(
         run_id="run-001",
         shadow_mode=True,
         today=date(2026, 6, 1),
+        get_recent_sales=get_recent_sales,
     )
 
 
@@ -188,3 +190,71 @@ def test_factors_json_is_valid_json(tmp_path, monkeypatch):
     assert "price" in parsed
     assert "sma50" in parsed
     assert "sma200" in parsed
+
+
+def test_wash_sale_window_flagged_on_buy_with_recent_sale(tmp_path, monkeypatch):
+    """A BUY verdict with a recent logged sell carries wash_sale_window."""
+    rows = _run(
+        holdings=[_FCX],
+        history_map={"FCX": _make_df(250)},
+        quotes={"FCX": 148.0},
+        news_map={"FCX": [(1.0, 0.5)]},  # bullish news → (bullish,bullish) → BUY
+        candidates=[],
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        get_recent_sales=lambda t, since: [{"side": "sell", "ticker": t}],
+    )
+    fcx = [r for r in rows if r["ticker"] == "FCX" and r["verdict"] == "BUY"]
+    assert fcx and "wash_sale_window" in fcx[0]["flags"]
+
+
+def test_wash_sale_window_absent_by_default(tmp_path, monkeypatch):
+    """Default get_recent_sales=None means no wash_sale_window flag anywhere."""
+    rows = _run(
+        holdings=[_FCX],
+        history_map={"FCX": _make_df(250)},
+        quotes={"FCX": 110.0},
+        news_map={},
+        candidates=[],
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+    )
+    fcx = [r for r in rows if r["ticker"] == "FCX"]
+    assert fcx
+    assert "wash_sale_window" not in fcx[0]["flags"]
+
+
+def test_wash_sale_window_new_buy_candidate(tmp_path, monkeypatch):
+    """The repurchase-window flag also fires on a new-buy BUY candidate."""
+    rows = _run(
+        holdings=[],
+        history_map={"NVDA": _make_df(250, base_price=100.0)},
+        quotes={"NVDA": 150.0},
+        news_map={},
+        candidates=[{"ticker": "NVDA", "score": 0.9}],
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        get_recent_sales=lambda t, since: [{"side": "sell", "ticker": t}],
+    )
+    buy = [r for r in rows if r["ticker"] == "NVDA" and r["verdict"] == "BUY"]
+    assert buy and "wash_sale_window" in buy[0]["flags"]
+
+
+def test_wash_sale_window_not_on_demoted_extended_hold(tmp_path, monkeypatch):
+    """A demoted HOLD (extended) must NOT get the wash_sale_window flag."""
+    rows = _run(
+        holdings=[_FCX],
+        # price near the top of the 20d range → extended → BUY demotes to HOLD
+        history_map={"FCX": _make_df(250, base_price=100.0)},
+        quotes={"FCX": 149.5},
+        news_map={"FCX": [(1.0, 0.5)]},  # bullish news → matrix BUY, then extended→HOLD
+        candidates=[],
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        get_recent_sales=lambda t, since: [{"side": "sell", "ticker": t}],
+    )
+    fcx = [r for r in rows if r["ticker"] == "FCX"]
+    assert fcx
+    assert fcx[0]["verdict"] == "HOLD"
+    assert "extended" in fcx[0]["flags"]
+    assert "wash_sale_window" not in fcx[0]["flags"]
