@@ -17,6 +17,10 @@ from signal_system.jobs.weekly_synthesis import run as run_weekly_synthesis
 from signal_system.jobs.backup import run as run_backup
 from signal_system.jobs.sentinel import run as run_sentinel
 from signal_system.data.universe_builder import apply_merged_universe, diff_universe
+from signal_system.replay.weight_replay import (
+    parse_weights,
+    run_replay_cli,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -155,11 +159,82 @@ def _parse_log_action(argv: list[str]) -> int:
     return 0
 
 
+def _parse_replay_weights(argv: list[str]) -> int:
+    """Parse replay-weights args and run the offline weight replay.
+
+    No heartbeat, no runs row, no DB access — this is analysis tooling.
+    """
+    days = 180
+    weight_specs: list[str] = []
+    horizons: list[int] = [5, 20]
+    gates_on = False
+
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--days":
+            if i + 1 >= len(argv):
+                print("--days requires a value")
+                sys.exit(2)
+            try:
+                days = int(argv[i + 1])
+            except ValueError:
+                print(f"Invalid --days value: {argv[i + 1]!r}")
+                sys.exit(2)
+            i += 2
+        elif arg == "--weights":
+            if i + 1 >= len(argv):
+                print("--weights requires a value (e.g. 50/30/20)")
+                sys.exit(2)
+            try:
+                parse_weights(argv[i + 1])
+            except ValueError as exc:
+                print(f"Invalid --weights: {exc}")
+                sys.exit(2)
+            weight_specs.append(argv[i + 1])
+            i += 2
+        elif arg == "--horizons":
+            if i + 1 >= len(argv):
+                print("--horizons requires a comma-separated list (e.g. 5,20)")
+                sys.exit(2)
+            try:
+                horizons = [int(h) for h in argv[i + 1].split(",")]
+            except ValueError:
+                print(f"Invalid --horizons value: {argv[i + 1]!r}")
+                sys.exit(2)
+            i += 2
+        elif arg == "--gates":
+            if i + 1 >= len(argv):
+                print("--gates requires on or off")
+                sys.exit(2)
+            value = argv[i + 1].lower()
+            if value not in ("on", "off"):
+                print(f"--gates must be 'on' or 'off', got {argv[i + 1]!r}")
+                sys.exit(2)
+            gates_on = value == "on"
+            i += 2
+        else:
+            print(f"Unknown replay-weights argument: {arg!r}")
+            sys.exit(2)
+
+    if not weight_specs:
+        weight_specs = ["50/30/20"]
+
+    run_replay_cli(
+        days=days,
+        weight_specs=weight_specs,
+        horizons=horizons,
+        gates_on=gates_on,
+    )
+    return 0
+
+
 if __name__ == "__main__":
     repository.init_db()
     if len(sys.argv) < 2:
         print("Usage: python -m signal_system <job>  |  advise <TICKER>  |  "
-              "list-signals [--days N]  |  log-action <prefix> --acted|--passed  |  backfill-benchmark")
+              "list-signals [--days N]  |  log-action <prefix> --acted|--passed  |  "
+              "backfill-benchmark  |  replay-weights [--days N] [--weights A/B/C] [--horizons H1,H2] [--gates on|off]")
         print(f"Available jobs: {list(JOBS)}")
         sys.exit(2)
 
@@ -179,6 +254,8 @@ if __name__ == "__main__":
     elif cmd == "backfill-benchmark":
         written = backfill_benchmark()
         print(f"backfill-benchmark complete: {written} SPY benchmark rows written")
+    elif cmd == "replay-weights":
+        _parse_replay_weights(sys.argv[2:])
     elif cmd in JOBS:
         JOBS[cmd]()
     else:

@@ -331,3 +331,100 @@ def test_exit_sentinel_positive_direction_does_not_flip(db):
 
     result = report.compute_report()
     assert result.per_agent["exit_sentinel"].mean_signed_excess_30d == pytest.approx(0.0)
+
+
+def test_calibration_bucket_boundary_assignment(db):
+    """Scores land in the correct calibration buckets (>= lower, < upper)."""
+    conn = sqlite3.connect(db)
+    _spy(conn, "2026-01-05", 100.0)
+    _spy(conn, "2026-02-04", 110.0)
+    # 0.60 -> [0.60,0.70); 0.79 -> [0.70,0.80); 0.85 -> [0.85,1.00]
+    for i, score in enumerate([0.60, 0.79, 0.85]):
+        _insert_signal(conn, alert_id=f"cal{i}", agent="news_classifier", severity="INFORMATIONAL",
+                       routing_status="DELIVERED", ticker=f"T{i}", timestamp=datetime(2026, 1, 5, 9, 0, tzinfo=timezone.utc),
+                       score=score, snapshot=100.0, outcome_30d=110.0, direction="positive")
+    conn.commit()
+    conn.close()
+
+    result = report.compute_report()
+    cal = result.per_agent["news_classifier"].calibration
+    assert cal["[0.60,0.70)"]["n"] == 1
+    assert cal["[0.70,0.80)"]["n"] == 1
+    assert cal["[0.85,1.00]"]["n"] == 1
+    assert cal["[0.80,0.85)"]["n"] == 0
+
+
+def test_calibration_out_of_range_counted(db):
+    """Amplifier-delivered sub-0.60 confidences count as out_of_range, not lost."""
+    conn = sqlite3.connect(db)
+    _spy(conn, "2026-01-05", 100.0)
+    _spy(conn, "2026-02-04", 110.0)
+    _insert_signal(conn, alert_id="oor1", agent="news_classifier", severity="INFORMATIONAL",
+                   routing_status="DELIVERED", ticker="T1", timestamp=datetime(2026, 1, 5, 9, 0, tzinfo=timezone.utc),
+                   score=0.45, snapshot=100.0, outcome_30d=110.0, direction="positive")
+    conn.commit()
+    conn.close()
+
+    result = report.compute_report()
+    assert result.per_agent["news_classifier"].calibration_out_of_range == 1
+
+
+def test_calibration_agent_isolation(db):
+    """Discovery rows never enter news calibration buckets."""
+    conn = sqlite3.connect(db)
+    _spy(conn, "2026-01-05", 100.0)
+    _spy(conn, "2026-02-04", 110.0)
+    _insert_signal(conn, alert_id="disc1", agent="discovery_agent", severity="INFORMATIONAL",
+                   routing_status="DELIVERED", ticker="T1", timestamp=datetime(2026, 1, 5, 9, 0, tzinfo=timezone.utc),
+                   score=75.0, snapshot=100.0, outcome_30d=110.0)
+    conn.commit()
+    conn.close()
+
+    result = report.compute_report()
+    assert result.per_agent["news_classifier"].calibration_out_of_range == 0
+    assert all(b["n"] == 0 for b in result.per_agent["news_classifier"].calibration.values())
+
+
+def test_calibration_miscalibration_flag_n_gating(db):
+    """MISCALIBRATION flags only when both buckets have n >= 10."""
+    conn = sqlite3.connect(db)
+    _spy(conn, "2026-01-05", 100.0)
+    _spy(conn, "2026-02-04", 110.0)
+    # Top bucket: 10 rows, 5 winners (excess > 0). With snapshot 100 and SPY
+    # +10%, outcome 121 → raw +21% → excess +11% (a hit); outcome 110 → excess 0.
+    for i in range(10):
+        outcome = 121.0 if i < 5 else 110.0
+        _insert_signal(conn, alert_id=f"top{i}", agent="news_classifier", severity="INFORMATIONAL",
+                       routing_status="DELIVERED", ticker=f"T{i}", timestamp=datetime(2026, 1, 5, 9, 0, tzinfo=timezone.utc),
+                       score=0.90, snapshot=100.0, outcome_30d=outcome, direction="positive")
+    for i in range(10):
+        _insert_signal(conn, alert_id=f"low{i}", agent="news_classifier", severity="INFORMATIONAL",
+                       routing_status="DELIVERED", ticker=f"U{i}", timestamp=datetime(2026, 1, 5, 9, 0, tzinfo=timezone.utc),
+                       score=0.65, snapshot=100.0, outcome_30d=121.0, direction="positive")
+    conn.commit()
+    conn.close()
+
+    result = report.compute_report()
+    top = result.per_agent["news_classifier"].calibration["[0.85,1.00]"]
+    low = result.per_agent["news_classifier"].calibration["[0.60,0.70)"]
+    assert top["hit_rate"] == pytest.approx(0.5)
+    assert low["hit_rate"] == pytest.approx(1.0)
+    assert any("MISCALIBRATION" in f for f in result.calibration_flags)
+
+
+def test_calibration_no_flag_when_n_below_threshold(db):
+    """Top bucket hit rate below a lower bucket but n < 10 → no flag."""
+    conn = sqlite3.connect(db)
+    _spy(conn, "2026-01-05", 100.0)
+    _spy(conn, "2026-02-04", 110.0)
+    _insert_signal(conn, alert_id="t1", agent="news_classifier", severity="INFORMATIONAL",
+                   routing_status="DELIVERED", ticker="T1", timestamp=datetime(2026, 1, 5, 9, 0, tzinfo=timezone.utc),
+                   score=0.90, snapshot=100.0, outcome_30d=100.0, direction="positive")  # miss
+    _insert_signal(conn, alert_id="l1", agent="news_classifier", severity="INFORMATIONAL",
+                   routing_status="DELIVERED", ticker="U1", timestamp=datetime(2026, 1, 5, 9, 0, tzinfo=timezone.utc),
+                   score=0.65, snapshot=100.0, outcome_30d=110.0, direction="positive")  # hit
+    conn.commit()
+    conn.close()
+
+    result = report.compute_report()
+    assert result.calibration_flags == []

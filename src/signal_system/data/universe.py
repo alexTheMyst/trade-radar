@@ -186,6 +186,16 @@ def get_position_weights() -> dict[str, float]:
     return weights
 
 
+def get_all_tickers() -> list[str]:
+    """Return every non-K1 ticker in the universe, sorted.
+
+    ``sorted(get_position_weights())`` — includes core holdings and non-core
+    alike, no rotation partition. Used by offline tooling (weight replay) that
+    wants the full cross-section, not today's scan slice.
+    """
+    return sorted(get_position_weights())
+
+
 def get_industries() -> dict[str, str]:
     """Return {ticker: industry} for all non-K1 universe tickers with an industry column.
 
