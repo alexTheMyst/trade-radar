@@ -17,6 +17,7 @@ from signal_system.jobs.review_report import run as run_review_report
 from signal_system.jobs.weekly_synthesis import run as run_weekly_synthesis
 from signal_system.jobs.backup import run as run_backup
 from signal_system.jobs.sentinel import run as run_sentinel
+from signal_system.jobs.watchdog import run as run_watchdog
 from signal_system.data.universe_builder import apply_merged_universe, diff_universe
 from signal_system.replay.weight_replay import (
     parse_weights,
@@ -41,6 +42,7 @@ JOBS = {
     "weekly-synthesis": run_weekly_synthesis,
     "backup": run_backup,
     "sentinel": run_sentinel,
+    "watchdog": run_watchdog,
 }
 
 
