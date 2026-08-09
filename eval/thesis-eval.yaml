@@ -1,0 +1,45 @@
+# eval/thesis-eval.yaml — frozen thesis copy for classifier evaluation
+#
+# A frozen snapshot of thesis.example.yaml with review_due pushed to 2099-01-01
+# so the staleness gate never blocks an eval run. Accuracy must be comparable
+# ACROSS model changes, which requires a byte-stable thesis — never edit this
+# file while tuning the live thesis; regenerate it deliberately instead.
+#
+# Schema: review_due (ISO date), pillars (list of name/description/tickers/positive_signals/negative_signals)
+
+review_due: 2099-01-01
+
+pillars:
+  - name: monetary_policy
+    description: Federal Reserve policy and macro liquidity conditions
+    tickers: []
+    positive_signals:
+      - "rate cut announced or strongly signaled"
+      - "balance sheet expansion or QE restart"
+      - "dovish pivot language from Fed officials"
+    negative_signals:
+      - "rate hike or hawkish hold"
+      - "quantitative tightening acceleration"
+      - "inflation surprise upward"
+    holdings_exposed: [SPY, QQQ, VTI]
+    threshold_event: "unscheduled FOMC action or >50bp surprise vs expectations"
+
+  - name: ai_capex
+    description: Capital expenditure cycle in AI infrastructure — chips, data centers, hyperscalers
+    tickers:
+      - NVDA
+      - AMD
+      - MSFT
+      - GOOGL
+      - META
+      - AMZN
+    positive_signals:
+      - "hyperscaler capex guidance raised"
+      - "new datacenter build announced"
+      - "GPU demand exceeding supply signals"
+    negative_signals:
+      - "capex cuts or deferrals announced"
+      - "GPU oversupply or inventory build"
+      - "AI spending pullback guidance"
+    holdings_exposed: [NVDA, MSFT, GOOGL, AMZN, META]
+    threshold_event: "any single hyperscaler cutting forward capex guidance by >10%"

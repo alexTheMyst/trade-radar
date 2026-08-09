@@ -44,14 +44,21 @@ uv sync
 # Run a job manually (main entry point)
 python -m signal_system daily-close
 python -m signal_system news-morning
-python -m signal_system review-report      # per-agent quality readout
-python -m signal_system weekly-synthesis   # pillar candidates from the corpus
+python -m signal_system discovery
+python -m signal_system sentinel         # mechanical exit triggers on held positions
+python -m signal_system advisor
+python -m signal_system backup           # WAL-safe DB snapshot (Sunday 8 AM ET)
+python -m signal_system review-report    # per-agent quality readout
+python -m signal_system weekly-synthesis # pillar candidates from the corpus
 
 # Operator commands (never scheduled)
 python -m signal_system list-signals [--days N]
 python -m signal_system log-action <prefix> --acted|--passed [--note "..."]
+python -m signal_system log-trade <TICKER> --buy|--sell --account <lit> --qty N --price P [--date YYYY-MM-DD]
 python -m signal_system build-universe [--apply]   # dry-run by default
 python -m signal_system backfill-benchmark         # one-time SPY history bootstrap
+python -m signal_system replay-weights [--days 180] [--weights 50/30/20] [--horizons 5,20] [--gates on|off]
+python -m signal_system eval-classifier            # golden-set readout before any model change
 
 # Run tests
 uv run pytest
@@ -64,11 +71,20 @@ sqlite3 state/signals.db "SELECT * FROM runs ORDER BY started_at DESC LIMIT 5;"
 
 ## Architecture: Key Design Decisions
 
-**Heartbeat wraps every job.** The `heartbeat()` context manager (in `monitoring/heartbeat.py`) pings healthchecks.io `/start`, `/success`, and `/fail`. This is non-negotiable — silent failure is indistinguishable from "no alerts today."
+**Heartbeat wraps every job, with a per-job check.** The `heartbeat(job=...)`
+context manager (in `monitoring/heartbeat.py`) pings healthchecks.io
+`/start`, `/success`, and `/fail` on the job's OWN check
+(`HEALTHCHECKS_UUID_<JOB>`, falling back to the shared `HEALTHCHECKS_UUID`).
+Per-job checks prevent one job's success from masking another's death. This is
+non-negotiable — silent failure is indistinguishable from "no alerts today."
 
-**Alert Router enforces a daily budget.** All signals from both agents funnel through the router before delivery. Hard caps: 1 `ACTION_REQUIRED`, 3 `INFORMATIONAL` per day. Slot competition: if two agents compete for `ACTION_REQUIRED`, higher-scored wins, others demote to INFORMATIONAL and compete for INFO slots. **Cross-agent competition uses a unified 0-100 scale** (`competition_score` in `models.py`: News confidence × 100; Discovery raw) — display keeps each agent's native scale. **AR signals always demote before suppressing, even across runs** (an AR that loses today's AR slot still competes for an INFO slot). The router writes suppressed signals to SQLite tagged `SUPPRESSED`.
+**Alert Router enforces a daily budget.** All signals from the three agents (Discovery, News Classifier, Exit Sentinel) funnel through the router before delivery. Hard caps: 1 `ACTION_REQUIRED`, 3 `INFORMATIONAL` per day. Slot competition: if two agents compete for `ACTION_REQUIRED`, higher-scored wins, others demote to INFORMATIONAL and compete for INFO slots. **Cross-agent competition uses a unified 0-100 scale** (`competition_score` in `models.py`: News confidence × 100; Discovery and Sentinel raw) — display keeps each agent's native scale. **AR signals always demote before suppressing, even across runs** (an AR that loses today's AR slot still competes for an INFO slot). The router writes suppressed signals to SQLite tagged `SUPPRESSED`.
 
-**MONITORING corpus is the new-idea raw material.** Every off-thesis classification is persisted as a MONITORING signal with a title prefix — the paid-for LLM rationale is never discarded. Title-prefix taxonomy: `[off_thesis]` (no pillar matched), `[volume_cap]` (over newest-N cap), `[parse_failure]` (schema parse failed), plus reconciled losers (`demoted_from='reconciled'`). The **weekly-synthesis** job (Mondays 8:00 AM ET) reads this corpus to propose new pillar candidates, capped at 200 items, every title re-sanitized before prompt embedding.
+**MONITORING corpus is the new-idea raw material.** Every off-thesis classification is persisted as a MONITORING signal with a title prefix — the paid-for LLM rationale is never discarded. Title-prefix taxonomy: `[off_thesis]` (no pillar matched), `[volume_cap]` (over newest-N cap), `[parse_failure]` (schema parse failed), plus reconciled losers (`demoted_from='reconciled'`) and sentinel cooldowns (`[cooldown]`). The **weekly-synthesis** job (Mondays 8:00 AM ET) reads this corpus to propose new pillar candidates, capped at 200 items, every title re-sanitized before prompt embedding.
+
+**Exit Sentinel is the Mechanical third signal type.** `jobs/sentinel.py` (weekdays 5:00 PM ET) evaluates held positions from `holdings.csv` against three mechanical triggers — drawdown from the 20-day high, one-day drop, below-cost — and routes one signal per ticker. Severity is rule-determined (AR iff drawdown ≥15% or day-drop ≥8%; the weight amplifier is deliberately unused). A 5-trading-day cooldown demotes repeat triggers to `[cooldown]` MONITORING unless the new trigger escalates to AR. **Measurement semantics: a sentinel hit means the price FELL after the alert** — the review report sign-flips excess for `direction="negative"`, exactly like a News Classifier negative call.
+
+**Weekly backup is WAL-safe.** `backup` (Sundays 8:00 AM ET) snapshots `state/signals.db` via `VACUUM INTO` to `state/backups/signals-YYYYMMDD.db` (keeps newest 8) and fails loudly if the snapshot is empty while the live DB has rows. Restore: stop tasks → copy backup over `state/signals.db` → delete stale `-wal`/`-shm` → re-enable.
 
 **No-signal days are explicit.** The daily digest email is always sent, even with zero alerts. "Scanned N tickers, 0 alerts" text is required — silence with confirmation, not silence with ambiguity.
 
@@ -93,7 +109,7 @@ On Windows, secrets can also live in Windows Credential Manager; `.env` is the f
 - **Finnhub free tier gaps:** `^GSPC`, `^VIX`, insider sentiment, and `/scan/technical-indicator` may be paid-only. Validate before writing code that depends on them. If they're unavailable, adjust the scoring formula — don't silently skip.
 - **Timezone:** Always use `zoneinfo.ZoneInfo("America/New_York")` for market-hour comparisons. On Windows, add `tzdata` package if you hit `ZoneInfoNotFoundError`.
 - **Prompt injection:** Headlines from Finnhub get embedded in Claude prompts. Strip control characters, cap at ~500 chars per headline, use `<headline>...</headline>` delimiters.
-- **Wash sale tracking:** The `wash_sale` table must include an `account` column from day one — wash sale rules apply across 4 accounts (main Schwab, secondary Schwab, Roth IRA, HSA). Retrofitting this is painful.
+- **Wash sale tracking:** The `wash_sale` ledger tracks every executed trade via `log-trade` (side column = buy/sell; the legacy `cost_basis` column holds the per-share price). Lookups are deliberately **cross-account** — the IRS rule spans all 4 accounts. The advisor flags `wash_sale_caution` on SELL at a loss and `wash_sale_window` on a BUY after a recent logged sell. The ledger is only as good as the operator's logging discipline: log all trades from day one.
 - **K-1 exclusion:** Filter USO, UNG, DBC, GSG, and commodity futures ETFs from the discovery universe at the universe-builder level, not at alert time. A hardcoded `K1_DENYLIST` in `universe.py` backstops this regardless of the CSV `k1_etf` flag.
 
 ## What This System Explicitly Does NOT Do

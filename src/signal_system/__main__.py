@@ -21,6 +21,7 @@ from signal_system.replay.weight_replay import (
     parse_weights,
     run_replay_cli,
 )
+from signal_system.evals.classifier_eval import run_eval as run_classifier_eval
 
 logging.basicConfig(
     level=logging.INFO,
@@ -368,6 +369,8 @@ if __name__ == "__main__":
         print(f"backfill-benchmark complete: {written} SPY benchmark rows written")
     elif cmd == "replay-weights":
         _parse_replay_weights(sys.argv[2:])
+    elif cmd == "eval-classifier":
+        run_classifier_eval()
     elif cmd in JOBS:
         JOBS[cmd]()
     else:

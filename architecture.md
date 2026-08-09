@@ -9,22 +9,33 @@
 | Job | Cadence | Time (ET) | Purpose |
 |---|---|---|---|
 | `news-morning` | Weekdays | 9:00 AM | News classifier — pre-open scan (company + general/macro feeds) |
-| `news-midday` | Weekdays | 12:00 PM | News classifier — midday update |
 | `daily-close` | Weekdays | 4:15 PM | SPY benchmark close |
+| `discovery` | Weekdays | 4:15 PM | Discovery Agent — cross-sectional momentum scan |
+| `advisor` | Weekdays | after close | Advisor Agent — held-position verdicts (shadow mode) |
+| `sentinel` | Weekdays | 5:00 PM | Exit Sentinel — mechanical exit triggers on held positions |
+| `outcome-backfill` | Weekdays | 5:30 PM | Fill 30d/90d outcome prices for measurement |
+| `review-report` | 1st Saturday monthly | 9:00 AM | Per-agent quality readout (excess/IC/hit-rate/calibration) |
 | `weekly-synthesis` | Mondays | 8:00 AM | Distill the MONITORING corpus into pillar candidates |
+| `backup` | Sundays | 8:00 AM | WAL-safe snapshot of state/signals.db (keep newest 8) |
 
 Operator owns uptime (machine awake, power settings, post-Windows-Update reboots).
 
 ### 2. Heartbeat — Healthchecks.io
 
-Every scheduled job pings three endpoints:
+Every scheduled job pings three endpoints on its **own** per-job check:
 - `/{uuid}/start` — at job start
 - `/{uuid}` — on success
 - `/{uuid}/fail` — on caught exception
 
-If a ping is missed within the configured grace window, Healthchecks.io emails/SMS the operator. Silent failure is the failure mode we are explicitly defending against.
+Each job resolves its UUID from `HEALTHCHECKS_UUID_<JOB>` (e.g.
+`HEALTHCHECKS_UUID_SENTINEL`), falling back to the shared `HEALTHCHECKS_UUID`
+when the per-job var is unset. The per-job check prevents one job's success
+from masking another's death — the exact silent-failure mode this system
+exists to eliminate. Rollout order matters: create the check in
+healthchecks.io FIRST, then set the env var (a ping to a nonexistent check
+404s silently).
 
-Minimum two checks for MVP: `daily-close` and `news-morning`. Add others as agents come online.
+If a ping is missed within the configured grace window, Healthchecks.io emails/SMS the operator. Silent failure is the failure mode we are explicitly defending against.
 
 ### 3. State Manager — SQLite
 
@@ -32,8 +43,13 @@ Single file at `./state/signals.db`. Tables:
 
 - `signals` — every alert ever emitted (see `signal-log-schema.md`)
 - `runs` — every scheduled job invocation, with start/end timestamps and outcome
-- `wash_sale` — sold positions and 30-day window expiry, **per account** (see open items)
-- `universe` — current discovery universe with last-scored timestamp
+- `wash_sale` — trade ledger with a `side` column (buy/sell); the legacy
+  `cost_basis` column holds the per-share trade price. Lookups are deliberately
+  cross-account (the IRS wash-sale rule spans all 4 Schwab accounts).
+- `benchmark_prices` — SPY daily closes for excess-return measurement
+- `llm_calls` — per-call token telemetry
+- `ticker_meta` — sector/industry cache
+- `synthesis_reports` — weekly-synthesis run records
 
 **Why SQLite over JSON:** atomic writes, transactional updates, queryable from CLI. Concurrent writes from overlapping jobs are a non-issue with SQLite's WAL mode.
 
@@ -105,6 +121,32 @@ HEADLINES:
 **Key design decision:** taxonomy is **not hardcoded**. The classifier reads `thesis.yaml` at runtime. When the operator updates the thesis, the classifier adapts without code changes.
 
 **General/macro news feed:** `news-morning` also ingests the Finnhub general news feed (probed 2026-08-07 — **available on the free tier**, 100 items, current). General headlines are classified with `ticker=None` (rendered as `MACRO` in the digest, `_`-prefixed alert ids), capped at 20 independently of the 50-company cap, with a shared article-level dedup set so the same story never alerts twice across feeds. Off-thesis classifications from both feeds are persisted as `[off_thesis]` MONITORING signals — the paid-for rationale becomes the weekly-synthesis corpus.
+
+#### 4c. Exit Sentinel
+
+**Cadence:** Weekdays at 5:00 PM ET (after discovery).
+
+**Inputs:** `holdings.csv` (positions across the 4 Schwab accounts) + yfinance candle history.
+
+**Triggers (raw magnitudes vs thresholds):**
+- `drawdown_20d` — drawdown of current close from the 20-day high (INFO ≥ 10%, AR ≥ 15%)
+- `day_drop_1d` — one-day close-to-close drop (INFO ≥ 5%, AR ≥ 8%)
+- `below_cost` — current close below the position's (share-weighted, cross-account) cost basis (INFO ≥ 5%)
+
+**Severity is rule-determined, not score-driven** — the weight amplifier is
+deliberately unused. A drawdown is a drawdown regardless of position weight.
+Scores are 100 × min(1, magnitude/severe_norm), so sentinel competes on the
+same 0–100 scale as Discovery.
+
+**Cooldown:** a prior routable sentinel row for the same ticker within 5
+trading days demotes the repeat to a `[cooldown]` MONITORING row — UNLESS the
+new trigger escalates to ACTION_REQUIRED with no prior severe row (escalation
+always gets through). One signal per ticker per run; secondary breaches ride
+in the body so a crash day doesn't triple-bill the shared INFO budget.
+
+**Measurement:** sentinel hit = price fell after the alert. The review report
+sign-flips excess for `direction="negative"`, so a sentinel "hit" reads as a
+positive hit rate exactly like a News Classifier negative call.
 
 ### 5. Alert Router
 

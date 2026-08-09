@@ -95,7 +95,37 @@ after the first scheduled run.
 - `log-action` / `list-signals` are manual operator commands, never scheduled:
   - `uv run python -m signal_system list-signals [--days N]` — recent DELIVERED signals
   - `uv run python -m signal_system log-action <prefix> --acted|--passed [--note "..."]` — record your acted/passed decision (the unreviewed nag in news-morning clears when acted is set)
+  - `uv run python -m signal_system log-trade <TICKER> --buy|--sell --account <literal> --qty N --price P [--date YYYY-MM-DD]` — log every executed trade to the wash-sale ledger; `--sell` warns if a buy occurred in any account within 30 days
 - Healthchecks should remain the source of truth for run success/failure; use non-email alerts there so the operator can distinguish "job ran" from "digest arrived."
+
+## Classifier eval runbook (before ANY model change)
+
+`eval-classifier` runs the golden-set (20 pinned headlines against a frozen
+thesis) through the live classifier. It is a readout, not a gate — exit 0
+always, ~20 API calls (~$0.01), logged to `llm_calls` as `eval_classifier`.
+
+```text
+uv run python -m signal_system eval-classifier
+```
+
+Run it BEFORE and AFTER any `ANTHROPIC_MODEL` change and compare the
+`Accuracy: X/20 — <model> — set v1` lines. Same set_version = comparable
+numbers; a changed set (eval/golden_headlines.yaml) is not comparable to the
+old one. The frozen thesis at `eval/thesis-eval.yaml` (review_due 2099) keeps
+the staleness gate from blocking eval runs.
+
+## Weight replay before quarterly reviews
+
+`replay-weights` replays the live cross-sectional Discovery formula offline
+across candidate weight sets and horizons — no heartbeat, no DB writes.
+
+```text
+uv run python -m signal_system replay-weights --days 180 --weights 50/30/20 --weights 40/40/20 --horizons 5,20 --gates on
+```
+
+Read the caveat lines: survivorship bias (today's universe), pooled-pairs IC
+across days. Use it BEFORE each quarterly weight review, never as the sole
+decision input.
 
 ## Finnhub general-news feed probe (2026-08-07)
 
