@@ -18,7 +18,7 @@ from signal_system.state import repository
 
 _ET = ZoneInfo("America/New_York")
 
-_AGENTS: tuple[str, ...] = ("discovery_agent", "news_classifier")
+_AGENTS: tuple[str, ...] = ("discovery_agent", "news_classifier", "exit_sentinel")
 _NEWS_NEUTRAL: str = "neutral"
 _IC_MIN_N: int = 10
 
@@ -81,7 +81,10 @@ def _raw_return(snapshot: float, outcome: float) -> float:
 
 
 def _signed_excess(excess: float, direction: str | None, agent: str) -> float:
-    if agent == "news_classifier" and direction == "negative":
+    # Direction-aware sign: for negative-directional agents a price FALL is a
+    # hit. exit_sentinel is always direction="negative" — a sentinel hit means
+    # the price fell after the alert.
+    if agent in ("news_classifier", "exit_sentinel") and direction == "negative":
         return -excess
     return excess
 

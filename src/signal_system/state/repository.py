@@ -948,7 +948,7 @@ def list_signals_for_review() -> list[dict]:
                    routing_status, signal_price_snapshot, outcome_price_30d,
                    outcome_price_90d, direction, acted, weight_version
             FROM signals
-            WHERE agent IN ('discovery_agent', 'news_classifier')
+            WHERE agent IN ('discovery_agent', 'news_classifier', 'exit_sentinel')
               AND routing_status IN ('DELIVERED', 'SUPPRESSED')
               AND signal_price_snapshot IS NOT NULL
               AND signal_price_snapshot > 0
@@ -1009,6 +1009,34 @@ def backup_database(dest_dir: Path) -> tuple[Path, int]:
         backup_conn.close()
 
     return target, count
+
+
+def get_signal_meta_by_alert_ids(alert_ids: list[str]) -> list[dict]:
+    """Return routing-relevant metadata for the given alert_ids.
+
+    Returns ``{alert_id, severity, demoted_from, routing_status, timestamp}``
+    for each existing alert_id, excluding MONITORING rows (they bypass the
+    router and must not suppress a fresh trigger). Empty input returns [].
+    """
+    if not alert_ids:
+        return []
+    placeholders = ", ".join("?" for _ in alert_ids)
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT alert_id, severity, demoted_from, routing_status, timestamp
+            FROM signals
+            WHERE alert_id IN ({placeholders})
+              AND routing_status != 'MONITORING'
+            """,
+            alert_ids,
+        )
+        columns = [col[0] for col in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    finally:
+        conn.close()
 
 
 def get_llm_call_summary() -> list[dict]:

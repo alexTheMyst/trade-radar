@@ -268,3 +268,66 @@ def test_llm_no_warning_when_cached(db):
 
     result = report.compute_report()
     assert result.cache_warning is False
+
+
+def test_exit_sentinel_sign_flip_negative_direction(db):
+    """A sentinel hit = price fell: negative direction flips excess sign."""
+    conn = sqlite3.connect(db)
+    _spy(conn, "2026-01-05", 100.0)
+    _spy(conn, "2026-02-04", 110.0)
+
+    # snapshot 100, 30d 90 → raw -10%, spy +10% → excess -20% → signed +20% (a hit)
+    _insert_signal(conn, alert_id="s1", agent="exit_sentinel", severity="INFORMATIONAL",
+                   routing_status="DELIVERED", ticker="AAA", timestamp=datetime(2026, 1, 5, 17, 0, tzinfo=timezone.utc),
+                   score=80.0, snapshot=100.0, outcome_30d=90.0, direction="negative")
+    conn.commit()
+    conn.close()
+
+    result = report.compute_report()
+    sentinel = result.per_agent["exit_sentinel"]
+    assert sentinel.n_30d == 1
+    assert sentinel.mean_signed_excess_30d == pytest.approx(0.20)
+    assert sentinel.hit_rate_30d == pytest.approx(1.0)
+
+
+def test_exit_sentinel_per_agent_separation(db):
+    """Sentinel rows count only under exit_sentinel, not news/discovery."""
+    conn = sqlite3.connect(db)
+    _spy(conn, "2026-01-05", 100.0)
+    _spy(conn, "2026-02-04", 110.0)
+
+    _insert_signal(conn, alert_id="s1", agent="exit_sentinel", severity="INFORMATIONAL",
+                   routing_status="DELIVERED", ticker="AAA", timestamp=datetime(2026, 1, 5, 17, 0, tzinfo=timezone.utc),
+                   score=80.0, snapshot=100.0, outcome_30d=90.0, direction="negative")
+    _insert_signal(conn, alert_id="d1", agent="discovery_agent", severity="INFORMATIONAL",
+                   routing_status="DELIVERED", ticker="BBB", timestamp=datetime(2026, 1, 5, 9, 0, tzinfo=timezone.utc),
+                   score=80.0, snapshot=100.0, outcome_30d=110.0)
+    _insert_signal(conn, alert_id="n1", agent="news_classifier", severity="INFORMATIONAL",
+                   routing_status="DELIVERED", ticker="CCC", timestamp=datetime(2026, 1, 5, 9, 0, tzinfo=timezone.utc),
+                   score=0.8, snapshot=100.0, outcome_30d=110.0, direction="positive")
+    conn.commit()
+    conn.close()
+
+    result = report.compute_report()
+    assert result.per_agent["exit_sentinel"].n_30d == 1
+    assert result.per_agent["discovery_agent"].n_30d == 1
+    assert result.per_agent["news_classifier"].n_30d == 1
+    # The sentinel's -20% excess (signed +20%) must not leak into discovery/news.
+    assert result.per_agent["discovery_agent"].mean_signed_excess_30d == pytest.approx(0.0)
+    assert result.per_agent["news_classifier"].mean_signed_excess_30d == pytest.approx(0.0)
+
+
+def test_exit_sentinel_positive_direction_does_not_flip(db):
+    """A positive-direction sentinel row (defensive guard) is not sign-flipped."""
+    conn = sqlite3.connect(db)
+    _spy(conn, "2026-01-05", 100.0)
+    _spy(conn, "2026-02-04", 110.0)
+
+    _insert_signal(conn, alert_id="s2", agent="exit_sentinel", severity="INFORMATIONAL",
+                   routing_status="DELIVERED", ticker="AAA", timestamp=datetime(2026, 1, 5, 17, 0, tzinfo=timezone.utc),
+                   score=80.0, snapshot=100.0, outcome_30d=110.0, direction="positive")
+    conn.commit()
+    conn.close()
+
+    result = report.compute_report()
+    assert result.per_agent["exit_sentinel"].mean_signed_excess_30d == pytest.approx(0.0)

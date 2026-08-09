@@ -185,6 +185,7 @@ _MONITORING_CATEGORY_LABELS: tuple[tuple[str, str], ...] = (
     ("parse_failure", "parse-fail"),
     ("volume_cap", "volume-cap"),
     ("reconciled", "reconciled"),
+    ("cooldown", "cooldown"),
 )
 
 
