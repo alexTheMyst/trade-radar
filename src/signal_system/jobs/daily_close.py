@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 def run() -> None:
     run_id = repository.insert_run("daily-close")
     try:
-        with heartbeat.heartbeat():
+        with heartbeat.heartbeat(job="daily-close"):
             spy_close = finnhub_client.fetch_spy_close()
 
             now_et = datetime.now(ZoneInfo("America/New_York"))

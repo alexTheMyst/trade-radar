@@ -22,7 +22,7 @@ def _make_df(n_rows: int = 250, base_price: float = 100.0) -> pd.DataFrame:
 
 
 @contextmanager
-def _noop_heartbeat():
+def _noop_heartbeat(*_a, **_k):
     yield
 
 

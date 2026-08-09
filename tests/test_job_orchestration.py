@@ -104,7 +104,7 @@ def _news_item(headline: str, dt: datetime) -> dict:
 
 
 @contextmanager
-def _noop_heartbeat():
+def _noop_heartbeat(*_a, **_k):
     yield
 
 

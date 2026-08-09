@@ -86,7 +86,7 @@ def run() -> None:
     """Entry point for scheduled advisor job (heartbeat-wrapped)."""
     run_id = repository.insert_run("advisor")
     try:
-        with heartbeat():
+        with heartbeat(job="advisor"):
             thesis, thesis_version_hash = load_thesis(config.THESIS_PATH)
             holdings = require_non_empty_holdings()
 

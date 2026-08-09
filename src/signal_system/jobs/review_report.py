@@ -99,7 +99,7 @@ def _render_report_text() -> str:
 def run() -> None:
     run_id = repository.insert_run("review-report")
     try:
-        with heartbeat():
+        with heartbeat(job="review-report"):
             text = _render_report_text()
             logger.info("review-report:\n%s", text)
             print(text)

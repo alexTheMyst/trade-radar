@@ -211,7 +211,7 @@ def run() -> None:
     """Scheduled outcome-backfill job (heartbeat-wrapped, writable to DB)."""
     run_id = repository.insert_run("outcome-backfill")
     try:
-        with heartbeat.heartbeat():
+        with heartbeat.heartbeat(job="outcome-backfill"):
             signals_result = backfill_due_outcomes()
             advice_result = backfill_advice_outcomes()
             logger.info(
