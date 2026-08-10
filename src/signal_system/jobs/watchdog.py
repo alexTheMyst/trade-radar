@@ -5,8 +5,9 @@ A scheduled job that stops emitting success rows — or emits only failures —
 was invisible: per-job healthchecks were unset, so every job pinged the shared
 check and one later success masked an earlier failure. The watchdog reads the
 `runs` table and flags any monitored job that is stale (no SUCCESS within its
-SLA) or whose most recent run failed. A dead job must be as loud as a bad
-alert.
+SLA) or whose most recent run failed — including a stuck `running` row left
+by a hard crash that never reached `update_run`. A dead job must be as loud
+as a bad alert.
 
 The watchdog wraps itself in `heartbeat(job="watchdog")` and writes its own
 `runs` row, so its own death is caught by its dedicated health check
@@ -34,7 +35,7 @@ _ET = ZoneInfo("America/New_York")
 EXPECTED_MAX_AGE_HOURS: dict[str, int | None] = {
     "daily-close": 30,  # weekdays 17:15 ET
     "news-morning": 30,  # weekdays 09:00 ET
-    "discovery": 30,  # weekdays after close
+    "discovery": 30,  # weekdays 10:30 ET
     "sentinel": 30,  # weekdays 17:00 ET
     "review-report": None,  # cadence TBD — skip until scheduled
     "weekly-synthesis": 200,  # Mondays 08:00 ET -> ~8 days tolerance
@@ -46,6 +47,12 @@ EXPECTED_MAX_AGE_HOURS: dict[str, int | None] = {
 # success keeps Monday green without a false alarm (the 30h SLA means "30 hours
 # of weekday runtime" for these jobs).
 WEEKDAY_JOBS = frozenset({"daily-close", "news-morning", "discovery", "sentinel"})
+
+# A most-recent run still 'running' older than this is a hard crash (power
+# loss, OOM, kill): insert_run() wrote 'running' but update_run() never ran.
+# Every job finishes well under 30 minutes (Task Scheduler ExecutionTimeLimit),
+# so 2h is far beyond any legitimately in-flight run at watchdog time.
+STUCK_RUNNING_MAX_AGE = timedelta(hours=2)
 
 
 def _weekend_hours_between(start: datetime, end: datetime) -> float:
@@ -75,15 +82,21 @@ def _humanize_age(age: timedelta) -> str:
     return f"{total_hours:.0f} hours ago"
 
 
+def _format_et(dt: datetime) -> str:
+    return dt.astimezone(_ET).strftime("%Y-%m-%d %H:%M ET")
+
+
 def check_jobs(now: datetime | None = None) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
     """Return (failing, stale) lists of (job, human-readable detail).
 
     Pure over repository state + EXPECTED_MAX_AGE_HOURS. *now* defaults to ET
     now. A job is:
-      - "failing" when its MOST RECENT run has status 'failed', even if an
-        older success keeps the age-based SLA green;
+      - "failing" when its MOST RECENT run has status 'failed', or has been
+        stuck 'running' longer than STUCK_RUNNING_MAX_AGE (a hard crash) —
+        even if an older success keeps the age-based SLA green;
       - "stale" when it has never succeeded, or when (now - last success,
-        minus weekend hours for WEEKDAY_JOBS) exceeds its SLA.
+        minus weekend hours for WEEKDAY_JOBS) exceeds its SLA. The stale
+        detail shows wall-clock age; only the threshold uses the adjusted age.
     Jobs mapped to None in EXPECTED_MAX_AGE_HOURS are skipped entirely.
     """
     effective_now = now or datetime.now(_ET)
@@ -103,20 +116,30 @@ def check_jobs(now: datetime | None = None) -> tuple[list[tuple[str, str]], list
         if last_success is None:
             stale.append((job, "never succeeded"))
         else:
-            age = effective_now - last_success
+            wall_age = effective_now - last_success
+            threshold_age = wall_age
             if job in WEEKDAY_JOBS:
-                age -= timedelta(
+                threshold_age -= timedelta(
                     hours=_weekend_hours_between(last_success, effective_now)
                 )
-            if age > timedelta(hours=max_age_hours):
+            if threshold_age > timedelta(hours=max_age_hours):
                 stale.append(
-                    (job, f"last success {_humanize_age(age)} (SLA {max_age_hours}h)")
+                    (job, f"last success {_humanize_age(wall_age)} (SLA {max_age_hours}h)")
                 )
 
         last_run = repository.get_latest_run(job)
-        if last_run and last_run["status"] == "failed":
-            when = last_run["started_at"].astimezone(_ET).strftime("%Y-%m-%d %H:%M ET")
-            failing.append((job, f"last run {when} (failed)"))
+        if last_run:
+            if last_run["status"] == "failed":
+                failing.append(
+                    (job, f"last run {_format_et(last_run['started_at'])} (failed)")
+                )
+            elif (
+                last_run["status"] == "running"
+                and effective_now - last_run["started_at"] > STUCK_RUNNING_MAX_AGE
+            ):
+                failing.append(
+                    (job, f"stuck running since {_format_et(last_run['started_at'])}")
+                )
 
     return failing, stale
 
@@ -128,7 +151,7 @@ def render_watchdog_alert(
     total = len(failing) + len(stale)
     lines = [f"⚠️ SIGNAL SYSTEM WATCHDOG — {total} job(s) need attention", ""]
     if failing:
-        lines.append("FAILING (most recent run failed):")
+        lines.append("FAILING (most recent run failed or never completed):")
         lines.extend(f"  • {job} — {detail}" for job, detail in failing)
         lines.append("")
     if stale:

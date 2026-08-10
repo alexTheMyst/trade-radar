@@ -174,6 +174,34 @@ def test_watchdog_flags_missed_monday_on_tuesday(db):
     assert "news-morning" in stale_jobs
     assert "daily-close" in stale_jobs
     assert failing == []
+    news_detail = dict(stale)["news-morning"]
+    assert "last success 4.0 days ago (SLA 30h)" in news_detail
+
+
+def test_watchdog_flags_stuck_running(db):
+    """A most-recent run stuck 'running' past the threshold is a hard crash."""
+    now = datetime(2026, 8, 12, 18, 0, tzinfo=_ET)
+    _seed_healthy(now, exclude={"news-morning"})
+    _insert_run("news-morning", now - timedelta(hours=4), "success")
+    _insert_run("news-morning", now - timedelta(hours=3), "running")
+
+    failing, stale = check_jobs(now=now)
+
+    assert any(job == "news-morning" and "stuck running" in detail for job, detail in failing)
+    assert not any(job == "news-morning" for job, _ in stale)
+
+
+def test_watchdog_ignores_recent_running(db):
+    """A 'running' row started within the threshold is legitimately in flight."""
+    now = datetime(2026, 8, 12, 18, 0, tzinfo=_ET)
+    _seed_healthy(now, exclude={"daily-close"})
+    _insert_run("daily-close", now - timedelta(hours=4), "success")
+    _insert_run("daily-close", now - timedelta(minutes=5), "running")
+
+    failing, stale = check_jobs(now=now)
+
+    assert failing == []
+    assert stale == []
 
 
 def test_render_watchdog_alert_format():
@@ -183,7 +211,7 @@ def test_render_watchdog_alert_format():
     )
 
     assert "⚠️ SIGNAL SYSTEM WATCHDOG — 2 job(s) need attention" in text
-    assert "FAILING (most recent run failed):" in text
+    assert "FAILING (most recent run failed or never completed):" in text
     assert "• news-morning — last run 2026-08-09 09:00 ET (failed)" in text
     assert "STALE (no success within SLA):" in text
     assert "• sentinel — last success 3 days ago (SLA 30h)" in text
