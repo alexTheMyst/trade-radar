@@ -25,6 +25,7 @@ Do not use relative paths. Task Scheduler often starts from `C:\Windows\System32
    - `discovery`: weekdays after market close in Eastern Time
    - `sentinel`: weekdays at 5:00 PM Eastern Time
    - `backup`: Sundays at 8:00 AM Eastern Time
+   - `watchdog`: weekdays at 9:30 AM and 6:00 PM Eastern Time (meta-monitor; see below)
    - If the machine is not set to Eastern Time, convert the trigger manually and note the intended ET mapping in the task description.
 2. **StartWhenAvailable**
    - Enable `StartWhenAvailable` so a missed run fires as soon as the machine is back.
@@ -60,6 +61,7 @@ quiet while you believe that job is covered.
    - `HEALTHCHECKS_UUID_REVIEW_REPORT` — 1st Saturday 9:00 AM ET monthly
    - `HEALTHCHECKS_UUID_WEEKLY_SYNTHESIS` — Mondays 8:00 AM ET
    - `HEALTHCHECKS_UUID_BACKUP` — Sundays 8:00 AM ET
+   - `HEALTHCHECKS_UUID_WATCHDOG` — weekdays 9:30 AM / 6:00 PM ET
 3. Verify per-job pings land on the right check: run the job manually once and
    confirm the matching check reports "success" in healthchecks.io while the
    others stay quiet.
@@ -86,6 +88,15 @@ after the first scheduled run.
 
 ## Job-specific notes
 
+- `watchdog` is the meta-monitor — the answer to "who watches the watchmen."
+  It reads the `runs` table and sends a single Telegram message when any
+  monitored job is stale (no success within its SLA) or failed. Weekdays only:
+  the two daily runs (9:30 AM, 6:00 PM ET) bookend the trading day and its
+  jobs. It is inert until scheduled; schedule it and set
+  `HEALTHCHECKS_UUID_WATCHDOG` (rollout order: create the check FIRST, then
+  set the env var). Its own `runs` row + dedicated check are the base case of
+  the recursion — never let watchdog fall back to the shared UUID. See
+  `ops/tasks/watchdog.xml`.
 - `news-morning` depends on at least one successful `daily-close` run already being in SQLite. Run `uv run python -m signal_system daily-close` manually before enabling the morning schedule on a fresh deployment.
 - `outcome-backfill` (overdue as of Aug 2026): daily at **5:30 PM ET weekdays** (30/90-day outcome prices for the review report).
 - `review-report`: **first Saturday 9:00 AM ET monthly** + on-demand before each quarterly review.

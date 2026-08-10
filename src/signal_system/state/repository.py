@@ -353,6 +353,64 @@ def get_latest_successful_run_date(job: str) -> date | None:
         conn.close()
 
 
+def get_latest_successful_run_datetime(job: str) -> datetime | None:
+    """Return the ET-aware datetime of the most recent status='success' run, or None."""
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT started_at
+            FROM runs
+            WHERE job = ? AND status = 'success'
+            ORDER BY started_at DESC
+            LIMIT 1
+            """,
+            (job,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return (
+            datetime.fromisoformat(row[0]).astimezone(ZoneInfo("America/New_York"))
+        )
+    finally:
+        conn.close()
+
+
+def get_latest_run(job: str) -> dict | None:
+    """Return the most recent run row for *job*, or None.
+
+    Returns ``{'started_at': datetime (ET-aware), 'status': str}``. Used by the
+    watchdog to flag a job whose most recent run failed even when an older
+    success keeps the age-based SLA green.
+    """
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT started_at, status
+            FROM runs
+            WHERE job = ?
+            ORDER BY started_at DESC
+            LIMIT 1
+            """,
+            (job,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return {
+            "started_at": datetime.fromisoformat(row[0]).astimezone(
+                ZoneInfo("America/New_York")
+            ),
+            "status": row[1],
+        }
+    finally:
+        conn.close()
+
+
 def insert_llm_call(
     *,
     job: str,

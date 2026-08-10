@@ -1,6 +1,8 @@
 .env
 /state/
 /ops/tasks/
+!/ops/tasks/
+!/ops/tasks/watchdog.xml
 *.db
 thesis.yaml
 src/signal_system/data/universe.csv
