@@ -12,6 +12,11 @@ Design rules (Plan 02):
     row under [A] instead of an import-time traceback.
   - Read-only: no runs row, no signals write, no healthcheck ping, and the
     database is opened with SQLite's read-only URI flag.
+  - Never prints a secret: the report is written to be pasted into issues, CI
+    logs and chat, so every interpolated exception goes through _safe_err().
+    finnhub-python carries the API key as a `token` query parameter, and
+    requests embeds the full URL in its exception messages — printing a raw
+    exception would leak the live key on any network blip.
 """
 from __future__ import annotations
 
@@ -20,13 +25,20 @@ import sqlite3
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Callable
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
 from signal_system.data import holdings, universe
 from signal_system.data.thesis_loader import ThesisStaleError, load_thesis
+from signal_system.redaction import REDACTED, install_redaction_filter, redact
 from signal_system.state import repository
+
+# Re-exported under the module's private name so existing call sites and tests
+# read naturally; the implementation lives in redaction.py because the jobs
+# need it too (tenacity's retry hook logs the same leaky URLs).
+_redact = redact
 
 PASS = "PASS"
 WARN = "WARN"
@@ -63,6 +75,14 @@ SCHEDULED_JOBS = (
 
 SKIP_MSG = "skipped — config unavailable (see [A])"
 
+def _safe_err(exc: BaseException) -> str:
+    """Render *exc* for the report with secrets removed and length bounded."""
+    text = _redact(f"{type(exc).__name__}: {exc}").strip()
+    if len(text) > 300:
+        text = text[:297] + "..."
+    return text
+
+
 _config_module = None
 _config_error: str | None = None
 
@@ -76,7 +96,7 @@ def _get_config():
 
             _config_module = cfg
         except Exception as exc:
-            _config_error = str(exc)
+            _config_error = _redact(str(exc))
     if _config_error is not None:
         raise RuntimeError(_config_error)
     return _config_module
@@ -193,13 +213,13 @@ def check_anthropic() -> Check:
     try:
         import anthropic
     except ImportError as exc:
-        return Check(FAIL, f"anthropic SDK unavailable: {exc}")
+        return Check(FAIL, f"anthropic SDK unavailable: {_safe_err(exc)}")
     try:
         usage = _probe_anthropic(model, cfg.ANTHROPIC_API_KEY)
     except anthropic.BadRequestError as exc:
-        return Check(FAIL, f"model {model!r} rejected params: {exc}")
+        return Check(FAIL, f"model {model!r} rejected params: {_safe_err(exc)}")
     except Exception as exc:
-        return Check(FAIL, f"Anthropic probe failed: {exc}")
+        return Check(FAIL, f"Anthropic probe failed: {_safe_err(exc)}")
     return Check(PASS, f"model {model!r} accepted ({_format_usage(usage)})")
 
 
@@ -209,19 +229,29 @@ def check_finnhub_core() -> Check:
         return Check(WARN, SKIP_MSG)
     today = datetime.now(_ET).date()
     parts: list[str] = []
+
     try:
         spy = fh.fetch_spy_close()
-        parts.append(f"spy_close={spy:.2f}")
     except Exception as exc:
-        return Check(FAIL, f"fetch_spy_close failed: {exc}")
-    quote = fh.fetch_quote("AAPL")
+        return Check(FAIL, f"fetch_spy_close failed: {_safe_err(exc)}")
+    parts.append(f"spy_close={spy:.2f}")
+
+    try:
+        quote = fh.fetch_quote("AAPL")
+    except Exception as exc:
+        return Check(FAIL, f"fetch_quote('AAPL') failed: {_safe_err(exc)}")
     if quote is None or quote.get("c") is None:
         return Check(FAIL, "fetch_quote('AAPL') returned no data (paid-gated or bad response)")
     parts.append(f"quote(AAPL)={quote['c']}")
-    news = fh.fetch_company_news("AAPL", today - timedelta(days=2), today)
+
+    try:
+        news = fh.fetch_company_news("AAPL", today - timedelta(days=2), today)
+    except Exception as exc:
+        return Check(FAIL, f"fetch_company_news('AAPL') failed: {_safe_err(exc)}")
     if not news:
         return Check(FAIL, "fetch_company_news('AAPL', -2d..today) returned [] (paid-gated?)")
     parts.append(f"company_news={len(news)} items")
+
     return Check(PASS, ", ".join(parts))
 
 
@@ -229,7 +259,10 @@ def check_general_news() -> Check:
     fh = _finnhub_or_none()
     if fh is None:
         return Check(WARN, SKIP_MSG)
-    news = fh.fetch_general_news("general")
+    try:
+        news = fh.fetch_general_news("general")
+    except Exception as exc:
+        return Check(FAIL, f"fetch_general_news failed: {_safe_err(exc)}")
     if not news:
         return Check(WARN, "general_news returned [] (free-tier gated?)")
     return Check(PASS, f"general_news={len(news)} items")
@@ -251,7 +284,10 @@ def check_paid_gated_probes() -> Check:
     fh = _finnhub_or_none()
     if fh is None:
         return Check(WARN, SKIP_MSG)
-    client = fh._get_client()
+    try:
+        client = fh._get_client()
+    except Exception as exc:
+        return Check(FAIL, f"finnhub client construction failed: {_safe_err(exc)}")
     today = datetime.now(_ET).date()
     yesterday = today - timedelta(days=1)
     results: list[str] = []
@@ -272,7 +308,7 @@ def check_paid_gated_probes() -> Check:
                 results.append(f"{name}: HTTP {exc.status_code}")
             continue
         except Exception as exc:
-            results.append(f"{name}: {exc}")
+            results.append(f"{name}: {_safe_err(exc)}")
             continue
         results.append(f"{name}: ok" if ok else f"{name}: no data")
     if all(result.endswith(": ok") for result in results):
@@ -292,7 +328,7 @@ def check_thesis() -> Check:
     except FileNotFoundError:
         return Check(FAIL, f"thesis.yaml missing at {path} — news-morning will refuse to run")
     except Exception as exc:
-        return Check(FAIL, f"thesis load failed: {exc}")
+        return Check(FAIL, f"thesis load failed: {_safe_err(exc)}")
     days_remaining = (thesis.review_due - datetime.now(_ET).date()).days
     if days_remaining < 14:
         return Check(
@@ -308,7 +344,7 @@ def check_holdings() -> Check:
     except holdings.EmptyHoldingsError as exc:
         return Check(FAIL, str(exc))
     except Exception as exc:
-        return Check(FAIL, f"holdings load failed: {exc}")
+        return Check(FAIL, f"holdings load failed: {_safe_err(exc)}")
     return Check(PASS, f"{len(rows)} positions loaded")
 
 
@@ -317,7 +353,12 @@ def check_drift() -> Check:
         rows = holdings.load_holdings()
     except Exception:
         return Check(WARN, "holdings unavailable — cannot measure coverage drift")
-    drift = holdings.holdings_universe_drift(holdings=rows)
+    try:
+        # NB: the keyword is `holdings=`, which shadows this module's `holdings`
+        # import at the call site. Passing positionally keeps the two distinct.
+        drift = holdings.holdings_universe_drift(rows)
+    except Exception as exc:
+        return Check(WARN, f"drift check unavailable: {_safe_err(exc)}")
     if not drift:
         return Check(PASS, "all held tickers are core-scanned")
     preview = ", ".join(drift[:10])
@@ -359,7 +400,7 @@ def check_db() -> Check:
         finally:
             conn.close()
     except Exception as exc:
-        return Check(FAIL, f"DB open failed: {exc}")
+        return Check(FAIL, f"DB open failed: {_safe_err(exc)}")
     if mode.lower() != "wal":
         return Check(FAIL, f"journal_mode={mode} (expected wal)")
     return Check(PASS, f"{count} signals, WAL on")
@@ -403,7 +444,9 @@ def check_jobs_liveness() -> Check:
     return Check(WARN if problems else PASS, "\n".join(lines))
 
 
-SECTIONS: tuple[tuple[str, str, list], ...] = (
+CheckFn = Callable[[], "Check"]
+
+SECTIONS: tuple[tuple[str, str, list[CheckFn]], ...] = (
     (
         "A",
         "Secrets & config",
@@ -441,9 +484,25 @@ def _fmt_status(status: str, color: bool) -> str:
     return f"{_STATUS_COLOR[status]}{status}{_RESET}"
 
 
+USAGE = "Usage: python -m signal_system preflight   (no arguments)"
+
+
 def run_preflight(argv: list[str] | None = None) -> int:
-    """Run every check, print the report, and return the worst exit code."""
+    """Run every check, print the report, and return the worst exit code.
+
+    *argv* is the argument list after the `preflight` command word. Preflight
+    takes no options; anything supplied is rejected rather than silently
+    ignored, so a typo'd flag cannot masquerade as a clean run.
+    """
+    if argv:
+        print(f"preflight takes no arguments; got: {' '.join(argv)}")
+        print(USAGE)
+        return EXIT_FAIL
     load_dotenv()
+    # .env is only loaded now, so the literal-value scrub in redact() has
+    # nothing to match until this point. Re-install after load_dotenv() so the
+    # Finnhub retry logging emitted by the checks below is covered.
+    install_redaction_filter()
     color = _use_color()
     counts = {PASS: 0, WARN: 0, FAIL: 0}
     print(f"SIGNAL SYSTEM PREFLIGHT — {datetime.now(_ET):%Y-%m-%d %H:%M ET}")
@@ -453,7 +512,7 @@ def run_preflight(argv: list[str] | None = None) -> int:
             try:
                 check = check_fn()
             except Exception as exc:
-                check = Check(FAIL, f"unhandled error: {exc}")
+                check = Check(FAIL, f"unhandled error: {_safe_err(exc)}")
             counts[check.status] += 1
             lines = check.message.splitlines() or [""]
             print(f"  {_fmt_status(check.status, color)}  {lines[0]}")

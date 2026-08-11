@@ -7,6 +7,7 @@ no test touches the network or the live state database.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import subprocess
 import sys
@@ -483,11 +484,230 @@ def test_preflight_readonly(db, monkeypatch):
     assert runs_after == runs_before
 
 
+# --- secret redaction --------------------------------------------------------
+
+# finnhub-python carries the API key as a `token` query parameter and requests
+# embeds the full URL in its exception messages, so an unredacted report line
+# leaks the live key on any network blip.
+_LEAKY_URL_ERROR = (
+    "HTTPSConnectionPool(host='finnhub.io', port=443): Max retries exceeded "
+    "with url: /api/v1/quote?token=SECRET_FINNHUB_KEY_abc123&symbol=SPY"
+)
+
+
+def test_redact_strips_token_query_param():
+    out = preflight._redact(_LEAKY_URL_ERROR)
+    assert "SECRET_FINNHUB_KEY_abc123" not in out
+    assert preflight.REDACTED in out
+    # Non-secret context is preserved so the message stays diagnosable.
+    assert "symbol=SPY" in out
+    assert "Max retries exceeded" in out
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "url?api_key=SECRET_FINNHUB_KEY_abc123",
+        "url?apiKey=SECRET_FINNHUB_KEY_abc123",
+        "url?access_token=SECRET_FINNHUB_KEY_abc123",
+        "url?secret=SECRET_FINNHUB_KEY_abc123",
+        "Authorization: Bearer SECRET_FINNHUB_KEY_abc123",
+    ],
+)
+def test_redact_covers_common_secret_shapes(raw):
+    assert "SECRET_FINNHUB_KEY_abc123" not in preflight._redact(raw)
+
+
+def test_redact_strips_literal_env_secret_value(monkeypatch):
+    monkeypatch.setenv("FINNHUB_API_KEY", "literal-key-value-1234")
+    out = preflight._redact("client failed for literal-key-value-1234 somewhere")
+    assert "literal-key-value-1234" not in out
+    assert preflight.REDACTED in out
+
+
+def test_redact_ignores_short_env_values(monkeypatch):
+    """Short secrets are too collision-prone to substring-match safely."""
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    assert preflight._redact("run 123 of 456") == "run 123 of 456"
+
+
+def test_safe_err_redacts_and_bounds_length():
+    out = preflight._safe_err(ConnectionError(_LEAKY_URL_ERROR))
+    assert "SECRET_FINNHUB_KEY_abc123" not in out
+    assert out.startswith("ConnectionError:")
+
+    long = preflight._safe_err(ValueError("x" * 500))
+    assert len(long) == 300
+    assert long.endswith("...")
+
+
+def test_check_finnhub_core_does_not_leak_token(monkeypatch):
+    monkeypatch.setattr(
+        finnhub_client,
+        "fetch_spy_close",
+        lambda: (_ for _ in ()).throw(ConnectionError(_LEAKY_URL_ERROR)),
+    )
+    check = preflight.check_finnhub_core()
+    assert check.status == preflight.FAIL
+    assert "SECRET_FINNHUB_KEY_abc123" not in check.message
+    assert preflight.REDACTED in check.message
+
+
+def test_check_paid_gated_probes_does_not_leak_token(monkeypatch):
+    class _FakeClient:
+        def quote(self, symbol):
+            raise ConnectionError(_LEAKY_URL_ERROR)
+
+        def stock_insider_sentiment(self, *a, **k):
+            return {"data": []}
+
+    monkeypatch.setattr(finnhub_client, "_get_client", lambda: _FakeClient())
+    check = preflight.check_paid_gated_probes()
+    assert check.status == preflight.WARN
+    assert "SECRET_FINNHUB_KEY_abc123" not in check.message
+
+
+def test_run_preflight_report_never_contains_secret(capsys, monkeypatch):
+    monkeypatch.setattr(
+        finnhub_client,
+        "fetch_spy_close",
+        lambda: (_ for _ in ()).throw(ConnectionError(_LEAKY_URL_ERROR)),
+    )
+    monkeypatch.setattr(preflight, "SECTIONS", _section(preflight.check_finnhub_core))
+    preflight.run_preflight()
+    assert "SECRET_FINNHUB_KEY_abc123" not in capsys.readouterr().out
+
+
+# --- never-raises contract ---------------------------------------------------
+
+
+def test_check_finnhub_core_quote_exception_is_fail_not_raise(monkeypatch):
+    monkeypatch.setattr(finnhub_client, "fetch_spy_close", lambda: 641.2)
+    monkeypatch.setattr(
+        finnhub_client,
+        "fetch_quote",
+        lambda t: (_ for _ in ()).throw(ConnectionError("network down")),
+    )
+    check = preflight.check_finnhub_core()
+    assert check.status == preflight.FAIL
+    assert "fetch_quote('AAPL') failed" in check.message
+
+
+def test_check_finnhub_core_news_exception_is_fail_not_raise(monkeypatch):
+    monkeypatch.setattr(finnhub_client, "fetch_spy_close", lambda: 641.2)
+    monkeypatch.setattr(finnhub_client, "fetch_quote", lambda t: {"c": 250.1})
+    monkeypatch.setattr(
+        finnhub_client,
+        "fetch_company_news",
+        lambda *a, **k: (_ for _ in ()).throw(TimeoutError("slow")),
+    )
+    check = preflight.check_finnhub_core()
+    assert check.status == preflight.FAIL
+    assert "fetch_company_news('AAPL') failed" in check.message
+
+
+def test_check_general_news_exception_is_fail_not_raise(monkeypatch):
+    monkeypatch.setattr(
+        finnhub_client,
+        "fetch_general_news",
+        lambda *a, **k: (_ for _ in ()).throw(ConnectionError("network down")),
+    )
+    check = preflight.check_general_news()
+    assert check.status == preflight.FAIL
+    assert "fetch_general_news failed" in check.message
+
+
+def test_check_paid_gated_probes_client_construction_failure_is_fail(monkeypatch):
+    monkeypatch.setattr(
+        finnhub_client,
+        "_get_client",
+        lambda: (_ for _ in ()).throw(RuntimeError("no api key")),
+    )
+    check = preflight.check_paid_gated_probes()
+    assert check.status == preflight.FAIL
+    assert "client construction failed" in check.message
+
+
+def test_check_drift_helper_failure_is_warn_not_raise(monkeypatch):
+    monkeypatch.setattr(holdings, "load_holdings", lambda *a, **k: [Holding("FCX", 40, 38.1, "schwab_main")])
+    monkeypatch.setattr(
+        holdings,
+        "holdings_universe_drift",
+        lambda *a, **k: (_ for _ in ()).throw(ValueError("universe.csv malformed")),
+    )
+    check = preflight.check_drift()
+    assert check.status == preflight.WARN
+    assert "drift check unavailable" in check.message
+
+
+# --- argument handling -------------------------------------------------------
+
+
+def test_run_preflight_rejects_unknown_args(capsys):
+    assert preflight.run_preflight(["--dry-run"]) == preflight.EXIT_FAIL
+    out = capsys.readouterr().out
+    assert "takes no arguments" in out
+    assert "--dry-run" in out
+    # Rejected before any check runs.
+    assert "SIGNAL SYSTEM PREFLIGHT" not in out
+
+
+def test_run_preflight_accepts_empty_argv(capsys, monkeypatch):
+    monkeypatch.setattr(
+        preflight, "SECTIONS", _section(lambda: preflight.Check(preflight.PASS, "a"))
+    )
+    assert preflight.run_preflight([]) == preflight.EXIT_OK
+    assert preflight.run_preflight(None) == preflight.EXIT_OK
+
+
 # --- CLI wiring --------------------------------------------------------------
 
 
+def test_main_module_imports_without_config(monkeypatch):
+    """__main__ must import with a broken .env — no argv-dependent gating.
+
+    The job imports live behind _load_jobs(); importing the module itself must
+    not touch config, whatever sys.argv happens to be in the importing process.
+    """
+    for name in preflight.REQUIRED_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(sys, "argv", ["pytest", "some-other-command"])
+    for mod in [m for m in list(sys.modules) if m.startswith("signal_system.__main__")]:
+        monkeypatch.delitem(sys.modules, mod, raising=False)
+
+    import importlib
+
+    main_mod = importlib.import_module("signal_system.__main__")
+    assert "preflight" not in main_mod.JOB_NAMES
+    assert "news-morning" in main_mod.JOB_NAMES
+    assert callable(main_mod._load_jobs)
+
+
+def test_job_names_stay_in_sync_with_loader():
+    """JOB_NAMES drives dispatch and usage text; drift would advertise a job
+    that cannot actually run (or hide one that can)."""
+    from signal_system import __main__ as main_mod
+
+    assert tuple(main_mod._load_jobs()) == main_mod.JOB_NAMES
+
+
+def test_jobs_attribute_still_resolves():
+    """`__main__.JOBS` is read by several existing tests and stays supported."""
+    from signal_system import __main__ as main_mod
+
+    assert "news-morning" in main_mod.JOBS
+
+    with pytest.raises(AttributeError):
+        main_mod.NoSuchAttribute
+
+
 def test_cli_preflight_broken_env_no_traceback(tmp_path):
+    # Deliberately stripped of every secret so preflight faces a broken .env.
+    # PYTHONPATH is propagated when set so the test also works from a source
+    # checkout (uv run / editable install), not only from a site-packages one.
     env = {"PATH": "/usr/bin:/bin", "NO_COLOR": "1"}
+    if os.environ.get("PYTHONPATH"):
+        env["PYTHONPATH"] = os.environ["PYTHONPATH"]
     result = subprocess.run(
         [sys.executable, "-m", "signal_system", "preflight"],
         env=env,
