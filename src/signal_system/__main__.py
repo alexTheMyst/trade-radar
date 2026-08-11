@@ -5,25 +5,7 @@ from zoneinfo import ZoneInfo
 
 from signal_system.advisor.verdict_engine import WASH_SALE_WINDOW_DAYS
 from signal_system.state import repository
-from signal_system.jobs.daily_close import run as run_daily_close
-from signal_system.jobs.discovery import run as run_discovery
-from signal_system.jobs.news_morning import run as run_news_morning
-from signal_system.jobs.advisor import run as run_advisor, advise_ticker
-from signal_system.jobs.outcome_backfill import (
-    run as run_outcome_backfill,
-    backfill_benchmark,
-)
-from signal_system.jobs.review_report import run as run_review_report
-from signal_system.jobs.weekly_synthesis import run as run_weekly_synthesis
-from signal_system.jobs.backup import run as run_backup
-from signal_system.jobs.sentinel import run as run_sentinel
-from signal_system.jobs.watchdog import run as run_watchdog
 from signal_system.data.universe_builder import apply_merged_universe, diff_universe
-from signal_system.replay.weight_replay import (
-    parse_weights,
-    run_replay_cli,
-)
-from signal_system.evals.classifier_eval import run_eval as run_classifier_eval
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,18 +14,39 @@ logging.basicConfig(
 
 _ET = ZoneInfo("America/New_York")
 
-JOBS = {
-    "daily-close": run_daily_close,
-    "discovery": run_discovery,
-    "news-morning": run_news_morning,
-    "advisor": run_advisor,
-    "outcome-backfill": run_outcome_backfill,
-    "review-report": run_review_report,
-    "weekly-synthesis": run_weekly_synthesis,
-    "backup": run_backup,
-    "sentinel": run_sentinel,
-    "watchdog": run_watchdog,
-}
+# preflight must run even when .env is broken, so the config-dependent job
+# imports below are skipped while it is the requested command — a missing
+# secret surfaces as a reportable [A] row, not an import-time traceback.
+_IS_PREFLIGHT = len(sys.argv) >= 2 and sys.argv[1] == "preflight"
+
+if not _IS_PREFLIGHT:
+    from signal_system.jobs.daily_close import run as run_daily_close
+    from signal_system.jobs.discovery import run as run_discovery
+    from signal_system.jobs.news_morning import run as run_news_morning
+    from signal_system.jobs.advisor import run as run_advisor, advise_ticker
+    from signal_system.jobs.outcome_backfill import (
+        run as run_outcome_backfill,
+        backfill_benchmark,
+    )
+    from signal_system.jobs.review_report import run as run_review_report
+    from signal_system.jobs.weekly_synthesis import run as run_weekly_synthesis
+    from signal_system.jobs.backup import run as run_backup
+    from signal_system.jobs.sentinel import run as run_sentinel
+    from signal_system.jobs.watchdog import run as run_watchdog
+    from signal_system.evals.classifier_eval import run_eval as run_classifier_eval
+
+    JOBS = {
+        "daily-close": run_daily_close,
+        "discovery": run_discovery,
+        "news-morning": run_news_morning,
+        "advisor": run_advisor,
+        "outcome-backfill": run_outcome_backfill,
+        "review-report": run_review_report,
+        "weekly-synthesis": run_weekly_synthesis,
+        "backup": run_backup,
+        "sentinel": run_sentinel,
+        "watchdog": run_watchdog,
+    }
 
 
 def _cmd_list_signals(days: int = 14, *, now: datetime | None = None) -> None:
@@ -168,6 +171,8 @@ def _parse_replay_weights(argv: list[str]) -> int:
 
     No heartbeat, no runs row, no DB access — this is analysis tooling.
     """
+    from signal_system.replay.weight_replay import parse_weights, run_replay_cli
+
     days = 180
     weight_specs: list[str] = []
     horizons: list[int] = [5, 20]
@@ -343,13 +348,18 @@ def _parse_log_trade(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    if _IS_PREFLIGHT:
+        from signal_system.preflight import run_preflight
+
+        sys.exit(run_preflight(sys.argv[2:]))
+
     repository.init_db()
     if len(sys.argv) < 2:
         print("Usage: python -m signal_system <job>  |  advise <TICKER>  |  "
               "list-signals [--days N]  |  log-action <prefix> --acted|--passed  |  "
               "log-trade <TICKER> --buy|--sell --account <lit> --qty N --price P  |  "
               "backfill-benchmark  |  replay-weights [--days N] [--weights A/B/C] [--horizons H1,H2] [--gates on|off]  |  "
-              "eval-classifier")
+              "eval-classifier  |  preflight")
         print(f"Available jobs: {list(JOBS)}")
         sys.exit(2)
 
@@ -379,5 +389,5 @@ if __name__ == "__main__":
         JOBS[cmd]()
     else:
         print(f"Unknown command: {cmd!r}")
-        print(f"Available jobs: {list(JOBS)}  |  advise <TICKER>  |  list-signals  |  log-action  |  log-trade  |  build-universe  |  backfill-benchmark  |  replay-weights  |  eval-classifier")
+        print(f"Available jobs: {list(JOBS)}  |  advise <TICKER>  |  list-signals  |  log-action  |  log-trade  |  build-universe  |  backfill-benchmark  |  replay-weights  |  eval-classifier  |  preflight")
         sys.exit(2)

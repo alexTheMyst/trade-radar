@@ -96,6 +96,20 @@ def test_require_non_empty_holdings_is_alias(tmp_path):
     assert result[0].ticker == "FCX"
 
 
+def test_load_holdings_respects_injected_path(tmp_path, monkeypatch):
+    """HOLDINGS_PATH monkeypatch takes effect because the default resolves at call time."""
+    from signal_system.data import holdings as holdings_mod
+
+    probe = tmp_path / "probe.csv"
+    _write_csv(probe, [
+        {"ticker": "MU", "shares": "5", "cost_basis": "90.00", "account": "hsa", "thesis_pillar": ""},
+    ])
+    monkeypatch.setattr(holdings_mod, "HOLDINGS_PATH", probe)
+    rows = load_holdings()
+    assert len(rows) == 1
+    assert rows[0].ticker == "MU"
+
+
 def test_holdings_universe_drift_flags_missing_core(tmp_path, monkeypatch):
     from signal_system.data.holdings import holdings_universe_drift, Holding
 

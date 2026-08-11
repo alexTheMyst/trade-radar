@@ -9,6 +9,7 @@
 - [ ] Enforce **single-instance** execution with “Do not start a new instance” / `IgnoreNew`.
 - [ ] Select **run whether logged on or not** and store credentials for a **password-backed** Windows account.
 - [ ] Manually run `uv run python -m signal_system daily-close` once before enabling `news-morning`.
+- [ ] Run `uv run python -m signal_system preflight` after any `.env` or model change, and before enabling a schedule — it verifies secrets, Anthropic reachability, Finnhub endpoints, thesis freshness, holdings coverage, and DB/backup state in one pass.
 
 ## Gmail + Healthchecks
 

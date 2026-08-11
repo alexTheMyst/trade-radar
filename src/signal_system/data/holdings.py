@@ -32,12 +32,16 @@ def _is_data_row(row: dict) -> bool:
     return bool(ticker.strip()) and not ticker.strip().startswith("#")
 
 
-def load_holdings(path: Path = HOLDINGS_PATH) -> list[Holding]:
+def load_holdings(path: Path | None = None) -> list[Holding]:
     """Load holdings.csv and return a list of Holding objects.
+
+    *path* defaults to HOLDINGS_PATH and is resolved at call time (not bound
+    at import) so callers and tests can inject an alternate probe path.
 
     Raises:
         EmptyHoldingsError: if the file is missing or has no usable rows.
     """
+    path = path or HOLDINGS_PATH
     if not path.exists():
         raise EmptyHoldingsError(
             f"holdings.csv not found at {path}. "
@@ -70,7 +74,7 @@ def load_holdings(path: Path = HOLDINGS_PATH) -> list[Holding]:
     return holdings
 
 
-def require_non_empty_holdings(path: Path = HOLDINGS_PATH) -> list[Holding]:
+def require_non_empty_holdings(path: Path | None = None) -> list[Holding]:
     """Alias for load_holdings — name mirrors universe.py's require_non_empty_universe."""
     return load_holdings(path)
 
