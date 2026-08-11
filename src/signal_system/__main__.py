@@ -3,47 +3,108 @@ import sys
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from signal_system import redaction
 from signal_system.advisor.verdict_engine import WASH_SALE_WINDOW_DAYS
 from signal_system.state import repository
-from signal_system.jobs.daily_close import run as run_daily_close
-from signal_system.jobs.discovery import run as run_discovery
-from signal_system.jobs.news_morning import run as run_news_morning
-from signal_system.jobs.advisor import run as run_advisor, advise_ticker
-from signal_system.jobs.outcome_backfill import (
-    run as run_outcome_backfill,
-    backfill_benchmark,
-)
-from signal_system.jobs.review_report import run as run_review_report
-from signal_system.jobs.weekly_synthesis import run as run_weekly_synthesis
-from signal_system.jobs.backup import run as run_backup
-from signal_system.jobs.sentinel import run as run_sentinel
-from signal_system.jobs.watchdog import run as run_watchdog
 from signal_system.data.universe_builder import apply_merged_universe, diff_universe
-from signal_system.replay.weight_replay import (
-    parse_weights,
-    run_replay_cli,
-)
-from signal_system.evals.classifier_eval import run_eval as run_classifier_eval
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s -- %(message)s",
 )
 
+# finnhub-python carries the API key as a `token` query parameter, and both
+# requests exception messages and tenacity's before_sleep_log retry hook embed
+# the full URL. Without this, every transient Finnhub failure writes the live
+# key into the job log. Attached to the root handlers so it covers every
+# module's logger, for every command — not just preflight.
+redaction.install_redaction_filter()
+
 _ET = ZoneInfo("America/New_York")
 
-JOBS = {
-    "daily-close": run_daily_close,
-    "discovery": run_discovery,
-    "news-morning": run_news_morning,
-    "advisor": run_advisor,
-    "outcome-backfill": run_outcome_backfill,
-    "review-report": run_review_report,
-    "weekly-synthesis": run_weekly_synthesis,
-    "backup": run_backup,
-    "sentinel": run_sentinel,
-    "watchdog": run_watchdog,
+# Job modules import `config`, which raises at import time on a missing secret.
+# preflight has to survive exactly that condition — its whole purpose is to
+# report a broken .env as an [A] row rather than an import traceback — so the
+# job imports are deferred into _load_jobs() and only resolved when a job is
+# actually about to run. Keying this off sys.argv at import time instead would
+# make the module's shape depend on the argv of whatever process imported it.
+JOB_NAMES = (
+    "daily-close",
+    "discovery",
+    "news-morning",
+    "advisor",
+    "outcome-backfill",
+    "review-report",
+    "weekly-synthesis",
+    "backup",
+    "sentinel",
+    "watchdog",
+)
+
+
+def _load_jobs() -> dict:
+    """Import the job entry points and return the name -> callable mapping.
+
+    Deferred: importing these pulls in `config`, which raises on a missing
+    secret. Callers that must work without config (preflight) never call this.
+    """
+    from signal_system.jobs.backup import run as run_backup
+    from signal_system.jobs.daily_close import run as run_daily_close
+    from signal_system.jobs.discovery import run as run_discovery
+    from signal_system.jobs.news_morning import run as run_news_morning
+    from signal_system.jobs.advisor import run as run_advisor
+    from signal_system.jobs.outcome_backfill import run as run_outcome_backfill
+    from signal_system.jobs.review_report import run as run_review_report
+    from signal_system.jobs.sentinel import run as run_sentinel
+    from signal_system.jobs.watchdog import run as run_watchdog
+    from signal_system.jobs.weekly_synthesis import run as run_weekly_synthesis
+
+    jobs = {
+        "daily-close": run_daily_close,
+        "discovery": run_discovery,
+        "news-morning": run_news_morning,
+        "advisor": run_advisor,
+        "outcome-backfill": run_outcome_backfill,
+        "review-report": run_review_report,
+        "weekly-synthesis": run_weekly_synthesis,
+        "backup": run_backup,
+        "sentinel": run_sentinel,
+        "watchdog": run_watchdog,
+    }
+    # JOB_NAMES is the import-safe registry used for dispatch and usage text;
+    # drift between the two would let a job be advertised but not runnable.
+    assert tuple(jobs) == JOB_NAMES, (
+        f"JOB_NAMES {JOB_NAMES} out of sync with _load_jobs() {tuple(jobs)}"
+    )
+    return jobs
+
+
+# Attributes that used to be module-level imports. They stay part of the
+# module's public surface — resolved on access rather than at import — so
+# deferring the imports does not change what callers can reach.
+_LAZY_ATTRS: dict[str, tuple[str, str]] = {
+    "advise_ticker": ("signal_system.jobs.advisor", "advise_ticker"),
+    "backfill_benchmark": ("signal_system.jobs.outcome_backfill", "backfill_benchmark"),
+    "run_classifier_eval": ("signal_system.evals.classifier_eval", "run_eval"),
 }
+
+
+def __getattr__(name: str):
+    """Resolve deferred attributes on access (PEP 562).
+
+    `JOBS` and the job-module helpers were module-level imports before
+    preflight needed this module to import without `config`. Building them
+    eagerly would defeat that; resolving them here keeps the public surface
+    identical while the imports stay lazy.
+    """
+    if name == "JOBS":
+        return _load_jobs()
+    if name in _LAZY_ATTRS:
+        module_path, attr = _LAZY_ATTRS[name]
+        import importlib
+
+        return getattr(importlib.import_module(module_path), attr)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _cmd_list_signals(days: int = 14, *, now: datetime | None = None) -> None:
@@ -168,6 +229,8 @@ def _parse_replay_weights(argv: list[str]) -> int:
 
     No heartbeat, no runs row, no DB access — this is analysis tooling.
     """
+    from signal_system.replay.weight_replay import parse_weights, run_replay_cli
+
     days = 180
     weight_specs: list[str] = []
     horizons: list[int] = [5, 20]
@@ -343,14 +406,21 @@ def _parse_log_trade(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    # preflight is dispatched before init_db() and before any config-dependent
+    # import, so it can diagnose a machine whose .env is broken.
+    if len(sys.argv) >= 2 and sys.argv[1] == "preflight":
+        from signal_system.preflight import run_preflight
+
+        sys.exit(run_preflight(sys.argv[2:]))
+
     repository.init_db()
     if len(sys.argv) < 2:
         print("Usage: python -m signal_system <job>  |  advise <TICKER>  |  "
               "list-signals [--days N]  |  log-action <prefix> --acted|--passed  |  "
               "log-trade <TICKER> --buy|--sell --account <lit> --qty N --price P  |  "
               "backfill-benchmark  |  replay-weights [--days N] [--weights A/B/C] [--horizons H1,H2] [--gates on|off]  |  "
-              "eval-classifier")
-        print(f"Available jobs: {list(JOBS)}")
+              "eval-classifier  |  preflight")
+        print(f"Available jobs: {list(JOB_NAMES)}")
         sys.exit(2)
 
     cmd = sys.argv[1]
@@ -359,6 +429,8 @@ if __name__ == "__main__":
         if len(sys.argv) < 3:
             print("Usage: python -m signal_system advise <TICKER>")
             sys.exit(2)
+        from signal_system.jobs.advisor import advise_ticker
+
         advise_ticker(sys.argv[2])
     elif cmd == "list-signals":
         _parse_list_signals(sys.argv[2:])
@@ -369,15 +441,19 @@ if __name__ == "__main__":
     elif cmd == "log-trade":
         _parse_log_trade(sys.argv[2:])
     elif cmd == "backfill-benchmark":
+        from signal_system.jobs.outcome_backfill import backfill_benchmark
+
         written = backfill_benchmark()
         print(f"backfill-benchmark complete: {written} SPY benchmark rows written")
     elif cmd == "replay-weights":
         _parse_replay_weights(sys.argv[2:])
     elif cmd == "eval-classifier":
+        from signal_system.evals.classifier_eval import run_eval as run_classifier_eval
+
         run_classifier_eval()
-    elif cmd in JOBS:
-        JOBS[cmd]()
+    elif cmd in JOB_NAMES:
+        _load_jobs()[cmd]()
     else:
         print(f"Unknown command: {cmd!r}")
-        print(f"Available jobs: {list(JOBS)}  |  advise <TICKER>  |  list-signals  |  log-action  |  log-trade  |  build-universe  |  backfill-benchmark  |  replay-weights  |  eval-classifier")
+        print(f"Available jobs: {list(JOB_NAMES)}  |  advise <TICKER>  |  list-signals  |  log-action  |  log-trade  |  build-universe  |  backfill-benchmark  |  replay-weights  |  eval-classifier  |  preflight")
         sys.exit(2)
