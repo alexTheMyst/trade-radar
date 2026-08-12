@@ -6,7 +6,9 @@
 *.db
 thesis.yaml
 src/signal_system/data/universe.csv
+src/signal_system/data/universe.csv.bak
 src/signal_system/data/holdings.csv
+src/signal_system/data/holdings.csv.bak
 __pycache__/
 *.pyc
 *.pyo
