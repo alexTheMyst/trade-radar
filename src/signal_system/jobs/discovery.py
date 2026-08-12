@@ -79,13 +79,21 @@ def run() -> None:
             industry_section = _render_industry_rollup_section(score_result.composite_by_ticker)
             body = f"{digest.body}\n\n{industry_section}" if industry_section else digest.body
             db_counts = repository.count_signals_by_routing_status(
-                now_et.date(), DISCOVERY_AGENT
+                now_et, DISCOVERY_AGENT
+            )
+            # Discovery emits no MONITORING today, but pass the breakdown anyway:
+            # the sum-to-total check runs unconditionally, so if discovery ever
+            # starts emitting one, the failure should name the real divergence
+            # rather than an argument this job forgot to supply.
+            db_monitoring_breakdown = repository.count_monitoring_by_reason(
+                now_et, DISCOVERY_AGENT
             )
             validate_digest_payload(
                 digest,
                 scanned_tickers=len(tickers),
                 db_counts=db_counts,
                 delivered_signals=persistence_summary.delivered_signals,
+                db_monitoring_breakdown=db_monitoring_breakdown,
             )
             _send_digest_once(subject=digest.subject, body=body)
             confirm_delivered_signals(persistence_summary.delivered_signals)

@@ -349,7 +349,10 @@ def run() -> None:
             )
 
             # A breakdown that does not reconcile is a bug — fail rather than send
-            # a digest that quietly does not add up.
+            # a digest that quietly does not add up. This assert is an early,
+            # local check on the in-memory counters and is stripped under -O;
+            # validate_digest_payload() re-checks the same sum against the
+            # database below, so the guarantee does not depend on assertions.
             assert sum(monitoring_breakdown.values()) == status_counts["MONITORING"], (
                 f"breakdown {monitoring_breakdown} does not sum to "
                 f"{status_counts['MONITORING']}"
@@ -367,11 +370,15 @@ def run() -> None:
                 monitoring_breakdown=monitoring_breakdown,
                 monitoring_deduped=monitoring_deduped,
             )
+            # Scoped to this run, not the calendar day: every signal this run
+            # writes is stamped at or after now_et, and an earlier attempt's rows
+            # are excluded so a rerun reports its own (deduped) result instead of
+            # failing against rows it did not write.
             db_counts = repository.count_signals_by_routing_status(
-                now_et.date(), NEWS_CLASSIFIER_AGENT
+                now_et, NEWS_CLASSIFIER_AGENT
             )
             db_monitoring_breakdown = repository.count_monitoring_by_reason(
-                now_et.date(), NEWS_CLASSIFIER_AGENT
+                now_et, NEWS_CLASSIFIER_AGENT
             )
             validate_digest_payload(
                 digest,

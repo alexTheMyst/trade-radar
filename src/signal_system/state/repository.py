@@ -63,6 +63,42 @@ def _ensure_column(cursor: sqlite3.Cursor, table: str, column: str, type_def: st
         cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {type_def}")
 
 
+def _backfill_monitoring_reason(cursor: sqlite3.Cursor) -> int:
+    """Derive monitoring_reason for rows written before the column existed.
+
+    Without this, adding the column leaves every historical MONITORING row NULL,
+    and two things break:
+
+      1. weekly-synthesis filters on `monitoring_reason IN (...)`, so the entire
+         pre-migration corpus — the "new-idea raw material" — becomes invisible.
+      2. count_monitoring_by_reason() buckets NULL under '', which no digest
+         breakdown contains, so any job rerunning on a date that already holds
+         legacy rows fails digest validation and refuses to send.
+
+    The old taxonomy was carried in the title prefix, plus demoted_from for
+    reconciled losers. Unprefixed MONITORING rows are exactly the pillar-matched
+    below-threshold ones this plan adds a bucket for, so they are the default.
+
+    Idempotent: only touches rows still NULL. Returns rows updated.
+    """
+    cursor.execute(
+        """
+        UPDATE signals
+           SET monitoring_reason = CASE
+                 WHEN title LIKE '[off_thesis]%'    THEN 'off_thesis'
+                 WHEN title LIKE '[volume_cap]%'    THEN 'volume_cap'
+                 WHEN title LIKE '[parse_failure]%' THEN 'parse_failure'
+                 WHEN title LIKE '[cooldown]%'      THEN 'cooldown'
+                 WHEN demoted_from = 'reconciled'   THEN 'reconciled'
+                 ELSE 'below_threshold'
+               END
+         WHERE routing_status = 'MONITORING'
+           AND monitoring_reason IS NULL
+        """
+    )
+    return cursor.rowcount
+
+
 def init_db() -> None:
     """Initialize the database: create state/ directory, enable WAL mode, and create/migrate tables.
 
@@ -134,6 +170,7 @@ def init_db() -> None:
         # of truth for digest counting and the weekly-synthesis corpus, replacing
         # title-prefix string matching.
         _ensure_column(cursor, "signals", "monitoring_reason", "TEXT")
+        _backfill_monitoring_reason(cursor)
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS advice (
@@ -720,14 +757,24 @@ def get_monitoring_signals_since(
         conn.close()
 
 
-def count_signals_by_routing_status(run_date: date, agent: str) -> dict[str, int]:
-    """Count signals persisted on a given ET date and agent, keyed by routing_status.
+def count_signals_by_routing_status(since: datetime, agent: str) -> dict[str, int]:
+    """Count an agent's signals written at or after *since*, keyed by routing_status.
 
     PENDING and DELIVERED are merged under DELIVERED: the digest reports a run's
     to-be-delivered signals, which sit in PENDING at validation time and are only
     flipped to DELIVERED after a successful send. Scoped by *agent* so a job's
     digest is validated against its own rows — not the whole day's cross-job
     traffic (discovery/sentinel run after news-morning on the same ET date).
+
+    *since* is the run's start instant, NOT the calendar date. Scoping to the run
+    is what makes a same-day rerun survivable: the earlier attempt's rows fall
+    outside the window, so the rerun's zero inserts match its zero-count digest
+    instead of colliding with rows it did not write. Day-scoping would fail every
+    rerun after a run that persisted before dying, which is the common case —
+    persistence happens before the digest is sent.
+
+    Callers pass an ET-aware datetime; timestamps are stored ISO-8601 in
+    America/New_York, so lexicographic comparison is ordering-correct.
 
     Returns only the statuses present (treat a missing key as 0).
     """
@@ -739,10 +786,10 @@ def count_signals_by_routing_status(run_date: date, agent: str) -> dict[str, int
             SELECT routing_status, COUNT(*)
             FROM signals
             WHERE agent = ?
-              AND substr(timestamp, 1, 10) = ?
+              AND timestamp >= ?
             GROUP BY routing_status
             """,
-            (agent, run_date.isoformat()),
+            (agent, since.isoformat()),
         )
         counts: dict[str, int] = {}
         for status, count in cursor.fetchall():
@@ -753,11 +800,13 @@ def count_signals_by_routing_status(run_date: date, agent: str) -> dict[str, int
         conn.close()
 
 
-def count_monitoring_by_reason(run_date: date, agent: str) -> dict[str, int]:
-    """Count MONITORING rows by monitoring_reason for a given ET date and agent.
+def count_monitoring_by_reason(since: datetime, agent: str) -> dict[str, int]:
+    """Count an agent's MONITORING rows at or after *since*, by monitoring_reason.
 
-    Rows with a NULL monitoring_reason group under the empty-string key so an
-    unreasoned row is visible to digest validation instead of silently vanishing.
+    Run-scoped for the same reason as count_signals_by_routing_status — see that
+    docstring. Rows with a NULL monitoring_reason group under the empty-string
+    key so an unreasoned row is visible to digest validation instead of silently
+    vanishing; init_db backfills historical rows so '' should never appear.
     """
     conn = _connect()
     try:
@@ -768,10 +817,10 @@ def count_monitoring_by_reason(run_date: date, agent: str) -> dict[str, int]:
             FROM signals
             WHERE agent = ?
               AND routing_status = 'MONITORING'
-              AND substr(timestamp, 1, 10) = ?
+              AND timestamp >= ?
             GROUP BY monitoring_reason
             """,
-            (agent, run_date.isoformat()),
+            (agent, since.isoformat()),
         )
         return {reason: count for reason, count in cursor.fetchall()}
     finally:

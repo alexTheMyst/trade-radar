@@ -184,10 +184,10 @@ def run() -> None:
                 monitoring_breakdown=monitoring_breakdown,
             )
             db_counts = repository.count_signals_by_routing_status(
-                now_et.date(), EXIT_SENTINEL_AGENT
+                now_et, EXIT_SENTINEL_AGENT
             )
             db_monitoring_breakdown = repository.count_monitoring_by_reason(
-                now_et.date(), EXIT_SENTINEL_AGENT
+                now_et, EXIT_SENTINEL_AGENT
             )
             validate_digest_payload(
                 digest,

@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 from contextlib import contextmanager
 import sqlite3
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import MagicMock, call, patch
 from zoneinfo import ZoneInfo
 
@@ -1684,6 +1684,59 @@ def test_news_morning_digest_total_matches_db_on_duplicate_headline(db):
     assert count == 1
 
 
+def test_news_morning_same_day_rerun_completes_and_reports_dedups(db):
+    """A rerun must not be wedged by the first attempt's rows.
+
+    Persistence happens before the digest is sent, so a run that dies at the
+    Telegram call leaves its signals in the database. Day-scoped validation made
+    every subsequent rerun fail — the day's digest could then never be
+    delivered, which is a worse failure than the undercount it replaced. Scoping
+    the readback to the run makes the rerun a truthful no-op instead.
+    """
+    from signal_system.jobs import news_morning
+
+    first = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
+    rerun_at = datetime(2026, 5, 19, 9, 15, tzinfo=ZoneInfo("America/New_York"))
+    mon = _sig(ticker="AAPL", severity="MONITORING", monitoring_reason="off_thesis")
+    mon = Signal(
+        ticker=mon.ticker, score=mon.score, severity=mon.severity, agent=mon.agent,
+        timestamp=mon.timestamp, alert_id=mon.alert_id,
+        title="[off_thesis] duplicate headline", body="rationale",
+        monitoring_reason="off_thesis",
+    )
+
+    def _run(now):
+        with patch("signal_system.jobs.news_morning.heartbeat.heartbeat", _noop_heartbeat), \
+             patch("signal_system.jobs.news_morning._now_et", return_value=now), \
+             patch("signal_system.jobs.news_morning.get_core_holdings", return_value=["AAPL"]), \
+             patch("signal_system.jobs.news_morning.get_position_weights", return_value={"AAPL": 10.0}), \
+             patch("signal_system.jobs.news_morning.repository.get_latest_successful_run_date", return_value=date(2026, 5, 16)), \
+             patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
+             patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[_news_item("AAPL event", first)]), \
+             patch("signal_system.jobs.news_morning.classify_headlines", return_value=[mon]), \
+             patch("signal_system.jobs.news_morning.route_signals", return_value=[]), \
+             patch("signal_system.jobs.news_morning.telegram_sender.send_message") as mock_send:
+            news_morning.run()
+            return mock_send.call_args.args[0]
+
+    first_body = _run(first)
+    assert "Monitoring: 1 (off-thesis 1)" in first_body
+
+    # The rerun must send, not raise.
+    rerun_body = _run(rerun_at)
+    assert "Monitoring: 0" in rerun_body
+    assert "Deduped on write: 1" in rerun_body
+    assert "Scanned 1 tickers, 0 alerts" in rerun_body
+
+    # And it must not have duplicated the row.
+    conn = sqlite3.connect(db)
+    count = conn.execute(
+        "SELECT COUNT(*) FROM signals WHERE routing_status='MONITORING'"
+    ).fetchone()[0]
+    conn.close()
+    assert count == 1
+
+
 def test_news_morning_fails_when_monitoring_signal_has_unmapped_reason(db):
     """8b: a MONITORING signal with no known reason has no breakdown bucket; the
     sum-to-total assertion fails and the job refuses to send."""
@@ -1773,6 +1826,9 @@ def test_validate_digest_payload_passes_when_breakdown_reconciles(db):
     )
 
 
+_RUN_START = datetime(2026, 5, 19, 8, 0, tzinfo=ZoneInfo("America/New_York"))
+
+
 def test_count_signals_by_routing_status_merges_pending_and_scopes_agent(db):
     """8c: PENDING counts as DELIVERED, and other agents' rows are invisible."""
     monitoring = _sig(
@@ -1790,9 +1846,118 @@ def test_count_signals_by_routing_status_merges_pending_and_scopes_agent(db):
     repository.insert_signal(other_agent, routing_status="MONITORING")
 
     assert repository.count_signals_by_routing_status(
-        date(2026, 5, 19), "news_classifier"
+        _RUN_START, "news_classifier"
     ) == {"DELIVERED": 1, "MONITORING": 1}
 
     assert repository.count_monitoring_by_reason(
-        date(2026, 5, 19), "news_classifier"
+        _RUN_START, "news_classifier"
     ) == {"off_thesis": 1}
+
+
+def test_count_signals_excludes_rows_written_before_the_run(db):
+    """Run-scoping, not day-scoping: an earlier attempt's rows are outside the
+    window, which is what lets a same-day rerun report its own result."""
+    earlier = _sig(ticker="AAPL", severity="MONITORING", monitoring_reason="off_thesis")
+    repository.insert_signal(earlier, routing_status="MONITORING")
+
+    # A run starting after that row was written must not see it.
+    later_start = earlier.timestamp + timedelta(minutes=1)
+    assert repository.count_signals_by_routing_status(later_start, "news_classifier") == {}
+    assert repository.count_monitoring_by_reason(later_start, "news_classifier") == {}
+
+    # A run starting at the same instant still counts its own writes.
+    assert repository.count_signals_by_routing_status(
+        earlier.timestamp, "news_classifier"
+    ) == {"MONITORING": 1}
+
+
+# --- Plan 08 follow-up: migration backfill ----------------------------------
+
+
+def test_init_db_backfills_monitoring_reason_from_legacy_rows(db):
+    """Adding the column must not orphan the pre-migration MONITORING corpus.
+
+    Without a backfill, weekly-synthesis (which filters on monitoring_reason)
+    sees nothing, and count_monitoring_by_reason buckets the rows under '',
+    which fails digest validation for any job rerunning on the same date.
+    """
+    conn = sqlite3.connect(db)
+    rows = [
+        ("legacy-off", "[off_thesis] macro headline", None),
+        ("legacy-cap", "[volume_cap] skipped headline", None),
+        ("legacy-parse", "[parse_failure] bad schema", None),
+        ("legacy-cool", "[cooldown] repeat trigger", None),
+        ("legacy-recon", "ai_semi: reconciled loser", "reconciled"),
+        ("legacy-below", "gold: Barrick and Newmont agree JV", None),
+    ]
+    for alert_id, title, demoted in rows:
+        conn.execute(
+            "INSERT INTO signals (alert_id,timestamp,agent,severity,title,"
+            "routing_status,demoted_from,monitoring_reason) "
+            "VALUES (?,?,?,?,?,?,?,NULL)",
+            (alert_id, "2026-05-19T08:30:00-04:00", "news_classifier",
+             "MONITORING", title, "MONITORING", demoted),
+        )
+    conn.commit()
+    conn.close()
+
+    repository.init_db()  # re-run the migration
+
+    conn = sqlite3.connect(db)
+    got = dict(
+        conn.execute(
+            "SELECT alert_id, monitoring_reason FROM signals WHERE alert_id LIKE 'legacy-%'"
+        ).fetchall()
+    )
+    conn.close()
+
+    assert got == {
+        "legacy-off": "off_thesis",
+        "legacy-cap": "volume_cap",
+        "legacy-parse": "parse_failure",
+        "legacy-cool": "cooldown",
+        "legacy-recon": "reconciled",
+        # Unprefixed MONITORING rows are exactly the pillar-matched
+        # below-threshold ones this plan adds a bucket for.
+        "legacy-below": "below_threshold",
+    }
+
+
+def test_backfill_is_idempotent_and_leaves_routed_rows_alone(db):
+    """Re-running init_db must not rewrite already-stamped or non-MONITORING rows."""
+    stamped = _sig(ticker="AAPL", severity="MONITORING", monitoring_reason="volume_cap")
+    repository.insert_signal(stamped, routing_status="MONITORING")
+    delivered = _sig(ticker="MSFT", severity="INFORMATIONAL", rule="delivered")
+    repository.insert_signal(delivered, routing_status="DELIVERED")
+
+    repository.init_db()
+    repository.init_db()
+
+    conn = sqlite3.connect(db)
+    assert conn.execute(
+        "SELECT monitoring_reason FROM signals WHERE alert_id=?", (stamped.alert_id,)
+    ).fetchone()[0] == "volume_cap"
+    assert conn.execute(
+        "SELECT monitoring_reason FROM signals WHERE alert_id=?", (delivered.alert_id,)
+    ).fetchone()[0] is None
+    conn.close()
+
+
+def test_legacy_corpus_visible_to_weekly_synthesis_after_backfill(db):
+    """The corpus weekly-synthesis reads must survive the column migration."""
+    conn = sqlite3.connect(db)
+    recent = (datetime.now(ZoneInfo("America/New_York")) - timedelta(days=1)).isoformat()
+    for i in range(3):
+        conn.execute(
+            "INSERT INTO signals (alert_id,timestamp,agent,severity,title,"
+            "routing_status,monitoring_reason) VALUES (?,?,?,?,?,?,NULL)",
+            (f"corpus{i}", recent, "news_classifier", "MONITORING",
+             f"[off_thesis] legacy headline {i}", "MONITORING"),
+        )
+    conn.commit()
+    conn.close()
+
+    repository.init_db()
+
+    since = (datetime.now(ZoneInfo("America/New_York")) - timedelta(days=7)).date()
+    assert len(repository.get_monitoring_signals_since(since)) == 3
