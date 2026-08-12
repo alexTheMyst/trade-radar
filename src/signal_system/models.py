@@ -66,6 +66,7 @@ class Signal:
     direction: str | None = None  # "positive" | "negative" | "neutral" from ClassificationResult
     pillar: str | None = None  # thesis pillar name from ClassificationResult; None for non-news signals
     weight_version: str | None = None  # scoring-regime stamp (Discovery); NULL = legacy-mixed regime
+    monitoring_reason: str | None = None  # off_thesis | volume_cap | parse_failure | below_threshold | reconciled | cooldown
 
 
 def compute_alert_id(ticker: str | None, date_iso: str, rule: str, agent: str) -> str:

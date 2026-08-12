@@ -356,6 +356,7 @@ def _make_parse_failure_signal(
         body=(raw_response or "")[:4000],
         model_version=config.ANTHROPIC_MODEL,
         thesis_version_hash=thesis_version_hash,
+        monitoring_reason="parse_failure",
     )
 
 
@@ -445,6 +446,7 @@ def classify_headline(
             model_version=config.ANTHROPIC_MODEL,
             thesis_version_hash=thesis_version_hash,
             direction=parsed.direction,
+            monitoring_reason="off_thesis",
         )
 
     severity = _weight_adjusted_severity(
@@ -478,6 +480,7 @@ def classify_headline(
         thesis_version_hash=thesis_version_hash,
         direction=parsed.direction,
         pillar=parsed.pillar_name,
+        monitoring_reason="below_threshold" if severity == "MONITORING" else None,
     )
 
 

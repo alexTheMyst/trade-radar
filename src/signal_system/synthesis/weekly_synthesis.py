@@ -29,7 +29,7 @@ _ET = ZoneInfo("America/New_York")
 _CORPUS_CAP: int = 200
 _MAX_CANDIDATES: int = 3
 _PREFIXES_TO_STRIP: tuple[str, ...] = ("[off_thesis] ", "[volume_cap] ")
-_PREFIXES_TO_INCLUDE: tuple[str, ...] = ("[off_thesis]", "[volume_cap]")
+_CORPUS_REASONS: tuple[str, ...] = ("off_thesis", "volume_cap")
 
 
 class Theme(BaseModel):
@@ -72,18 +72,21 @@ class SynthesisOutcome:
 def build_corpus(since: date, *, cap: int = _CORPUS_CAP) -> list[dict]:
     """Return the deduped, prefix-stripped, re-sanitized corpus (newest first).
 
-    Reads get_monitoring_signals_since with the off_thesis + volume_cap prefixes
-    (parse_failure excluded by the default prefix filter). Each stored title is
-    re-sanitized — stored titles are only encoding-fixed, so control chars and
-    angle brackets survive storage and must be stripped before prompt embedding.
+    Reads get_monitoring_signals_since with the off_thesis + volume_cap
+    monitoring_reason values (parse_failure excluded by the repository filter).
+    The monitoring_reason column is the source of truth — title prefixes are
+    stripped for display only, never used to decide membership. Each stored
+    title is re-sanitized — stored titles are only encoding-fixed, so control
+    chars and angle brackets survive storage and must be stripped before prompt
+    embedding.
     """
     rows = repository.get_monitoring_signals_since(since, limit=cap * 2)
     seen: set[str] = set()
     corpus: list[dict] = []
     for row in rows:
+        if row.get("monitoring_reason") not in _CORPUS_REASONS:
+            continue  # defense-in-depth; the repository already filters by reason
         title = row["title"]
-        if not any(title.startswith(prefix) for prefix in _PREFIXES_TO_INCLUDE):
-            continue  # exclude [parse_failure] and any other prefix
         for prefix in _PREFIXES_TO_STRIP:
             if title.startswith(prefix):
                 title = title[len(prefix):]

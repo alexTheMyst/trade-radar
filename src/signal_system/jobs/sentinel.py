@@ -28,6 +28,7 @@ from signal_system.monitoring import heartbeat
 from signal_system.models import Signal
 from signal_system.router import route_signals
 from signal_system.sentinel.exit_sentinel import (
+    EXIT_SENTINEL_AGENT,
     HISTORY_DAYS,
     build_signal,
     compute_exit_triggers,
@@ -84,6 +85,7 @@ def _cooldown_signal(signal: Signal) -> Signal:
         signal,
         severity="MONITORING",
         title=f"[cooldown] {signal.title}",
+        monitoring_reason="cooldown",
     )
 
 
@@ -131,10 +133,16 @@ def run() -> None:
                         date_iso=date_iso,
                         snapshot=snapshot,
                     )
-                    repository.insert_signal(
+                    inserted = repository.insert_signal(
                         _cooldown_signal(signal), routing_status="MONITORING"
                     )
-                    cooldown_count += 1
+                    if inserted:
+                        cooldown_count += 1
+                    else:
+                        logger.info(
+                            "cooldown signal deduped on alert_id: %s",
+                            signal.alert_id[:12],
+                        )
                     continue
 
                 snapshot = _quote_snapshot(position.ticker, df)
@@ -175,11 +183,18 @@ def run() -> None:
                 status_counts=status_counts,
                 monitoring_breakdown=monitoring_breakdown,
             )
+            db_counts = repository.count_signals_by_routing_status(
+                now_et.date(), EXIT_SENTINEL_AGENT
+            )
+            db_monitoring_breakdown = repository.count_monitoring_by_reason(
+                now_et.date(), EXIT_SENTINEL_AGENT
+            )
             validate_digest_payload(
                 digest,
                 scanned_tickers=len(tickers),
-                expected_counts=status_counts,
+                db_counts=db_counts,
                 delivered_signals=persistence_summary.delivered_signals,
+                db_monitoring_breakdown=db_monitoring_breakdown,
             )
             telegram_sender.send_message(f"{digest.subject}\n\n{digest.body}")
             confirm_delivered_signals(persistence_summary.delivered_signals)

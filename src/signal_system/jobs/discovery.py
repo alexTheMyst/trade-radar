@@ -22,6 +22,7 @@ from signal_system.jobs.common import (
     render_digest,
     validate_digest_payload,
 )
+from signal_system.models import DISCOVERY_AGENT
 from signal_system.monitoring import heartbeat
 from signal_system.router import route_signals
 from signal_system.state import repository
@@ -77,10 +78,13 @@ def run() -> None:
             )
             industry_section = _render_industry_rollup_section(score_result.composite_by_ticker)
             body = f"{digest.body}\n\n{industry_section}" if industry_section else digest.body
+            db_counts = repository.count_signals_by_routing_status(
+                now_et.date(), DISCOVERY_AGENT
+            )
             validate_digest_payload(
                 digest,
                 scanned_tickers=len(tickers),
-                expected_counts=persistence_summary.status_counts,
+                db_counts=db_counts,
                 delivered_signals=persistence_summary.delivered_signals,
             )
             _send_digest_once(subject=digest.subject, body=body)

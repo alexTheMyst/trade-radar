@@ -77,6 +77,7 @@ def test_no_quote_call_for_offthesis_headlines(monkeypatch):
     assert signals[0].severity == "MONITORING"
     assert signals[0].title.startswith("[off_thesis]")
     assert signals[0].signal_price_snapshot is None
+    assert signals[0].monitoring_reason == "off_thesis"
 
 
 def test_missing_quote_still_emits_signal_without_snapshot(monkeypatch):
@@ -98,6 +99,31 @@ def test_missing_quote_still_emits_signal_without_snapshot(monkeypatch):
 
     assert len(signals) == 1
     assert signals[0].signal_price_snapshot is None
+
+
+def test_below_threshold_signal_is_monitoring_with_below_threshold_reason(monkeypatch):
+    """A pillar-matched headline under the routing floor is MONITORING and carries
+    monitoring_reason='below_threshold' — the bucket 2026-08-10 was missing."""
+    from signal_system.classifier import news_classifier as nc
+
+    _patch_common(monkeypatch, nc)
+    result = nc.ClassificationResult(
+        pillar_name="gold_miners", confidence=0.55, direction="positive", rationale="weak signal"
+    )
+    monkeypatch.setattr(nc, "_call_with_retry", lambda h, s: (result, _usage()))
+
+    signals = nc.classify_headlines(
+        "NEM",
+        [{"headline": "Barrick and Newmont Reach Agreement Regarding Nevada Gold Mines Joint Venture"}],
+        thesis=object(),
+        thesis_version_hash="h",
+    )
+
+    assert len(signals) == 1
+    assert signals[0].severity == "MONITORING"
+    assert signals[0].monitoring_reason == "below_threshold"
+    assert not signals[0].title.startswith("[off_thesis]")
+    assert signals[0].pillar == "gold_miners"
 
 
 # ---------------------------------------------------------------------------
