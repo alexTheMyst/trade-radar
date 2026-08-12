@@ -24,7 +24,11 @@ def db(tmp_path, monkeypatch):
 
 
 def _monitoring_row(
-    title: str, *, body: str = "rationale", dt: datetime | None = None
+    title: str,
+    *,
+    body: str = "rationale",
+    dt: datetime | None = None,
+    monitoring_reason: str = "off_thesis",
 ) -> dict:
     dt = dt or datetime(2026, 7, 22, 8, 0, tzinfo=timezone.utc)
     return {
@@ -39,6 +43,7 @@ def _monitoring_row(
         "routing_status": "MONITORING",
         "direction": "neutral",
         "pillar": None,
+        "monitoring_reason": monitoring_reason,
     }
 
 
@@ -62,8 +67,8 @@ def test_build_corpus_excludes_parse_failure(db, monkeypatch):
 
     rows = [
         _monitoring_row("[off_thesis] good headline"),
-        _monitoring_row("[parse_failure] bad json"),
-        _monitoring_row("[volume_cap] overflow"),
+        _monitoring_row("[parse_failure] bad json", monitoring_reason="parse_failure"),
+        _monitoring_row("[volume_cap] overflow", monitoring_reason="volume_cap"),
     ]
     monkeypatch.setattr(repository, "get_monitoring_signals_since", lambda since, **kw: rows)
 

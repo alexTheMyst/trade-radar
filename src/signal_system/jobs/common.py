@@ -21,6 +21,8 @@ class DigestPayload:
     subject: str
     body: str
     status_counts: dict[str, int]
+    monitoring_breakdown: dict[str, int] | None = None
+    monitoring_deduped: int = 0
 
 
 def persist_routed_signals(routed_signals: list[RoutedSignal]) -> PersistenceSummary:
@@ -118,6 +120,7 @@ def render_digest(
     score_deltas: dict[str, str],
     status_counts: dict[str, int],
     monitoring_breakdown: dict[str, int] | None = None,
+    monitoring_deduped: int = 0,
 ) -> DigestPayload:
     """Render the plain-text digest required by the live jobs."""
     delivered = [
@@ -141,6 +144,8 @@ def render_digest(
         f"Suppressed: {suppressed_count}",
         _monitoring_line(monitoring_count, monitoring_breakdown),
     ]
+    if monitoring_deduped > 0:
+        lines.append(f"Deduped on write: {monitoring_deduped}")
 
     if delivered:
         lines.append("")
@@ -177,13 +182,20 @@ def render_digest(
             "SUPPRESSED": suppressed_count,
             "MONITORING": monitoring_count,
         },
+        monitoring_breakdown=(
+            {k: v for k, v in monitoring_breakdown.items() if v > 0}
+            if monitoring_breakdown
+            else None
+        ),
+        monitoring_deduped=monitoring_deduped,
     )
 
 
 _MONITORING_CATEGORY_LABELS: tuple[tuple[str, str], ...] = (
     ("off_thesis", "off-thesis"),
-    ("parse_failure", "parse-fail"),
     ("volume_cap", "volume-cap"),
+    ("below_threshold", "below-threshold"),
+    ("parse_failure", "parse-fail"),
     ("reconciled", "reconciled"),
     ("cooldown", "cooldown"),
 )
@@ -275,26 +287,47 @@ def validate_digest_payload(
     payload: DigestPayload,
     *,
     scanned_tickers: int,
-    expected_counts: dict[str, int],
+    db_counts: dict[str, int],
     delivered_signals: list[Signal],
+    db_monitoring_breakdown: dict[str, int] | None = None,
 ) -> None:
-    """Fail closed if digest content diverges from the persisted run outcomes."""
-    normalized_expected = {
-        "DELIVERED": expected_counts.get("DELIVERED", 0),
-        "SUPPRESSED": expected_counts.get("SUPPRESSED", 0),
-        "MONITORING": expected_counts.get("MONITORING", 0),
+    """Fail closed if digest content diverges from the persisted database state.
+
+    *db_counts* and *db_monitoring_breakdown* come from repository reads taken
+    after persist_routed_signals() and before the digest is sent — the database
+    is the source of truth, never the in-memory counters that rendered it. A
+    digest that undercounts is a lie; a job that refuses to send is a page.
+    """
+    normalized_db = {
+        "DELIVERED": db_counts.get("DELIVERED", 0),
+        "SUPPRESSED": db_counts.get("SUPPRESSED", 0),
+        "MONITORING": db_counts.get("MONITORING", 0),
     }
-    if payload.status_counts != normalized_expected:
+    if payload.status_counts != normalized_db:
         raise RuntimeError(
             "Digest counts do not match persisted routing outcomes: "
-            f"expected={normalized_expected} got={payload.status_counts}"
+            f"db={normalized_db} got={payload.status_counts}"
+        )
+
+    db_breakdown = {k: v for k, v in (db_monitoring_breakdown or {}).items() if v > 0}
+    payload_breakdown = payload.monitoring_breakdown or {}
+    if payload_breakdown != db_breakdown:
+        raise RuntimeError(
+            "Digest monitoring breakdown does not match the database: "
+            f"db={db_breakdown} got={payload_breakdown}"
+        )
+
+    if sum(payload_breakdown.values()) != normalized_db["MONITORING"]:
+        raise RuntimeError(
+            "Digest monitoring breakdown does not sum to the monitoring total: "
+            f"breakdown={payload_breakdown} total={normalized_db['MONITORING']}"
         )
 
     if not payload.subject.strip() or not payload.body.strip():
         raise RuntimeError("Digest subject/body must not be empty")
 
     zero_alert_line = f"Scanned {scanned_tickers} tickers, 0 alerts"
-    if normalized_expected["DELIVERED"] == 0 and zero_alert_line not in payload.body:
+    if normalized_db["DELIVERED"] == 0 and zero_alert_line not in payload.body:
         raise RuntimeError("Digest missing zero-alert confirmation")
 
     for signal in delivered_signals:

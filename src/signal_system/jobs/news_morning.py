@@ -40,6 +40,13 @@ _ET = ZoneInfo("America/New_York")
 _MAX_NEWS_HEADLINES = 50
 _MAX_GENERAL_HEADLINES = 20
 
+# Every MONITORING reason this job can legitimately emit. A signal whose
+# monitoring_reason is not in this set has no breakdown bucket — that is a bug,
+# and the sum-to-total assertion below must fail rather than quietly under-add.
+_KNOWN_MONITORING_REASONS: frozenset[str] = frozenset(
+    {"off_thesis", "volume_cap", "parse_failure", "below_threshold", "reconciled"}
+)
+
 
 def _now_et() -> datetime:
     return datetime.now(_ET)
@@ -102,6 +109,7 @@ def _make_overflow_monitoring_signal(
         ),
         model_version=config.ANTHROPIC_MODEL,
         thesis_version_hash=thesis_version_hash,
+        monitoring_reason="volume_cap",
     )
 
 
@@ -176,8 +184,27 @@ def _dedupe_and_cap_headlines(
     return unique[:cap], unique[cap:]
 
 
-def _persist_monitoring_signal(signal: Signal) -> None:
-    repository.insert_signal(signal, routing_status="MONITORING")
+def _persist_monitoring_signal(
+    signal: Signal,
+    *,
+    demoted_from: str | None = None,
+    monitoring_reason: str | None = None,
+) -> bool:
+    """Persist a MONITORING signal, returning True only on a real insert.
+
+    insert_signal uses INSERT OR IGNORE — an alert_id collision (the same
+    headline surfacing twice in a window) is a no-op, not a write. Callers must
+    count actual inserts, never calls, or the digest over-reports.
+    """
+    inserted = repository.insert_signal(
+        signal,
+        routing_status="MONITORING",
+        demoted_from=demoted_from,
+        monitoring_reason=monitoring_reason,
+    )
+    if not inserted:
+        logger.info("monitoring signal deduped on alert_id: %s", signal.alert_id[:12])
+    return inserted
 
 
 def _classify_kept_headlines(
@@ -186,14 +213,15 @@ def _classify_kept_headlines(
     thesis: object,
     thesis_version_hash: str,
     weights: dict[str, float],
-) -> tuple[list[Signal], dict[str, int], int]:
+) -> tuple[list[Signal], dict[str, int], int, int]:
     headlines_by_ticker: dict[str | None, list[dict]] = defaultdict(list)
     for ticker, item, _ in kept_items:
         headlines_by_ticker[ticker].append(item)
 
     routable: list[Signal] = []
-    monitoring_breakdown: dict[str, int] = {"off_thesis": 0, "parse_failure": 0}
+    monitoring_breakdown: dict[str, int] = {}
     monitoring_total = 0
+    monitoring_deduped = 0
     dedup_seen: set[str] = set()
 
     for ticker, headlines in headlines_by_ticker.items():
@@ -206,16 +234,24 @@ def _classify_kept_headlines(
             weights=weights,
         ):
             if signal.severity == "MONITORING":
-                _persist_monitoring_signal(signal)
-                monitoring_total += 1
-                if signal.title.startswith("[off_thesis]"):
-                    monitoring_breakdown["off_thesis"] += 1
-                elif signal.title.startswith("[parse_failure]"):
-                    monitoring_breakdown["parse_failure"] += 1
+                if _persist_monitoring_signal(signal):
+                    monitoring_total += 1
+                    reason = signal.monitoring_reason
+                    if reason in _KNOWN_MONITORING_REASONS:
+                        monitoring_breakdown[reason] = (
+                            monitoring_breakdown.get(reason, 0) + 1
+                        )
+                    else:
+                        logger.warning(
+                            "MONITORING signal missing a known monitoring_reason: %r",
+                            signal.alert_id[:12],
+                        )
+                else:
+                    monitoring_deduped += 1
             else:
                 routable.append(signal)
 
-    return routable, monitoring_breakdown, monitoring_total
+    return routable, monitoring_breakdown, monitoring_total, monitoring_deduped
 
 
 def _send_digest_once(*, subject: str, body: str) -> None:
@@ -260,8 +296,10 @@ def run() -> None:
             )
             all_overflow = overflow_items + overflow_general
 
+            volume_cap_count = 0
+            volume_cap_deduped = 0
             for ticker, item, item_dt in all_overflow:
-                _persist_monitoring_signal(
+                if _persist_monitoring_signal(
                     _make_overflow_monitoring_signal(
                         ticker=ticker,
                         headline=str(item.get("headline", "")),
@@ -269,18 +307,30 @@ def run() -> None:
                         generated_at=now_et,
                         thesis_version_hash=thesis_version_hash,
                     )
-                )
+                ):
+                    volume_cap_count += 1
+                else:
+                    volume_cap_deduped += 1
 
             weights = get_position_weights()
-            routable, classifier_monitoring_breakdown, classifier_monitoring_total = _classify_kept_headlines(
+            routable, classifier_breakdown, classifier_total, classifier_deduped = _classify_kept_headlines(
                 kept_items + kept_general,
                 thesis=thesis,
                 thesis_version_hash=thesis_version_hash,
                 weights=weights,
             )
             routable, reconciled_losers = reconcile_directions(routable)
+            reconciled_count = 0
+            reconciled_deduped = 0
             for loser in reconciled_losers:
-                repository.insert_signal(loser, routing_status="MONITORING", demoted_from="reconciled")
+                if _persist_monitoring_signal(
+                    loser,
+                    demoted_from="reconciled",
+                    monitoring_reason="reconciled",
+                ):
+                    reconciled_count += 1
+                else:
+                    reconciled_deduped += 1
             routed = route_signals(routable)
             # Deltas MUST be computed before persistence — the classifier stamps a
             # per-signal timestamp, so several same-run signals can share a ticker;
@@ -288,13 +338,24 @@ def run() -> None:
             score_deltas = compute_score_deltas(routed)
             persistence_summary: PersistenceSummary = persist_routed_signals(routed)
             status_counts = dict(persistence_summary.status_counts)
-            monitoring_breakdown = dict(classifier_monitoring_breakdown)
-            monitoring_breakdown["volume_cap"] = len(all_overflow)
-            monitoring_breakdown["reconciled"] = len(reconciled_losers)
+            monitoring_breakdown = dict(classifier_breakdown)
+            monitoring_breakdown["volume_cap"] = volume_cap_count
+            monitoring_breakdown["reconciled"] = reconciled_count
             status_counts["MONITORING"] = (
-                classifier_monitoring_total
-                + len(all_overflow)
-                + len(reconciled_losers)
+                classifier_total + volume_cap_count + reconciled_count
+            )
+            monitoring_deduped = (
+                classifier_deduped + volume_cap_deduped + reconciled_deduped
+            )
+
+            # A breakdown that does not reconcile is a bug — fail rather than send
+            # a digest that quietly does not add up. This assert is an early,
+            # local check on the in-memory counters and is stripped under -O;
+            # validate_digest_payload() re-checks the same sum against the
+            # database below, so the guarantee does not depend on assertions.
+            assert sum(monitoring_breakdown.values()) == status_counts["MONITORING"], (
+                f"breakdown {monitoring_breakdown} does not sum to "
+                f"{status_counts['MONITORING']}"
             )
 
             # news-morning only ever scans core holdings, so `tickers` IS the held set.
@@ -307,12 +368,24 @@ def run() -> None:
                 score_deltas=score_deltas,
                 status_counts=status_counts,
                 monitoring_breakdown=monitoring_breakdown,
+                monitoring_deduped=monitoring_deduped,
+            )
+            # Scoped to this run, not the calendar day: every signal this run
+            # writes is stamped at or after now_et, and an earlier attempt's rows
+            # are excluded so a rerun reports its own (deduped) result instead of
+            # failing against rows it did not write.
+            db_counts = repository.count_signals_by_routing_status(
+                now_et, NEWS_CLASSIFIER_AGENT
+            )
+            db_monitoring_breakdown = repository.count_monitoring_by_reason(
+                now_et, NEWS_CLASSIFIER_AGENT
             )
             validate_digest_payload(
                 digest,
                 scanned_tickers=len(tickers),
-                expected_counts=status_counts,
+                db_counts=db_counts,
                 delivered_signals=persistence_summary.delivered_signals,
+                db_monitoring_breakdown=db_monitoring_breakdown,
             )
             unacted = repository.count_unacted_delivered_older_than(days=7)
             body = digest.body

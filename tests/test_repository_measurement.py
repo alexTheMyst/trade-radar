@@ -29,6 +29,7 @@ def _sig(
     title: str = "[off_thesis] some headline",
     body: str = "rationale",
     timestamp: datetime | None = None,
+    monitoring_reason: str | None = None,
 ) -> Signal:
     ts = timestamp or datetime(2026, 7, 20, 8, 30, tzinfo=timezone.utc)
     return Signal(
@@ -40,6 +41,7 @@ def _sig(
         alert_id=compute_alert_id(ticker, ts.date().isoformat(), f"rule-{title[:8]}", agent),
         title=title,
         body=body,
+        monitoring_reason=monitoring_reason,
     )
 
 
@@ -47,15 +49,36 @@ def _insert(signal: Signal, routing_status: str = "MONITORING") -> None:
     repository.insert_signal(signal, routing_status=routing_status)
 
 
-def test_get_monitoring_signals_since_filters_by_prefix_and_recency(db):
-    old_off_thesis = _sig(title="[off_thesis] old headline", timestamp=datetime(2026, 7, 1, 8, 0, tzinfo=timezone.utc))
-    recent_off_thesis = _sig(title="[off_thesis] fresh headline", timestamp=datetime(2026, 7, 25, 8, 0, tzinfo=timezone.utc))
-    volume_cap = _sig(title="[volume_cap] skipped due to cap", timestamp=datetime(2026, 7, 25, 9, 0, tzinfo=timezone.utc))
-    parse_failure = _sig(title="[parse_failure] bad json", timestamp=datetime(2026, 7, 25, 10, 0, tzinfo=timezone.utc))
-    unrelated = _sig(title="AAPL: important update", timestamp=datetime(2026, 7, 25, 11, 0, tzinfo=timezone.utc))
+def test_get_monitoring_signals_since_filters_by_reason_and_recency(db):
+    old_off_thesis = _sig(
+        title="[off_thesis] old headline",
+        timestamp=datetime(2026, 7, 1, 8, 0, tzinfo=timezone.utc),
+        monitoring_reason="off_thesis",
+    )
+    recent_off_thesis = _sig(
+        title="[off_thesis] fresh headline",
+        timestamp=datetime(2026, 7, 25, 8, 0, tzinfo=timezone.utc),
+        monitoring_reason="off_thesis",
+    )
+    volume_cap = _sig(
+        title="[volume_cap] skipped due to cap",
+        timestamp=datetime(2026, 7, 25, 9, 0, tzinfo=timezone.utc),
+        monitoring_reason="volume_cap",
+    )
+    parse_failure = _sig(
+        title="[parse_failure] bad json",
+        timestamp=datetime(2026, 7, 25, 10, 0, tzinfo=timezone.utc),
+        monitoring_reason="parse_failure",
+    )
+    unrelated = _sig(
+        title="AAPL: important update",
+        timestamp=datetime(2026, 7, 25, 11, 0, tzinfo=timezone.utc),
+        monitoring_reason="below_threshold",
+    )
     delivered = _sig(
         title="[off_thesis] delivered row",
         timestamp=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
+        monitoring_reason="off_thesis",
     )
     for sig in (old_off_thesis, recent_off_thesis, volume_cap, parse_failure, unrelated):
         _insert(sig)
@@ -71,9 +94,13 @@ def test_get_monitoring_signals_since_filters_by_prefix_and_recency(db):
     assert all(row["routing_status"] == "MONITORING" for row in rows)
 
 
-def test_get_monitoring_signals_since_default_prefixes_exclude_parse_failure(db):
-    off_thesis = _sig(title="[off_thesis] a headline")
-    parse_failure = _sig(title="[parse_failure] bad json")
+def test_get_monitoring_signals_since_default_reasons_exclude_parse_failure(db):
+    off_thesis = _sig(
+        title="[off_thesis] a headline", monitoring_reason="off_thesis"
+    )
+    parse_failure = _sig(
+        title="[parse_failure] bad json", monitoring_reason="parse_failure"
+    )
     _insert(off_thesis)
     _insert(parse_failure)
 
@@ -83,7 +110,11 @@ def test_get_monitoring_signals_since_default_prefixes_exclude_parse_failure(db)
 
 def test_get_monitoring_signals_since_newest_first_and_limit(db):
     signals = [
-        _sig(title=f"[off_thesis] headline {i}", timestamp=datetime(2026, 7, 20 + i, 8, 0, tzinfo=timezone.utc))
+        _sig(
+            title=f"[off_thesis] headline {i}",
+            timestamp=datetime(2026, 7, 20 + i, 8, 0, tzinfo=timezone.utc),
+            monitoring_reason="off_thesis",
+        )
         for i in range(4)
     ]
     for sig in signals:
@@ -93,13 +124,19 @@ def test_get_monitoring_signals_since_newest_first_and_limit(db):
     assert [row["title"] for row in rows] == ["[off_thesis] headline 3", "[off_thesis] headline 2"]
 
 
-def test_get_monitoring_signals_since_custom_prefixes(db):
-    volume_cap = _sig(title="[volume_cap] a volume cap")
-    off_thesis = _sig(title="[off_thesis] an off thesis")
+def test_get_monitoring_signals_since_custom_reasons(db):
+    volume_cap = _sig(
+        title="[volume_cap] a volume cap", monitoring_reason="volume_cap"
+    )
+    off_thesis = _sig(
+        title="[off_thesis] an off thesis", monitoring_reason="off_thesis"
+    )
     _insert(volume_cap)
     _insert(off_thesis)
 
-    rows = repository.get_monitoring_signals_since(date(2026, 7, 1), title_prefixes=("[volume_cap]",))
+    rows = repository.get_monitoring_signals_since(
+        date(2026, 7, 1), monitoring_reasons=("volume_cap",)
+    )
     assert [row["title"] for row in rows] == ["[volume_cap] a volume cap"]
 
 
@@ -108,19 +145,24 @@ def test_get_monitoring_signals_since_empty_result(db):
 
 
 def test_get_monitoring_signals_since_row_shape(db):
-    sig = _sig(title="[off_thesis] shaped headline", body="the rationale")
+    sig = _sig(
+        title="[off_thesis] shaped headline",
+        body="the rationale",
+        monitoring_reason="off_thesis",
+    )
     _insert(sig)
     rows = repository.get_monitoring_signals_since(date(2026, 7, 1))
     assert len(rows) == 1
     row = rows[0]
     assert set(row) >= {
         "alert_id", "timestamp", "agent", "severity", "ticker",
-        "title", "body", "score", "routing_status",
+        "title", "body", "score", "routing_status", "monitoring_reason",
     }
     assert row["body"] == "the rationale"
     assert row["score"] == 0.2
     assert row["agent"] == "news_classifier"
     assert row["routing_status"] == "MONITORING"
+    assert row["monitoring_reason"] == "off_thesis"
 
 
 # ---------------------------------------------------------------------------
