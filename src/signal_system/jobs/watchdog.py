@@ -37,6 +37,7 @@ EXPECTED_MAX_AGE_HOURS: dict[str, int | None] = {
     "news-morning": 30,  # weekdays 09:00 ET
     "discovery": 30,  # weekdays 10:30 ET
     "sentinel": 30,  # weekdays 17:00 ET
+    "dispatch": 30,  # weekdays 17:40 ET — pooled INFO arbitration (Plan 06)
     "review-report": None,  # cadence TBD — skip until scheduled
     "weekly-synthesis": 200,  # Mondays 08:00 ET -> ~8 days tolerance
     "backup": 200,  # Sundays 08:00 ET
@@ -46,7 +47,13 @@ EXPECTED_MAX_AGE_HOURS: dict[str, int | None] = {
 # Weekday-only jobs: weekend hours don't count against their SLA, so a Friday
 # success keeps Monday green without a false alarm (the 30h SLA means "30 hours
 # of weekday runtime" for these jobs).
-WEEKDAY_JOBS = frozenset({"daily-close", "news-morning", "discovery", "sentinel"})
+WEEKDAY_JOBS = frozenset(
+    {"daily-close", "news-morning", "discovery", "sentinel", "dispatch"}
+)
+
+# A CANDIDATE row older than this was never dispatched: the evening dispatch
+# died or never ran, so staged INFO signals are silently going nowhere.
+STALE_CANDIDATE_MAX_AGE = timedelta(hours=36)
 
 # A most-recent run still 'running' older than this is a hard crash (power
 # loss, OOM, kill): insert_run() wrote 'running' but update_run() never ran.
@@ -140,6 +147,18 @@ def check_jobs(now: datetime | None = None) -> tuple[list[tuple[str, str]], list
                 failing.append(
                     (job, f"stuck running since {_format_et(last_run['started_at'])}")
                 )
+
+    stale_cutoff = effective_now - STALE_CANDIDATE_MAX_AGE
+    stale_candidates = repository.count_candidates_older_than(stale_cutoff)
+    if stale_candidates:
+        oldest = repository.get_oldest_candidate_timestamp()
+        since = f" since {_format_et(oldest)}" if oldest else ""
+        failing.append(
+            (
+                "dispatch",
+                f"{stale_candidates} staged candidate(s) never dispatched{since}",
+            )
+        )
 
     return failing, stale
 

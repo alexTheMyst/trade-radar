@@ -1,6 +1,12 @@
 # Plan 06 — Cross-Agent Budget Arbitration
 
-**Type:** Fix · **Priority:** P0 · **Est. effort:** ~1.5 day · **Blocks:** nothing · **Blocked by:** operator decision (§3)
+**Type:** Fix · **Priority:** P0 · **Est. effort:** ~1.5 day · **Blocks:** nothing · **Status:** IMPLEMENTED 2026-10-16 on `feat/deferred-info-dispatch`
+
+> **Decision (2026-10-16):** Option D, with one change to §4b: the pooled INFO set is ranked by
+> **agent priority (news > sentinel > discovery), then `competition_score`**, not by score alone.
+> A replay of 2026-08-10 → 2026-10-09 showed pure score let Discovery (non-predictive scores) and
+> the Sentinel (saturates at 100) take most slots with worse 30-day excess (median +0.7%, 52% hit
+> vs +1.9%, 63% for priority). Regime stamp: `deferred-info-priority-v1`.
 
 ## Problem
 

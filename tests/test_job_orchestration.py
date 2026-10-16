@@ -130,6 +130,7 @@ def _noop_heartbeat(*_a, **_k):
 
 def test_routed_persistence_stores_every_tuple_with_demotions_and_suppression_reasons():
     from signal_system.jobs.common import persist_routed_signals
+    from signal_system.router import ROUTING_REGIME
 
     delivered = _sig(ticker="AAPL", severity="ACTION_REQUIRED", score=0.91)
     demoted = _sig(ticker="MSFT", severity="INFORMATIONAL", score=0.71)
@@ -148,9 +149,9 @@ def test_routed_persistence_stores_every_tuple_with_demotions_and_suppression_re
     assert summary.status_counts == {"DELIVERED": 2, "SUPPRESSED": 1, "MONITORING": 0}
     mock_insert.assert_has_calls(
         [
-            call(delivered, routing_status="PENDING", demoted_from=None, suppression_reason=None),
-            call(demoted, routing_status="PENDING", demoted_from="ACTION_REQUIRED", suppression_reason=None),
-            call(suppressed, routing_status="SUPPRESSED", demoted_from=None, suppression_reason="outscored"),
+            call(delivered, routing_status="PENDING", demoted_from=None, suppression_reason=None, routing_regime=ROUTING_REGIME),
+            call(demoted, routing_status="PENDING", demoted_from="ACTION_REQUIRED", suppression_reason=None, routing_regime=ROUTING_REGIME),
+            call(suppressed, routing_status="SUPPRESSED", demoted_from=None, suppression_reason="outscored", routing_regime=ROUTING_REGIME),
         ],
         any_order=True,
     )
@@ -574,7 +575,7 @@ def test_news_morning_headline_cap_dedups_before_cap_and_persists_overflow(db):
          patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
          patch("signal_system.jobs.news_morning.fetch_company_news", return_value=items), \
          patch("signal_system.jobs.news_morning.classify_headlines", side_effect=classify_side_effect), \
-         patch("signal_system.jobs.news_morning.route_signals", return_value=[]), \
+         patch("signal_system.jobs.news_morning.stage_signals", return_value=[]), \
          patch("signal_system.jobs.news_morning.telegram_sender.send_message"):
         news_morning.run()
 
@@ -672,7 +673,7 @@ def test_news_morning_parse_failure_monitoring_bypasses_router_and_persists(db):
          patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
          patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[_news_item("AAPL event", fixed_now)]), \
          patch("signal_system.jobs.news_morning.classify_headlines", return_value=[monitoring_signal, delivered_signal]), \
-         patch("signal_system.jobs.news_morning.route_signals", return_value=[(delivered_signal, "DELIVERED", None, None)]) as mock_route, \
+         patch("signal_system.jobs.news_morning.stage_signals", return_value=[(delivered_signal, "DELIVERED", None, None)]) as mock_route, \
          patch("signal_system.jobs.news_morning.telegram_sender.send_message"):
         news_morning.run()
 
@@ -708,7 +709,7 @@ def test_news_morning_digest_counts_zero_alert_and_mismatch_guard(db):
          patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
          patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[_news_item("AAPL event", fixed_now)]), \
          patch("signal_system.jobs.news_morning.classify_headlines", return_value=[monitoring_signal, suppressed_signal]), \
-         patch("signal_system.jobs.news_morning.route_signals", return_value=[(suppressed_signal, "SUPPRESSED", None, "outscored")]), \
+         patch("signal_system.jobs.news_morning.stage_signals", return_value=[(suppressed_signal, "SUPPRESSED", None, "outscored")]), \
          patch("signal_system.jobs.news_morning.telegram_sender.send_message") as mock_send:
         news_morning.run()
 
@@ -731,7 +732,7 @@ def test_news_morning_digest_counts_zero_alert_and_mismatch_guard(db):
          patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
          patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[_news_item("AAPL event", fixed_now)]), \
          patch("signal_system.jobs.news_morning.classify_headlines", return_value=[]), \
-         patch("signal_system.jobs.news_morning.route_signals", return_value=[]), \
+         patch("signal_system.jobs.news_morning.stage_signals", return_value=[]), \
          patch(
              "signal_system.jobs.news_morning.render_digest",
              return_value=DigestPayload(
@@ -792,7 +793,7 @@ def test_news_morning_digest_monitoring_breakdown_composed_end_to_end(db):
          patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
          patch("signal_system.jobs.news_morning.fetch_company_news", return_value=items), \
          patch("signal_system.jobs.news_morning.classify_headlines", return_value=[off_thesis]), \
-         patch("signal_system.jobs.news_morning.route_signals", return_value=[]), \
+         patch("signal_system.jobs.news_morning.stage_signals", return_value=[]), \
          patch(
              "signal_system.jobs.news_morning.reconcile_directions",
              return_value=([], [reconciled_loser]),
@@ -818,7 +819,7 @@ def test_news_morning_appends_unacted_nag_when_overdue(db):
          patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
          patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[]), \
          patch("signal_system.jobs.news_morning.classify_headlines", return_value=[]), \
-         patch("signal_system.jobs.news_morning.route_signals", return_value=[]), \
+         patch("signal_system.jobs.news_morning.stage_signals", return_value=[]), \
          patch("signal_system.jobs.news_morning.repository.count_unacted_delivered_older_than", return_value=3), \
          patch("signal_system.jobs.news_morning.telegram_sender.send_message") as mock_send:
         news_morning.run()
@@ -840,7 +841,7 @@ def test_news_morning_no_nag_when_none_unacted(db):
          patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
          patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[]), \
          patch("signal_system.jobs.news_morning.classify_headlines", return_value=[]), \
-         patch("signal_system.jobs.news_morning.route_signals", return_value=[]), \
+         patch("signal_system.jobs.news_morning.stage_signals", return_value=[]), \
          patch("signal_system.jobs.news_morning.repository.count_unacted_delivered_older_than", return_value=0), \
          patch("signal_system.jobs.news_morning.telegram_sender.send_message") as mock_send:
         news_morning.run()
@@ -869,7 +870,7 @@ def test_news_morning_macro_headline_renders_macro_in_digest(db):
          patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[]), \
          patch("signal_system.jobs.news_morning.fetch_general_news", return_value=[_news_item("Fed hikes", fixed_now)]), \
          patch("signal_system.jobs.news_morning.classify_headlines", return_value=[macro_signal]), \
-         patch("signal_system.jobs.news_morning.route_signals", return_value=[(macro_signal, "DELIVERED", None, None)]), \
+         patch("signal_system.jobs.news_morning.stage_signals", return_value=[(macro_signal, "DELIVERED", None, None)]), \
          patch("signal_system.jobs.news_morning.repository.count_unacted_delivered_older_than", return_value=0), \
          patch("signal_system.jobs.news_morning.telegram_sender.send_message") as mock_send:
         news_morning.run()
@@ -895,7 +896,7 @@ def test_news_morning_cross_feed_dedup_keeps_one(db):
          patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[item]), \
          patch("signal_system.jobs.news_morning.fetch_general_news", return_value=[item]), \
          patch("signal_system.jobs.news_morning.classify_headlines") as mock_classify, \
-         patch("signal_system.jobs.news_morning.route_signals", return_value=[]), \
+         patch("signal_system.jobs.news_morning.stage_signals", return_value=[]), \
          patch("signal_system.jobs.news_morning.repository.count_unacted_delivered_older_than", return_value=0), \
          patch("signal_system.jobs.news_morning.telegram_sender.send_message"):
         news_morning.run()
@@ -925,7 +926,7 @@ def test_news_morning_general_cap_independent_of_company_cap(db):
          patch("signal_system.jobs.news_morning.fetch_general_news", return_value=general_items), \
          patch("signal_system.jobs.news_morning.classify_headlines",
                side_effect=lambda ticker, headlines, **kw: captured.extend(headlines) or []), \
-         patch("signal_system.jobs.news_morning.route_signals", return_value=[]), \
+         patch("signal_system.jobs.news_morning.stage_signals", return_value=[]), \
          patch("signal_system.jobs.news_morning.repository.count_unacted_delivered_older_than", return_value=0), \
          patch("signal_system.jobs.news_morning.telegram_sender.send_message"):
         news_morning.run()
@@ -960,7 +961,7 @@ def test_news_morning_macro_reconciliation_groups_macro_headlines(db):
          patch("signal_system.jobs.news_morning.fetch_general_news", return_value=[]), \
          patch("signal_system.jobs.news_morning._classify_kept_headlines",
                return_value=([pos, neg], {"off_thesis": 0}, 0, 0)), \
-         patch("signal_system.jobs.news_morning.route_signals",
+         patch("signal_system.jobs.news_morning.stage_signals",
                side_effect=lambda sigs: routed.extend(sigs) or []), \
          patch("signal_system.jobs.news_morning.repository.count_unacted_delivered_older_than", return_value=0), \
          patch("signal_system.jobs.news_morning.telegram_sender.send_message"):
@@ -995,7 +996,7 @@ def test_discovery_routes_persists_and_sends_digest(db):
              return_value=ScoreResult(signals=[delivered_signal, suppressed_signal]),
          ), \
          patch(
-             "signal_system.jobs.discovery.route_signals",
+             "signal_system.jobs.discovery.stage_signals",
              return_value=[
                  (delivered_signal, "DELIVERED", None, None),
                  (suppressed_signal, "SUPPRESSED", None, "cap_exhausted"),
@@ -1043,7 +1044,7 @@ def test_news_morning_suppressed_signal_shows_held_flag_end_to_end(db):
          patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
          patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[_news_item("AAPL event", fixed_now)]), \
          patch("signal_system.jobs.news_morning.classify_headlines", return_value=[suppressed_signal]), \
-         patch("signal_system.jobs.news_morning.route_signals", return_value=[(suppressed_signal, "SUPPRESSED", None, "cap_exhausted")]), \
+         patch("signal_system.jobs.news_morning.stage_signals", return_value=[(suppressed_signal, "SUPPRESSED", None, "cap_exhausted")]), \
          patch("signal_system.jobs.news_morning.telegram_sender.send_message") as mock_send:
         news_morning.run()
 
@@ -1064,7 +1065,7 @@ def test_discovery_zero_alert_digest_even_when_score_returns_empty(db):
          patch("signal_system.jobs.discovery.get_todays_universe", return_value=["AAPL"]), \
          patch("signal_system.jobs.discovery.get_core_holdings", return_value=[]), \
          patch("signal_system.jobs.discovery.score_universe", return_value=ScoreResult()), \
-         patch("signal_system.jobs.discovery.route_signals", return_value=[]) as mock_route, \
+         patch("signal_system.jobs.discovery.stage_signals", return_value=[]) as mock_route, \
          patch("signal_system.jobs.discovery.telegram_sender.send_message") as mock_send:
         discovery.run()
 
@@ -1093,7 +1094,7 @@ def test_discovery_fails_on_digest_count_mismatch(db):
          patch("signal_system.jobs.discovery.get_core_holdings", return_value=[]), \
          patch("signal_system.jobs.discovery.score_universe", return_value=ScoreResult(signals=[routed_signal])), \
          patch(
-             "signal_system.jobs.discovery.route_signals",
+             "signal_system.jobs.discovery.stage_signals",
              return_value=[(routed_signal, "DELIVERED", None, None)],
          ), \
          patch(
@@ -1167,7 +1168,7 @@ def test_discovery_digest_includes_industry_rollup_section(db, monkeypatch):
              ),
          ), \
          patch(
-             "signal_system.jobs.discovery.route_signals",
+             "signal_system.jobs.discovery.stage_signals",
              return_value=[(delivered, "DELIVERED", None, None)],
          ), \
          patch("signal_system.jobs.discovery.telegram_sender.send_message") as mock_send:
@@ -1195,7 +1196,7 @@ def test_discovery_digest_no_industry_section_without_industries(db, monkeypatch
              return_value=ScoreResult(signals=[delivered], composite_by_ticker={"NVDA": 88.0}),
          ), \
          patch(
-             "signal_system.jobs.discovery.route_signals",
+             "signal_system.jobs.discovery.stage_signals",
              return_value=[(delivered, "DELIVERED", None, None)],
          ), \
          patch("signal_system.jobs.discovery.telegram_sender.send_message") as mock_send:
@@ -1526,7 +1527,7 @@ def test_news_morning_computes_deltas_before_persisting(db):
          patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
          patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[_news_item("AAPL event", fixed_now)]), \
          patch("signal_system.jobs.news_morning.classify_headlines", return_value=[suppressed_signal]), \
-         patch("signal_system.jobs.news_morning.route_signals", return_value=[(suppressed_signal, "SUPPRESSED", None, "outscored")]), \
+         patch("signal_system.jobs.news_morning.stage_signals", return_value=[(suppressed_signal, "SUPPRESSED", None, "outscored")]), \
          patch_deltas, patch_persist, patch_db_counts, \
          patch("signal_system.jobs.news_morning.telegram_sender.send_message"):
         news_morning.run()
@@ -1550,7 +1551,7 @@ def test_discovery_computes_deltas_before_persisting(db):
          patch("signal_system.jobs.discovery.get_core_holdings", return_value=["MSFT"]), \
          patch("signal_system.jobs.discovery.score_universe", return_value=ScoreResult(signals=[suppressed_signal])), \
          patch(
-             "signal_system.jobs.discovery.route_signals",
+             "signal_system.jobs.discovery.stage_signals",
              return_value=[(suppressed_signal, "SUPPRESSED", None, "cap_exhausted")],
          ), \
          patch_deltas, patch_persist, patch_db_counts, \
@@ -1575,7 +1576,7 @@ def test_news_morning_reads_core_holdings_once(db):
          patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
          patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[_news_item("AAPL event", fixed_now)]), \
          patch("signal_system.jobs.news_morning.classify_headlines", return_value=[suppressed_signal]), \
-         patch("signal_system.jobs.news_morning.route_signals", return_value=[(suppressed_signal, "SUPPRESSED", None, "outscored")]), \
+         patch("signal_system.jobs.news_morning.stage_signals", return_value=[(suppressed_signal, "SUPPRESSED", None, "outscored")]), \
          patch("signal_system.jobs.news_morning.telegram_sender.send_message") as mock_send:
         news_morning.run()
 
@@ -1667,7 +1668,7 @@ def test_news_morning_digest_total_matches_db_on_duplicate_headline(db):
          patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[_news_item("AAPL event", fixed_now)]), \
          patch("signal_system.jobs.news_morning.classify_headlines",
                return_value=[monitoring_signal, monitoring_signal]), \
-         patch("signal_system.jobs.news_morning.route_signals", return_value=[]), \
+         patch("signal_system.jobs.news_morning.stage_signals", return_value=[]), \
          patch("signal_system.jobs.news_morning.telegram_sender.send_message") as mock_send:
         news_morning.run()
 
@@ -1714,7 +1715,7 @@ def test_news_morning_same_day_rerun_completes_and_reports_dedups(db):
              patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
              patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[_news_item("AAPL event", first)]), \
              patch("signal_system.jobs.news_morning.classify_headlines", return_value=[mon]), \
-             patch("signal_system.jobs.news_morning.route_signals", return_value=[]), \
+             patch("signal_system.jobs.news_morning.stage_signals", return_value=[]), \
              patch("signal_system.jobs.news_morning.telegram_sender.send_message") as mock_send:
             news_morning.run()
             return mock_send.call_args.args[0]
@@ -1753,7 +1754,7 @@ def test_news_morning_fails_when_monitoring_signal_has_unmapped_reason(db):
          patch("signal_system.jobs.news_morning.load_thesis", return_value=(object(), "thesis-hash")), \
          patch("signal_system.jobs.news_morning.fetch_company_news", return_value=[_news_item("AAPL event", fixed_now)]), \
          patch("signal_system.jobs.news_morning.classify_headlines", return_value=[unmapped]), \
-         patch("signal_system.jobs.news_morning.route_signals", return_value=[]), \
+         patch("signal_system.jobs.news_morning.stage_signals", return_value=[]), \
          patch("signal_system.jobs.news_morning.telegram_sender.send_message") as mock_send:
         with pytest.raises(AssertionError, match="does not sum to"):
             news_morning.run()

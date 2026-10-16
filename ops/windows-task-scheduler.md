@@ -24,6 +24,7 @@ Do not use relative paths. Task Scheduler often starts from `C:\Windows\System32
    - `news-morning`: weekdays at 9:00 AM Eastern Time
    - `discovery`: weekdays after market close in Eastern Time
    - `sentinel`: weekdays at 5:00 PM Eastern Time
+   - `dispatch`: weekdays at 5:40 PM Eastern Time (after sentinel; pooled INFO routing, see below)
    - `backup`: Sundays at 8:00 AM Eastern Time
    - `watchdog`: weekdays at 9:30 AM and 6:00 PM Eastern Time (meta-monitor; see below)
    - If the machine is not set to Eastern Time, convert the trigger manually and note the intended ET mapping in the task description.
@@ -57,6 +58,7 @@ quiet while you believe that job is covered.
    - `HEALTHCHECKS_UUID_DISCOVERY` — weekdays after close
    - `HEALTHCHECKS_UUID_ADVISOR` — weekdays after close
    - `HEALTHCHECKS_UUID_SENTINEL` — weekdays 5:00 PM ET
+   - `HEALTHCHECKS_UUID_DISPATCH` — weekdays 5:40 PM ET
    - `HEALTHCHECKS_UUID_OUTCOME_BACKFILL` — weekdays 5:30 PM ET
    - `HEALTHCHECKS_UUID_REVIEW_REPORT` — 1st Saturday 9:00 AM ET monthly
    - `HEALTHCHECKS_UUID_WEEKLY_SYNTHESIS` — Mondays 8:00 AM ET
@@ -97,6 +99,14 @@ after the first scheduled run.
   set the env var). Its own `runs` row + dedicated check are the base case of
   the recursion — never let watchdog fall back to the shared UUID. See
   `ops/tasks/watchdog.xml`.
+- `dispatch` (Plan 06, Option D): weekdays **5:40 PM ET**, after `sentinel`.
+  Agent jobs deliver `ACTION_REQUIRED` immediately but only *stage*
+  `INFORMATIONAL` signals (`routing_status='CANDIDATE'`). Without this task no
+  INFO alert is ever delivered. It pools all agents' candidates, ranks them by
+  agent priority (news > sentinel > discovery) then score, delivers up to the
+  3-slot INFO budget and sends one "Dispatch Digest". Candidates left from a
+  missed day are expired to `SUPPRESSED` (`suppression_reason='expired'`); the
+  watchdog flags any CANDIDATE older than 36h. See `ops/tasks/dispatch.xml`.
 - `news-morning` depends on at least one successful `daily-close` run already being in SQLite. Run `uv run python -m signal_system daily-close` manually before enabling the morning schedule on a fresh deployment.
 - `outcome-backfill` (overdue as of Aug 2026): daily at **5:30 PM ET weekdays** (30/90-day outcome prices for the review report).
 - `review-report`: **first Saturday 9:00 AM ET monthly** + on-demand before each quarterly review.
