@@ -409,6 +409,11 @@ def _parse_log_trade(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    # Task Scheduler gives a cp1252 stdout; emoji in alert text would raise
+    # UnicodeEncodeError from print() and fail the job.
+    for _stream in (sys.stdout, sys.stderr):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
     # preflight is dispatched before init_db() and before any config-dependent
     # import, so it can diagnose a machine whose .env is broken.
     if len(sys.argv) >= 2 and sys.argv[1] == "preflight":
