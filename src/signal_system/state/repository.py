@@ -172,6 +172,10 @@ def init_db() -> None:
         _ensure_column(cursor, "signals", "monitoring_reason", "TEXT")
         _backfill_monitoring_reason(cursor)
 
+        # Routing-regime stamp (Plan 06, Option D). NULL = legacy first-come
+        # routing; never backfilled.
+        _ensure_column(cursor, "signals", "routing_regime", "TEXT")
+
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS advice (
                 advice_id TEXT PRIMARY KEY,
@@ -277,6 +281,7 @@ def insert_signal(
     demoted_from: str | None = None,
     suppression_reason: str | None = None,
     monitoring_reason: str | None = None,
+    routing_regime: str | None = None,
 ) -> bool:
     """Insert a Signal into the database using INSERT OR IGNORE semantics.
 
@@ -295,8 +300,9 @@ def insert_signal(
                 alert_id, timestamp, agent, severity, ticker, title, body,
                 score, routing_status, signal_price_snapshot, model_version,
                 thesis_version_hash, demoted_from, direction, pillar,
-                suppression_reason, weight_version, monitoring_reason
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                suppression_reason, weight_version, monitoring_reason,
+                routing_regime
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             signal.alert_id,
             signal.timestamp.isoformat(),
@@ -316,6 +322,7 @@ def insert_signal(
             suppression_reason,
             signal.weight_version,
             effective_reason,
+            routing_regime,
         ))
         conn.commit()
         return cursor.rowcount == 1
@@ -1457,5 +1464,176 @@ def update_routing_status(alert_id: str, routing_status: str) -> None:
             (routing_status, alert_id),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+# --- Deferred INFO dispatch (Plan 06, Option D) ------------------------------
+
+_CANDIDATE_COLUMNS = """
+    alert_id, timestamp, agent, severity, ticker, title, body, score,
+    model_version, thesis_version_hash, signal_price_snapshot, direction,
+    pillar, weight_version, monitoring_reason, demoted_from
+"""
+
+
+def _row_to_candidate(row: tuple) -> tuple[Signal, str | None]:
+    signal = Signal(
+        ticker=row[4],
+        score=row[7],
+        severity=row[3],
+        agent=row[2],
+        timestamp=datetime.fromisoformat(row[1]),
+        alert_id=row[0],
+        title=row[5],
+        body=row[6],
+        model_version=row[8],
+        thesis_version_hash=row[9],
+        signal_price_snapshot=row[10],
+        direction=row[11],
+        pillar=row[12],
+        weight_version=row[13],
+        monitoring_reason=row[14],
+    )
+    return signal, row[15]
+
+
+def list_candidates_for_date(date_iso: str) -> list[tuple[Signal, str | None]]:
+    """Return (signal, demoted_from) for every CANDIDATE row stamped on *date_iso* (ET).
+
+    Uses the same ISO date-prefix convention as count_delivered_today().
+    """
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT {_CANDIDATE_COLUMNS}
+            FROM signals
+            WHERE routing_status = 'CANDIDATE'
+              AND timestamp LIKE ? || '%'
+            ORDER BY timestamp ASC, alert_id ASC
+            """,
+            (date_iso,),
+        )
+        return [_row_to_candidate(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def list_candidates_before_date(date_iso: str) -> list[tuple[Signal, str | None]]:
+    """Return CANDIDATE rows stamped before *date_iso* (ET): dispatch never ran for them."""
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT {_CANDIDATE_COLUMNS}
+            FROM signals
+            WHERE routing_status = 'CANDIDATE'
+              AND timestamp < ?
+            ORDER BY timestamp ASC, alert_id ASC
+            """,
+            (date_iso,),
+        )
+        return [_row_to_candidate(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def mark_candidates_routed(
+    outcomes: list[tuple[str, str, str | None, str | None]],
+) -> int:
+    """Transition CANDIDATE rows to their dispatch outcome in ONE transaction.
+
+    *outcomes* are (alert_id, routing_status, demoted_from, suppression_reason).
+    Only rows still in CANDIDATE are touched, so a concurrent or repeated
+    dispatch cannot re-route an already-routed row. Returns the number of rows
+    updated; the caller treats a shortfall as a failure.
+    """
+    if not outcomes:
+        return 0
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        updated = 0
+        for alert_id, routing_status, demoted_from, suppression_reason in outcomes:
+            cursor.execute(
+                """
+                UPDATE signals
+                   SET routing_status = ?, demoted_from = ?, suppression_reason = ?
+                 WHERE alert_id = ? AND routing_status = 'CANDIDATE'
+                """,
+                (routing_status, demoted_from, suppression_reason, alert_id),
+            )
+            updated += cursor.rowcount
+        if updated != len(outcomes):
+            conn.rollback()
+            return updated
+        conn.commit()
+        return updated
+    finally:
+        conn.close()
+
+
+def count_routing_status_for_alert_ids(alert_ids: list[str]) -> dict[str, int]:
+    """Read back routing_status counts for exactly these rows (PENDING merged into DELIVERED).
+
+    Scoped by alert_id rather than by time so a dispatch rerun validates its own
+    batch, never an earlier attempt's rows.
+    """
+    if not alert_ids:
+        return {}
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        counts: dict[str, int] = {}
+        # Chunk to stay under SQLite's host-parameter limit.
+        for start in range(0, len(alert_ids), 500):
+            chunk = alert_ids[start:start + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            cursor.execute(
+                f"""
+                SELECT routing_status, COUNT(*)
+                FROM signals
+                WHERE alert_id IN ({placeholders})
+                GROUP BY routing_status
+                """,
+                chunk,
+            )
+            for status, count in cursor.fetchall():
+                key = "DELIVERED" if status in ("PENDING", "DELIVERED") else status
+                counts[key] = counts.get(key, 0) + count
+        return counts
+    finally:
+        conn.close()
+
+
+def get_oldest_candidate_timestamp() -> datetime | None:
+    """Return the timestamp of the oldest CANDIDATE row, or None if there are none."""
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT MIN(timestamp), COUNT(*) FROM signals WHERE routing_status = 'CANDIDATE'"
+        )
+        row = cursor.fetchone()
+        if not row or row[0] is None:
+            return None
+        return datetime.fromisoformat(row[0])
+    finally:
+        conn.close()
+
+
+def count_candidates_older_than(cutoff: datetime) -> int:
+    """Count CANDIDATE rows stamped before *cutoff* (an ET-aware datetime)."""
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT COUNT(*) FROM signals WHERE routing_status = 'CANDIDATE' AND timestamp < ?",
+            (cutoff.isoformat(),),
+        )
+        return int(cursor.fetchone()[0])
     finally:
         conn.close()

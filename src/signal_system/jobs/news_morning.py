@@ -31,7 +31,7 @@ from signal_system.jobs.common import (
 from signal_system.models import Signal, compute_alert_id
 from signal_system.monitoring import heartbeat
 from signal_system.reconciler import reconcile_directions
-from signal_system.router import route_signals
+from signal_system.router import stage_signals
 from signal_system.state import repository
 
 logger = logging.getLogger(__name__)
@@ -331,7 +331,8 @@ def run() -> None:
                     reconciled_count += 1
                 else:
                     reconciled_deduped += 1
-            routed = route_signals(routable)
+            # Option D: AR routes now; INFO is staged for the evening dispatch job.
+            routed = stage_signals(routable)
             # Deltas MUST be computed before persistence — the classifier stamps a
             # per-signal timestamp, so several same-run signals can share a ticker;
             # persisting first lets get_previous_score() compare against one of them.

@@ -24,7 +24,7 @@ from signal_system.jobs.common import (
 )
 from signal_system.models import DISCOVERY_AGENT
 from signal_system.monitoring import heartbeat
-from signal_system.router import route_signals
+from signal_system.router import stage_signals
 from signal_system.state import repository
 
 _ET = ZoneInfo("America/New_York")
@@ -60,7 +60,8 @@ def run() -> None:
             tickers = require_non_empty_universe(get_todays_universe(), job="discovery")
             score_result = score_universe(tickers, run_id, now_et.date().isoformat())
 
-            routed = route_signals(score_result.signals)
+            # Option D: AR routes now; INFO is staged for the evening dispatch job.
+            routed = stage_signals(score_result.signals)
             # Deltas MUST be computed before persistence — persisting first lets
             # get_previous_score() find this run's own rows instead of a prior scan.
             score_deltas = compute_score_deltas(routed)

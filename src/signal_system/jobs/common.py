@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from signal_system.classifier.news_classifier import NEWS_CLASSIFIER_AGENT
-from signal_system.models import Signal
-from signal_system.router import BUDGET_AR, BUDGET_INFO
+from signal_system.models import Signal, competition_score
+from signal_system.router import BUDGET_AR, BUDGET_INFO, ROUTING_REGIME
 from signal_system.state import repository
 
 RoutedSignal = tuple[Signal, str, str | None, str | None]
@@ -23,6 +23,7 @@ class DigestPayload:
     status_counts: dict[str, int]
     monitoring_breakdown: dict[str, int] | None = None
     monitoring_deduped: int = 0
+    staged_count: int = 0
 
 
 def persist_routed_signals(routed_signals: list[RoutedSignal]) -> PersistenceSummary:
@@ -32,6 +33,10 @@ def persist_routed_signals(routed_signals: list[RoutedSignal]) -> PersistenceSum
     so a failed Telegram send does not leave phantom DELIVERED rows in the DB.
     Caller must call confirm_delivered_signals() after a successful send to flip
     PENDING → DELIVERED.
+
+    CANDIDATE rows (INFO signals staged for the evening dispatch) are written
+    as-is and counted under "CANDIDATE". Every routed row is stamped with the
+    current ROUTING_REGIME.
     """
     status_counts = {"DELIVERED": 0, "SUPPRESSED": 0, "MONITORING": 0}
     pending_signals: list[Signal] = []
@@ -45,6 +50,7 @@ def persist_routed_signals(routed_signals: list[RoutedSignal]) -> PersistenceSum
             routing_status=db_status,
             demoted_from=demoted_from,
             suppression_reason=suppression_reason,
+            routing_regime=ROUTING_REGIME,
         )
         status_counts[routing_status] = status_counts.get(routing_status, 0) + 1
         if routing_status == "DELIVERED" and inserted:
@@ -129,6 +135,7 @@ def render_digest(
     suppressed = [
         (s, dmf, reason) for s, rs, dmf, reason in routed_signals if rs == "SUPPRESSED"
     ]
+    staged = [(s, dmf) for s, rs, dmf, _reason in routed_signals if rs == "CANDIDATE"]
     ar_winner = next(
         (s for s, _dmf in delivered if s.severity == "ACTION_REQUIRED"), None
     )
@@ -136,6 +143,7 @@ def render_digest(
     delivered_count = status_counts.get("DELIVERED", len(delivered))
     suppressed_count = status_counts.get("SUPPRESSED", len(suppressed))
     monitoring_count = status_counts.get("MONITORING", 0)
+    staged_count = status_counts.get("CANDIDATE", len(staged))
     title = job_name.replace("-", " ").title()
     alert_label = "alert" if delivered_count == 1 else "alerts"
 
@@ -146,6 +154,8 @@ def render_digest(
     ]
     if monitoring_deduped > 0:
         lines.append(f"Deduped on write: {monitoring_deduped}")
+    if staged_count > 0:
+        lines.append(f"Staged for evening dispatch: {staged_count}")
 
     if delivered:
         lines.append("")
@@ -173,6 +183,16 @@ def render_digest(
                 _suppressed_line(signal, demoted_from, reason, held_tickers, score_deltas)
             )
 
+    if staged:
+        header = f"Staged for evening dispatch ({len(staged)})"
+        lines.append("")
+        lines.append(header)
+        lines.append("-" * len(header))
+        for signal, demoted_from in sorted(
+            staged, key=lambda item: (-competition_score(item[0]), item[0].ticker or "")
+        ):
+            lines.append(_staged_line(signal, demoted_from, held_tickers, score_deltas))
+
     subject = f"{title} Digest — {delivered_count} {alert_label}"
     return DigestPayload(
         subject=subject,
@@ -188,7 +208,28 @@ def render_digest(
             else None
         ),
         monitoring_deduped=monitoring_deduped,
+        staged_count=staged_count,
     )
+
+
+def _staged_line(
+    signal: Signal,
+    demoted_from: str | None,
+    held_tickers: set[str],
+    score_deltas: dict[str, str],
+) -> str:
+    ticker = signal.ticker or "MACRO"
+    score_str = format_score(signal.agent, signal.score)
+    delta = score_deltas.get(signal.alert_id)
+    if delta:
+        score_str += f" ({delta})"
+    severity_display = signal.severity
+    if demoted_from is not None:
+        severity_display += f" (demoted from {demoted_from})"
+    line = f"{ticker} — {score_str} — {severity_display}"
+    if ticker in held_tickers:
+        line += " — HELD"
+    return line
 
 
 _MONITORING_CATEGORY_LABELS: tuple[tuple[str, str], ...] = (
@@ -307,6 +348,13 @@ def validate_digest_payload(
         raise RuntimeError(
             "Digest counts do not match persisted routing outcomes: "
             f"db={normalized_db} got={payload.status_counts}"
+        )
+
+    db_staged = db_counts.get("CANDIDATE", 0)
+    if payload.staged_count != db_staged:
+        raise RuntimeError(
+            "Digest staged count does not match persisted CANDIDATE rows: "
+            f"db={db_staged} got={payload.staged_count}"
         )
 
     db_breakdown = {k: v for k, v in (db_monitoring_breakdown or {}).items() if v > 0}

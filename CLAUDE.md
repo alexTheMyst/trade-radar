@@ -46,6 +46,7 @@ python -m signal_system daily-close
 python -m signal_system news-morning
 python -m signal_system discovery
 python -m signal_system sentinel         # mechanical exit triggers on held positions
+python -m signal_system dispatch         # evening pooled INFO routing + digest (5:40 PM ET)
 python -m signal_system advisor
 python -m signal_system backup           # WAL-safe DB snapshot (Sunday 8 AM ET)
 python -m signal_system review-report    # per-agent quality readout
@@ -78,7 +79,7 @@ context manager (in `monitoring/heartbeat.py`) pings healthchecks.io
 Per-job checks prevent one job's success from masking another's death. This is
 non-negotiable — silent failure is indistinguishable from "no alerts today."
 
-**Alert Router enforces a daily budget.** All signals from the three agents (Discovery, News Classifier, Exit Sentinel) funnel through the router before delivery. Hard caps: 1 `ACTION_REQUIRED`, 3 `INFORMATIONAL` per day. Slot competition: if two agents compete for `ACTION_REQUIRED`, higher-scored wins, others demote to INFORMATIONAL and compete for INFO slots. **Cross-agent competition uses a unified 0-100 scale** (`competition_score` in `models.py`: News confidence × 100; Discovery and Sentinel raw) — display keeps each agent's native scale. **AR signals always demote before suppressing, even across runs** (an AR that loses today's AR slot still competes for an INFO slot). The router writes suppressed signals to SQLite tagged `SUPPRESSED`.
+**Alert Router enforces a daily budget — AR now, INFO pooled in the evening.** All signals from the three agents (Discovery, News Classifier, Exit Sentinel) funnel through the router. Hard caps: 1 `ACTION_REQUIRED`, 3 `INFORMATIONAL` per day. Since 2026-10-16 (Plan 06, Option D, `routing_regime='deferred-info-priority-v1'`): agent jobs call `stage_signals()`, which delivers the top AR immediately against today's AR budget and stages everything else as `routing_status='CANDIDATE'` (losing ARs are demoted to INFO with `demoted_from='ACTION_REQUIRED'`). The `dispatch` job (weekdays 5:40 PM ET, after sentinel) pools the day's candidates from every agent and calls `dispatch_candidates()`, which ranks by **agent priority (news > sentinel > discovery), then `competition_score`**, delivers up to the INFO budget and sends one digest naming every agent's pooled/delivered counts. Agent priority was chosen over pure score after a 42-day replay: Discovery scores are not predictive and the sentinel saturates at 100, so pure score crowded out news and delivered worse 30-day outcomes. Prior-day candidates are expired to `SUPPRESSED` (`suppression_reason='expired'`); the watchdog flags CANDIDATE rows older than 36h. `route_signals()` (single-batch, severity-first) is unchanged and still used by tests and replays. Rows with `routing_regime` NULL were routed by the legacy first-come path — never aggregate across regimes.
 
 **MONITORING corpus is the new-idea raw material.** Every off-thesis classification is persisted as a MONITORING signal with a title prefix — the paid-for LLM rationale is never discarded. The `monitoring_reason` column is the source of truth for counting and the corpus; title prefixes are for human readability only. Reason taxonomy: `off_thesis` (no pillar matched), `volume_cap` (over newest-N cap, never classified), `parse_failure` (schema parse failed), `below_threshold` (pillar matched, confidence under the routing floor), `reconciled` (lost direction reconciliation, `demoted_from='reconciled'`), and `cooldown` (sentinel repeat inside the 5-day window, `[cooldown]` prefix). The **weekly-synthesis** job (Mondays 8:00 AM ET) reads this corpus by `monitoring_reason` to propose new pillar candidates, capped at 200 items, every title re-sanitized before prompt embedding. The digest's Monitoring line is validated against a DB readback (`count_signals_by_routing_status`/`count_monitoring_by_reason`) after persistence — a digest whose counts diverge from the database fails the run instead of sending.
 
@@ -196,13 +197,14 @@ A rules-based, **alert-only** investment signal system for a solo operator with 
 | `synthesis_reports` | Weekly-synthesis run record: corpus size, themes, pillar candidates, model_version |
 | Column | Purpose |
 |--------|---------|
-| `routing_status` | DELIVERED / MONITORING / SUPPRESSED — router sets this, never severity |
+| `routing_status` | CANDIDATE / PENDING / DELIVERED / MONITORING / SUPPRESSED — router sets this, never severity |
+| `routing_regime` | Routing-policy stamp: `deferred-info-priority-v1` current; NULL = legacy first-come |
 | `model_version` | Pinned model ID string for IC comparability |
 | `thesis_version_hash` | SHA256 of thesis.yaml at classification time |
 | `signal_price_snapshot` | Price at signal generation (unadjusted) for outcome measurement |
 | `weight_version` | Discovery scoring-regime stamp: `xsect-50/30/20-absgate-v3` current; NULL = legacy-mixed (pre-2026-05-31 + early unstamped) |
 
-Already built: `wash_sale` (4 accounts, `account` column day one), `llm_calls` (token telemetry: `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`). The router is pure over `count_delivered_today()` — no `candidate_signals`/`daily_budget` staging tables exist or are needed.
+Already built: `wash_sale` (4 accounts, `account` column day one), `llm_calls` (token telemetry: `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`). The router is pure over `count_delivered_today()`. Staged INFO lives in `signals` itself (`routing_status='CANDIDATE'`) — no separate staging table.
 ## Open Questions
 - Exact minimum token threshold for Anthropic prompt caching (verify against current docs at implementation)
 - Which Finnhub free-tier endpoints are available for the 35/30/25/10 Discovery scoring weights — validate empirically before writing scoring code

@@ -26,7 +26,7 @@ from signal_system.jobs.common import (
 )
 from signal_system.monitoring import heartbeat
 from signal_system.models import Signal
-from signal_system.router import route_signals
+from signal_system.router import stage_signals
 from signal_system.sentinel.exit_sentinel import (
     EXIT_SENTINEL_AGENT,
     HISTORY_DAYS,
@@ -162,7 +162,8 @@ def run() -> None:
                     )
                 )
 
-            routed = route_signals(routable)
+            # Option D: AR routes now; INFO is staged for the evening dispatch job.
+            routed = stage_signals(routable)
             # Deltas MUST be computed before persistence (same invariant as the
             # other jobs) — persisting first would let get_previous_score() see
             # this run's own rows.

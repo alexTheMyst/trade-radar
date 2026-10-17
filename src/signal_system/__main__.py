@@ -39,6 +39,7 @@ JOB_NAMES = (
     "backup",
     "sentinel",
     "watchdog",
+    "dispatch",
 )
 
 
@@ -57,6 +58,7 @@ def _load_jobs() -> dict:
     from signal_system.jobs.review_report import run as run_review_report
     from signal_system.jobs.sentinel import run as run_sentinel
     from signal_system.jobs.watchdog import run as run_watchdog
+    from signal_system.jobs.dispatch import run as run_dispatch
     from signal_system.jobs.weekly_synthesis import run as run_weekly_synthesis
 
     jobs = {
@@ -70,6 +72,7 @@ def _load_jobs() -> dict:
         "backup": run_backup,
         "sentinel": run_sentinel,
         "watchdog": run_watchdog,
+        "dispatch": run_dispatch,
     }
     # JOB_NAMES is the import-safe registry used for dispatch and usage text;
     # drift between the two would let a job be advertised but not runnable.
