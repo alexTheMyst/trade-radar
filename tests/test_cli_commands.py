@@ -164,68 +164,62 @@ def test_cmd_build_universe_apply_writes(capsys, tmp_path, monkeypatch, db):
     assert "MSFT" in op_path.read_text()
 
 
-def _parse_log_trade(argv):
-    return __main__._parse_log_trade(argv)
 
+def test_cmd_bulk_close_stamps_note_and_keeps_acted_null(capsys, db):
+    old = _delivered_sig(ts=datetime(2026, 6, 1, 8, 0, tzinfo=timezone.utc))
+    recent = _delivered_sig(ts=datetime(2026, 7, 24, 8, 0, tzinfo=timezone.utc))
+    _insert(old)
+    _insert(recent)
 
-def test_cmd_log_trade_round_trip(capsys, db):
-    _parse_log_trade(["AAPL", "--buy", "--account", "schwab_main", "--qty", "100",
-                      "--price", "180.5", "--date", "2026-06-01"])
-    conn = sqlite3.connect(db)
-    row = conn.execute(
-        "SELECT ticker, account, side, quantity, cost_basis FROM wash_sale"
-    ).fetchone()
-    conn.close()
-    assert row == ("AAPL", "schwab_main", "buy", 100.0, 180.5)
-    assert "logged" in capsys.readouterr().out.lower()
-
-
-def test_cmd_log_trade_default_date_is_et_today(capsys, db):
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
-    _parse_log_trade(["MSFT", "--sell", "--account", "roth_ira", "--qty", "10", "--price", "400"])
-    conn = sqlite3.connect(db)
-    row = conn.execute("SELECT trade_date FROM wash_sale").fetchone()
-    conn.close()
-    today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
-    assert row[0] == today
-
-
-def test_cmd_log_trade_requires_buy_or_sell(capsys, db):
-    with pytest.raises(SystemExit) as exc:
-        _parse_log_trade(["AAPL", "--account", "schwab_main", "--qty", "1", "--price", "100"])
-    assert exc.value.code == 2
-
-
-def test_cmd_log_trade_bad_account_exits_two(capsys, db):
-    with pytest.raises(SystemExit) as exc:
-        _parse_log_trade(["AAPL", "--buy", "--account", "nope", "--qty", "1", "--price", "100"])
-    assert exc.value.code == 2
-    out = capsys.readouterr().out
-    assert "schwab_main" in out
-
-
-def test_cmd_log_trade_warns_on_recent_sell(capsys, db):
-    """A prior cross-account buy within 30 days of a sell prints a wash-sale warning."""
-    from signal_system.state import repository
-    from datetime import date, timedelta
-    repository.insert_wash_sale_trade(
-        ticker="AAPL", account="schwab_main",
-        trade_date=date.today() - timedelta(days=5),
-        side="buy", quantity=100, price=180.0,
+    __main__._cmd_bulk_close(
+        datetime(2026, 7, 1).date(),
+        "bulk-closed: unreviewed backlog, 2026-10-24",
     )
-    _parse_log_trade(["AAPL", "--sell", "--account", "roth_ira", "--qty", "10", "--price", "170"])
-    out = capsys.readouterr().out
-    assert "wash sale" in out.lower()
+
+    conn = sqlite3.connect(db)
+    rows = conn.execute(
+        "SELECT alert_id, acted, user_note FROM signals ORDER BY timestamp"
+    ).fetchall()
+    conn.close()
+    assert rows[0][1] is None
+    assert rows[0][2] == "bulk-closed: unreviewed backlog, 2026-10-24"
+    assert rows[1][2] is None
+    assert "Bulk-closed 1" in capsys.readouterr().out
 
 
-def test_cmd_log_trade_no_warning_when_no_recent_buy(capsys, db):
-    _parse_log_trade(["MSFT", "--sell", "--account", "hsa", "--qty", "10", "--price", "400"])
-    out = capsys.readouterr().out
-    assert "wash sale" not in out.lower()
+def test_bulk_close_preserves_existing_notes_and_normalizes_marker(capsys, db):
+    noted = _delivered_sig(ts=datetime(2026, 6, 1, 8, 0, tzinfo=timezone.utc))
+    bare = _delivered_sig(ticker="MSFT", ts=datetime(2026, 6, 2, 8, 0, tzinfo=timezone.utc))
+    _insert(noted)
+    _insert(bare)
+    repository.update_signal_user_note(noted.alert_id, "tg: my own note")
+
+    __main__._cmd_bulk_close(datetime(2026, 7, 1).date(), "unreviewed backlog")
+
+    conn = sqlite3.connect(db)
+    rows = conn.execute(
+        "SELECT alert_id, user_note FROM signals ORDER BY timestamp"
+    ).fetchall()
+    conn.close()
+    notes = {alert_id: note for alert_id, note in rows}
+    assert notes[noted.alert_id] == "tg: my own note"
+    assert notes[bare.alert_id] == "bulk-closed: unreviewed backlog"
+    assert "Bulk-closed 1" in capsys.readouterr().out
 
 
-def test_cmd_log_trade_bad_qty_exits_two(capsys, db):
+def test_parse_log_action_bulk_close_requires_note(capsys, db):
     with pytest.raises(SystemExit) as exc:
-        _parse_log_trade(["AAPL", "--buy", "--account", "schwab_main", "--qty", "abc", "--price", "100"])
+        __main__._parse_log_action(["--bulk-close-before", "2026-10-17"])
     assert exc.value.code == 2
+
+
+def test_parse_log_action_bulk_close_dispatch(capsys, db):
+    __main__._parse_log_action(
+        ["--bulk-close-before", "2026-10-17", "--note", "bulk-closed: test"]
+    )
+    assert "Bulk-closed 0" in capsys.readouterr().out
+
+
+def test_removed_advisor_and_log_trade_are_unknown_commands():
+    assert "advisor" not in __main__.JOB_NAMES
+    assert not hasattr(__main__, "_parse_log_trade")

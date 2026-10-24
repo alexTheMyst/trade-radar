@@ -1,9 +1,17 @@
 from .alert_router import (
     BUDGET_AR,
+    BUDGET_AR_BY_AGENT,
     BUDGET_INFO,
     ROUTING_REGIME,
+    SENTINEL_RESERVED_INFO,
     dispatch_candidates,
+    dispatch_rank_key,
+    is_fresh_sentinel,
     route_signals,
+    select_reserved_sentinel,
+    sentinel_rank_key,
+    sentinel_severity_ratio,
+    sentinel_trigger_magnitudes,
     stage_signals,
 )
 
@@ -11,7 +19,15 @@ __all__ = [
     "route_signals",
     "stage_signals",
     "dispatch_candidates",
+    "dispatch_rank_key",
+    "is_fresh_sentinel",
+    "select_reserved_sentinel",
+    "sentinel_rank_key",
+    "sentinel_severity_ratio",
+    "sentinel_trigger_magnitudes",
     "BUDGET_AR",
+    "BUDGET_AR_BY_AGENT",
     "BUDGET_INFO",
+    "SENTINEL_RESERVED_INFO",
     "ROUTING_REGIME",
 ]

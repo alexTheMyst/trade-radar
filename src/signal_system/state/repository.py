@@ -13,31 +13,13 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from signal_system.models import Signal
+from signal_system.models import NEWS_CLASSIFIER_AGENT, ROUTING_REGIME, Signal
 
 DB_PATH = Path(__file__).parents[3] / "state" / "signals.db"
-
-# Mirrors the wash_sale.account CHECK literals — single source for validation.
-WASH_SALE_ACCOUNTS: tuple[str, ...] = (
-    "schwab_main",
-    "schwab_secondary",
-    "roth_ira",
-    "hsa",
-)
-
 
 @dataclass(frozen=True, slots=True)
 class OutcomeBackfillCandidate:
     alert_id: str
-    ticker: str
-    timestamp: datetime
-    outcome_price_30d: float | None
-    outcome_price_90d: float | None
-
-
-@dataclass(frozen=True, slots=True)
-class AdviceBackfillCandidate:
-    advice_id: str
     ticker: str
     timestamp: datetime
     outcome_price_30d: float | None
@@ -89,6 +71,7 @@ def _backfill_monitoring_reason(cursor: sqlite3.Cursor) -> int:
                  WHEN title LIKE '[volume_cap]%'    THEN 'volume_cap'
                  WHEN title LIKE '[parse_failure]%' THEN 'parse_failure'
                  WHEN title LIKE '[cooldown]%'      THEN 'cooldown'
+                 WHEN title LIKE '[repeat]%'        THEN 'repeat'
                  WHEN demoted_from = 'reconciled'   THEN 'reconciled'
                  ELSE 'below_threshold'
                END
@@ -157,7 +140,7 @@ def init_db() -> None:
         _ensure_column(cursor, "signals", "demoted_from", "TEXT")
         _ensure_column(cursor, "signals", "suppression_reason", "TEXT")
 
-        # Advisor phase additions
+        # Direction attribution (news / sentinel)
         _ensure_column(cursor, "signals", "direction", "TEXT")
 
         # Reconciliation phase additions
@@ -176,6 +159,12 @@ def init_db() -> None:
         # routing; never backfilled.
         _ensure_column(cursor, "signals", "routing_regime", "TEXT")
 
+        # Sentinel trigger magnitudes as JSON (Plan 12a2). NULL for every other
+        # agent; drives the reserved INFO slot and unclamped ranking.
+        _ensure_column(cursor, "signals", "trigger_json", "TEXT")
+
+        # DEPRECATED (Plan 04, executed via Plan 12e): the Advisor was removed;
+        # historical shadow rows are retained read-only for the record.
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS advice (
                 advice_id TEXT PRIMARY KEY,
@@ -205,6 +194,9 @@ def init_db() -> None:
         """)
 
         # New tables (Phase 1)
+        # DEPRECATED (Plan 05, 2026-10): the manual wash-sale ledger is retired —
+        # Schwab is the system of record. The table is left in place for schema
+        # stability and the weekly backup; no code writes to it.
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS wash_sale (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -270,6 +262,29 @@ def init_db() -> None:
             )
         """)
 
+        # Telegram action-logging (Plan 12e). One row per button message sent
+        # for an alert; kind='review_prompt' rows are Friday re-prompts.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS telegram_messages (
+                chat_id     TEXT NOT NULL,
+                message_id  INTEGER,
+                alert_id    TEXT NOT NULL,
+                kind        TEXT NOT NULL,
+                status      TEXT NOT NULL,
+                sent_at     TEXT NOT NULL,
+                answered_at TEXT,
+                PRIMARY KEY (chat_id, alert_id, kind, sent_at)
+            )
+        """)
+
+        # Small key/value store for the Telegram getUpdates offset.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS app_state (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
+
         conn.commit()
     finally:
         conn.close()
@@ -281,9 +296,13 @@ def insert_signal(
     demoted_from: str | None = None,
     suppression_reason: str | None = None,
     monitoring_reason: str | None = None,
-    routing_regime: str | None = None,
+    routing_regime: str | None = ROUTING_REGIME,
 ) -> bool:
     """Insert a Signal into the database using INSERT OR IGNORE semantics.
+
+    Every insert is stamped with ROUTING_REGIME by default — including
+    MONITORING paths, which do not travel through the router. Pass
+    ``routing_regime=None`` only for a deliberate legacy replay.
 
     Returns:
         True if the signal was newly inserted.
@@ -301,8 +320,8 @@ def insert_signal(
                 score, routing_status, signal_price_snapshot, model_version,
                 thesis_version_hash, demoted_from, direction, pillar,
                 suppression_reason, weight_version, monitoring_reason,
-                routing_regime
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                routing_regime, trigger_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             signal.alert_id,
             signal.timestamp.isoformat(),
@@ -323,6 +342,7 @@ def insert_signal(
             signal.weight_version,
             effective_reason,
             routing_regime,
+            signal.trigger_json,
         ))
         conn.commit()
         return cursor.rowcount == 1
@@ -502,12 +522,13 @@ def insert_llm_call(
         conn.close()
 
 
-def count_delivered_today() -> dict[str, int]:
+def count_delivered_today(agent: str | None = None) -> dict[str, int]:
     """Return today's signal counts keyed by severity (ET timezone).
 
     Counts both PENDING and DELIVERED routing_status to stay conservative
     across job re-runs — a PENDING row from a failed prior run still consumes
-    budget.
+    budget. When *agent* is given, only that agent's rows are counted, which is
+    what per-agent ACTION_REQUIRED lanes need (Plan 12a).
 
     Uses ISO date-prefix matching on the timestamp column — all timestamps are
     stored as ET ISO strings by convention, so LIKE 'YYYY-MM-DD%' is correct.
@@ -522,12 +543,17 @@ def count_delivered_today() -> dict[str, int]:
     conn = _connect()
     try:
         cursor = conn.cursor()
-        cursor.execute("""
+        query = """
             SELECT severity, COUNT(*) FROM signals
             WHERE routing_status IN ('PENDING', 'DELIVERED')
               AND timestamp LIKE ? || '%'
-            GROUP BY severity
-        """, (today_iso,))
+        """
+        params: list = [today_iso]
+        if agent is not None:
+            query += " AND agent = ?"
+            params.append(agent)
+        query += " GROUP BY severity"
+        cursor.execute(query, params)
         return {row[0]: row[1] for row in cursor.fetchall()}
     finally:
         conn.close()
@@ -642,44 +668,6 @@ def update_signal_outcomes(
             ),
         )
         conn.commit()
-    finally:
-        conn.close()
-
-
-def insert_advice(row: dict) -> bool:
-    """Insert one advice row using INSERT OR IGNORE. Returns True if newly inserted."""
-    conn = _connect()
-    try:
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT OR IGNORE INTO advice (
-                advice_id, run_id, timestamp, ticker, account, held,
-                verdict, confidence, mom_axis, news_axis, factors_json, flags,
-                rationale, rationale_source, model_version, thesis_version_hash,
-                signal_price_snapshot, shadow_mode
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            row["advice_id"],
-            row.get("run_id"),
-            row["timestamp"],
-            row["ticker"],
-            row.get("account"),
-            int(bool(row.get("held", True))),
-            row["verdict"],
-            row["confidence"],
-            row["mom_axis"],
-            row["news_axis"],
-            row.get("factors_json", "{}"),
-            row.get("flags", ""),
-            row.get("rationale"),
-            row.get("rationale_source"),
-            row.get("model_version"),
-            row.get("thesis_version_hash"),
-            row.get("signal_price_snapshot"),
-            int(bool(row.get("shadow_mode", True))),
-        ))
-        conn.commit()
-        return cursor.rowcount == 1
     finally:
         conn.close()
 
@@ -1079,91 +1067,6 @@ def update_signal_acted(
         conn.close()
 
 
-def insert_wash_sale_trade(
-    *,
-    ticker: str,
-    account: str,
-    trade_date: date,
-    side: str,
-    quantity: float,
-    price: float,
-    notes: str | None = None,
-) -> None:
-    """Log one executed trade to the wash-sale ledger.
-
-    *price* is the per-share trade price, stored in the legacy `cost_basis`
-    column (documented at the schema: that column is reused as price-per-share,
-    not total cost). *side* is 'buy' or 'sell'. *account* must be one of
-    WASH_SALE_ACCOUNTS — a friendly ValueError beats a raw IntegrityError, but
-    the CHECK constraint remains the backstop.
-    """
-    if side not in ("buy", "sell"):
-        raise ValueError(f"wash_sale side must be 'buy' or 'sell', got {side!r}")
-    if account not in WASH_SALE_ACCOUNTS:
-        raise ValueError(
-            f"wash_sale account must be one of {WASH_SALE_ACCOUNTS}, got {account!r}"
-        )
-    conn = _connect()
-    try:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            INSERT INTO wash_sale
-                (ticker, account, trade_date, quantity, cost_basis, notes, side, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                ticker.upper(),
-                account,
-                trade_date.isoformat(),
-                quantity,
-                price,
-                notes,
-                side,
-                datetime.now(ZoneInfo("America/New_York")).isoformat(),
-            ),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def get_recent_trades(
-    ticker: str,
-    *,
-    since: date,
-    side: str | None = None,
-) -> list[dict]:
-    """Return logged trades for *ticker* on or after *since*.
-
-    Deliberately NO account filter — the IRS wash-sale rule applies across all
-    accounts held by the same taxpayer, so a loss realized in one Schwab
-    account disallows a repurchase in another. The operator's ledger must see
-    the cross-account picture or the whole table is worthless.
-
-    Rows are returned oldest-first with keys ticker/account/trade_date/
-    quantity/price/notes/side.
-    """
-    query = """
-        SELECT ticker, account, trade_date, quantity, cost_basis AS price, notes, side
-        FROM wash_sale
-        WHERE ticker = ? AND trade_date >= ?
-    """
-    params: list = [ticker.upper(), since.isoformat()]
-    if side is not None:
-        query += " AND side = ?"
-        params.append(side)
-    query += " ORDER BY trade_date ASC"
-    conn = _connect()
-    try:
-        cursor = conn.cursor()
-        cursor.execute(query, params)
-        columns = [col[0] for col in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
-    finally:
-        conn.close()
-
-
 def list_recent_delivered_signals(
     days: int = 14, *, now: datetime | None = None
 ) -> list[dict]:
@@ -1229,7 +1132,7 @@ def list_signals_for_review() -> list[dict]:
             """
             SELECT alert_id, timestamp, agent, severity, ticker, title, score,
                    routing_status, signal_price_snapshot, outcome_price_30d,
-                   outcome_price_90d, direction, acted, weight_version
+                   outcome_price_90d, direction, acted, weight_version, user_note
             FROM signals
             WHERE agent IN ('discovery_agent', 'news_classifier', 'exit_sentinel')
               AND routing_status IN ('DELIVERED', 'SUPPRESSED')
@@ -1346,110 +1249,6 @@ def get_llm_call_summary() -> list[dict]:
         conn.close()
 
 
-def get_routable_discovery_signals(
-    since: date,
-    *,
-    excluded_tickers: set[str] | None = None,
-    limit: int = 20,
-) -> list[dict]:
-    """Return recent routable (DELIVERED or SUPPRESSED) discovery_agent signals by score desc.
-
-    Includes SUPPRESSED so the daily delivery budget can't starve analysis —
-    the advisor's new-buy funnel should see every top scorer, not just the few
-    the router delivered that day.
-    """
-    conn = _connect()
-    try:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT ticker, score, timestamp
-            FROM signals
-            WHERE agent = 'discovery_agent'
-              AND routing_status IN ('DELIVERED', 'SUPPRESSED')
-              AND timestamp >= ?
-            ORDER BY score DESC, timestamp DESC
-            LIMIT ?
-        """, (since.isoformat(), limit))
-        rows = cursor.fetchall()
-    finally:
-        conn.close()
-
-    excluded = excluded_tickers or set()
-    return [
-        {"ticker": row[0], "score": row[1]}
-        for row in rows
-        if row[0] and row[0] not in excluded
-    ]
-
-
-def list_advice_backfill_candidates() -> list[AdviceBackfillCandidate]:
-    """Return advice rows still missing at least one deferred outcome price.
-
-    Measures all advice rows, not just operator-reviewed ones, so the
-    quarterly review can assess every verdict's outcome.
-    """
-    conn = _connect()
-    try:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT advice_id, ticker, timestamp, outcome_price_30d, outcome_price_90d
-            FROM advice
-            WHERE ticker IS NOT NULL
-              AND ticker != ''
-              AND (outcome_price_30d IS NULL OR outcome_price_90d IS NULL)
-            ORDER BY timestamp ASC
-        """)
-        return [
-            AdviceBackfillCandidate(
-                advice_id=row[0],
-                ticker=row[1],
-                timestamp=datetime.fromisoformat(row[2]),
-                outcome_price_30d=row[3],
-                outcome_price_90d=row[4],
-            )
-            for row in cursor.fetchall()
-        ]
-    finally:
-        conn.close()
-
-
-def update_advice_outcomes(
-    advice_id: str,
-    *,
-    outcome_price_30d: float | None = None,
-    outcome_price_90d: float | None = None,
-) -> None:
-    """Persist deferred outcome prices for an advice row without overwriting existing values."""
-    if outcome_price_30d is None and outcome_price_90d is None:
-        return
-
-    conn = _connect()
-    try:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            UPDATE advice
-            SET outcome_price_30d = CASE
-                    WHEN ? IS NOT NULL AND outcome_price_30d IS NULL THEN ?
-                    ELSE outcome_price_30d
-                END,
-                outcome_price_90d = CASE
-                    WHEN ? IS NOT NULL AND outcome_price_90d IS NULL THEN ?
-                    ELSE outcome_price_90d
-                END
-            WHERE advice_id = ?
-            """,
-            (
-                outcome_price_30d, outcome_price_30d,
-                outcome_price_90d, outcome_price_90d,
-                advice_id,
-            ),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
 def update_routing_status(alert_id: str, routing_status: str) -> None:
     """Flip the routing_status of an existing signal row.
 
@@ -1473,7 +1272,7 @@ def update_routing_status(alert_id: str, routing_status: str) -> None:
 _CANDIDATE_COLUMNS = """
     alert_id, timestamp, agent, severity, ticker, title, body, score,
     model_version, thesis_version_hash, signal_price_snapshot, direction,
-    pillar, weight_version, monitoring_reason, demoted_from
+    pillar, weight_version, monitoring_reason, demoted_from, trigger_json
 """
 
 
@@ -1494,8 +1293,104 @@ def _row_to_candidate(row: tuple) -> tuple[Signal, str | None]:
         pillar=row[12],
         weight_version=row[13],
         monitoring_reason=row[14],
+        trigger_json=row[16],
     )
     return signal, row[15]
+
+
+def list_unconfirmed_since(cutoff: datetime) -> list[tuple[Signal, str | None]]:
+    """Return (signal, demoted_from) for PENDING rows stamped at/after *cutoff* (ET-aware).
+
+    A PENDING row is a delivered signal whose Telegram send was never
+    confirmed. INFORMATIONAL rows are dispatch winners (staging never delivers
+    INFO); ACTION_REQUIRED rows are lane winners from news-morning or sentinel.
+    No job's rerun re-sends its own PENDING rows (INSERT OR IGNORE drops them
+    from the to-deliver list), so the telegram-poll sweep re-sends them.
+    """
+    return _list_pending("timestamp >= ?", cutoff)
+
+
+def list_unconfirmed_before(cutoff: datetime) -> list[tuple[Signal, str | None]]:
+    """Return (signal, demoted_from) for PENDING rows stamped before *cutoff* (ET-aware).
+
+    These are past the re-send window: re-sending a days-old alert as if it
+    were fresh would mislead, so the sweep closes them out instead.
+    """
+    return _list_pending("timestamp < ?", cutoff)
+
+
+def _list_pending(
+    timestamp_clause: str, cutoff: datetime
+) -> list[tuple[Signal, str | None]]:
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT {_CANDIDATE_COLUMNS}
+            FROM signals
+            WHERE routing_status = 'PENDING'
+              AND {timestamp_clause}
+            ORDER BY timestamp ASC, alert_id ASC
+            """,
+            (cutoff.isoformat(),),
+        )
+        return [_row_to_candidate(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+SEND_FAILED_REASON = "send_failed"
+
+
+def mark_unconfirmed_send_failed(alert_ids: list[str]) -> int:
+    """Close out PENDING rows that never reached the operator.
+
+    Sets routing_status='SUPPRESSED', suppression_reason='send_failed' (the
+    stored demoted_from is kept). Only rows still PENDING are touched, so a row
+    confirmed in the meantime is never overwritten. Returns rows updated.
+    """
+    if not alert_ids:
+        return 0
+    placeholders = ", ".join("?" for _ in alert_ids)
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            UPDATE signals
+               SET routing_status = 'SUPPRESSED', suppression_reason = ?
+             WHERE routing_status = 'PENDING'
+               AND alert_id IN ({placeholders})
+            """,
+            [SEND_FAILED_REASON, *alert_ids],
+        )
+        conn.commit()
+        return cursor.rowcount
+    finally:
+        conn.close()
+
+
+def confirm_unconfirmed_delivered(alert_id: str) -> bool:
+    """Flip one PENDING row to DELIVERED after a successful re-send.
+
+    Guarded on PENDING so the sweep can never resurrect a row that was closed
+    out or already confirmed. Returns True when the row was flipped.
+    """
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE signals SET routing_status = 'DELIVERED'
+             WHERE alert_id = ? AND routing_status = 'PENDING'
+            """,
+            (alert_id,),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
+    finally:
+        conn.close()
 
 
 def list_candidates_for_date(date_iso: str) -> list[tuple[Signal, str | None]]:
@@ -1635,5 +1530,362 @@ def count_candidates_older_than(cutoff: datetime) -> int:
             (cutoff.isoformat(),),
         )
         return int(cursor.fetchone()[0])
+    finally:
+        conn.close()
+
+
+def get_oldest_pending_timestamp() -> datetime | None:
+    """Return the timestamp of the oldest PENDING row, or None if there are none."""
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT MIN(timestamp), COUNT(*) FROM signals WHERE routing_status = 'PENDING'"
+        )
+        row = cursor.fetchone()
+        if not row or row[0] is None:
+            return None
+        return datetime.fromisoformat(row[0])
+    finally:
+        conn.close()
+
+
+def count_pending_older_than(cutoff: datetime) -> int:
+    """Count PENDING rows stamped before *cutoff* (an ET-aware datetime).
+
+    A PENDING row is a delivered signal whose Telegram send was never confirmed
+    (the job died after persist, before confirm_delivered_signals). Older than a
+    few hours it is stuck: the alert was never seen and must be surfaced.
+    """
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT COUNT(*) FROM signals WHERE routing_status = 'PENDING' AND timestamp < ?",
+            (cutoff.isoformat(),),
+        )
+        return int(cursor.fetchone()[0])
+    finally:
+        conn.close()
+
+
+def list_recent_delivered_news(
+    ticker: str,
+    since: date,
+    *,
+    agent: str = NEWS_CLASSIFIER_AGENT,
+) -> list[dict]:
+    """Return recent delivered news rows for *ticker* since *since*.
+
+    Used by the cross-day repeat-story filter (Plan 12c3). Scoped to the news
+    agent so a sentinel title can never look like a news repeat. The caller
+    filters out this run's own alert_ids — a failed-send rerun must not match
+    its earlier PENDING copy and suppress itself as a repeat.
+    """
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT alert_id, title FROM signals
+            WHERE ticker = ?
+              AND agent = ?
+              AND routing_status IN ('DELIVERED', 'PENDING')
+              AND timestamp >= ?
+            ORDER BY timestamp DESC
+            """,
+            (ticker, agent, since.isoformat()),
+        )
+        return [{"alert_id": row[0], "title": row[1]} for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def list_suppressed_for_date(
+    date_iso: str, agent: str
+) -> list[tuple[Signal, str | None, str | None]]:
+    """Return (signal, demoted_from, suppression_reason) for *agent*'s SUPPRESSED rows.
+
+    Scoped to the ET date. Dispatch uses this to render the complete "exits not
+    delivered" section — including rows suppressed by an earlier run of the same
+    day, so a failed-send rerun still produces a truthful digest.
+    """
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT {_CANDIDATE_COLUMNS}, suppression_reason
+            FROM signals
+            WHERE routing_status = 'SUPPRESSED'
+              AND agent = ?
+              AND timestamp LIKE ? || '%'
+            ORDER BY timestamp ASC, alert_id ASC
+            """,
+            (agent, date_iso),
+        )
+        return [
+            (*_row_to_candidate(row[:17]), row[17])
+            for row in cursor.fetchall()
+        ]
+    finally:
+        conn.close()
+
+
+def count_routing_status_for_agent_on_date(
+    date_iso: str, agent: str, routing_status: str
+) -> int:
+    """Count *agent* rows with *routing_status* stamped on *date_iso* (ET)."""
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT COUNT(*) FROM signals
+            WHERE agent = ?
+              AND routing_status = ?
+              AND timestamp LIKE ? || '%'
+            """,
+            (agent, routing_status, date_iso),
+        )
+        return int(cursor.fetchone()[0])
+    finally:
+        conn.close()
+
+
+def count_suppressed_for_date(date_iso: str, agent: str) -> int:
+    """Count SUPPRESSED rows for *agent* on *date_iso* (ET)."""
+    return count_routing_status_for_agent_on_date(date_iso, agent, "SUPPRESSED")
+
+
+def count_shadow_signals_for_date(date_iso: str) -> int:
+    """Count discovery rows persisted as suppression_reason='shadow' today."""
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT COUNT(*) FROM signals
+            WHERE agent = 'discovery_agent'
+              AND routing_status = 'SUPPRESSED'
+              AND suppression_reason = 'shadow'
+              AND timestamp LIKE ? || '%'
+            """,
+            (date_iso,),
+        )
+        return int(cursor.fetchone()[0])
+    finally:
+        conn.close()
+
+
+# --- Telegram action logging (Plan 12e) --------------------------------------
+
+
+def insert_telegram_message(
+    *,
+    chat_id: str,
+    message_id: int | None,
+    alert_id: str,
+    kind: str,
+    status: str,
+) -> None:
+    """Record one button/review message sent for an alert."""
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO telegram_messages
+                (chat_id, message_id, alert_id, kind, status, sent_at, answered_at)
+            VALUES (?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (
+                chat_id,
+                message_id,
+                alert_id,
+                kind,
+                status,
+                datetime.now(ZoneInfo("America/New_York")).isoformat(),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_telegram_message_by_id(chat_id: str, message_id: int) -> dict | None:
+    """Return the newest telegram_messages row for (chat_id, message_id)."""
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT chat_id, message_id, alert_id, kind, status, sent_at
+            FROM telegram_messages
+            WHERE chat_id = ? AND message_id = ?
+            ORDER BY sent_at DESC
+            LIMIT 1
+            """,
+            (chat_id, message_id),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        columns = [col[0] for col in cursor.description]
+        return dict(zip(columns, row))
+    finally:
+        conn.close()
+
+
+def mark_telegram_message_answered(
+    *, chat_id: str, alert_id: str, kind: str = "alert"
+) -> None:
+    """Stamp answered_at on the newest message row for (chat_id, alert_id, kind)."""
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            UPDATE telegram_messages
+               SET answered_at = ?
+             WHERE chat_id = ?
+               AND alert_id = ?
+               AND kind = ?
+               AND sent_at = (
+                   SELECT MAX(sent_at) FROM telegram_messages
+                   WHERE chat_id = ? AND alert_id = ? AND kind = ?
+               )
+            """,
+            (
+                datetime.now(ZoneInfo("America/New_York")).isoformat(),
+                chat_id,
+                alert_id,
+                kind,
+                chat_id,
+                alert_id,
+                kind,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_telegram_messages_since(
+    since: datetime, *, status: str | None = None
+) -> list[dict]:
+    """Return telegram_messages rows sent at/after *since*, newest first."""
+    query = """
+        SELECT chat_id, message_id, alert_id, kind, status, sent_at, answered_at
+        FROM telegram_messages
+        WHERE sent_at >= ?
+    """
+    params: list = [since.isoformat()]
+    if status is not None:
+        query += " AND status = ?"
+        params.append(status)
+    query += " ORDER BY sent_at DESC"
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        columns = [col[0] for col in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_app_state(key: str) -> str | None:
+    """Return the stored value for *key*, or None."""
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT value FROM app_state WHERE key = ?", (key,)
+        ).fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def set_app_state(key: str, value: str) -> None:
+    """Insert or replace one app_state key/value pair."""
+    conn = _connect()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO app_state (key, value) VALUES (?, ?)",
+            (key, value),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def update_signal_user_note(alert_id: str, note: str) -> None:
+    """Set user_note on a DELIVERED signal without touching acted/acted_at."""
+    conn = _connect()
+    try:
+        conn.execute(
+            "UPDATE signals SET user_note = ? WHERE alert_id = ? AND routing_status = 'DELIVERED'",
+            (note, alert_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_unacted_delivered_since(
+    since: datetime, *, limit: int = 10
+) -> list[dict]:
+    """Return DELIVERED, acted-IS-NULL signals since *since*, newest first."""
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT alert_id, timestamp, agent, severity, ticker, title, score
+            FROM signals
+            WHERE routing_status = 'DELIVERED'
+              AND acted IS NULL
+              AND timestamp >= ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+            """,
+            (since.isoformat(), limit),
+        )
+        columns = [col[0] for col in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+BULK_CLOSE_NOTE_PREFIX = "bulk-closed:"
+
+
+def bulk_close_delivered_before(date_iso: str, note: str) -> int:
+    """Stamp a bulk-close note on unreviewed DELIVERED rows older than *date_iso*.
+
+    Per Plan 10 §10d.1: acted/acted_at stay NULL — this documents "never
+    reviewed", not a retrospective decision. Existing notes (e.g. a Telegram
+    reply-to-note) are never overwritten, and the note is always normalized to
+    the ``bulk-closed:`` prefix so review-report can exclude it regardless of
+    the operator's wording. Returns rows actually stamped.
+    """
+    normalized = (
+        note if note.startswith(BULK_CLOSE_NOTE_PREFIX) else f"{BULK_CLOSE_NOTE_PREFIX} {note}"
+    )
+    conn = _connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE signals
+               SET user_note = ?
+             WHERE routing_status = 'DELIVERED'
+               AND acted IS NULL
+               AND (user_note IS NULL OR TRIM(user_note) = '')
+               AND timestamp < ?
+            """,
+            (normalized, date_iso),
+        )
+        conn.commit()
+        return cursor.rowcount
     finally:
         conn.close()

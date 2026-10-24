@@ -217,6 +217,28 @@ def test_acted_vs_ignored_split(db):
     assert metrics.unacted_count == 0
 
 
+def test_bulk_closed_note_is_excluded_from_unreviewed_count(db):
+    conn = sqlite3.connect(db)
+    _spy(conn, "2026-01-05", 100.0)
+    _spy(conn, "2026-02-04", 110.0)
+    for alert_id, ticker in (("bulk", "AAA"), ("fresh", "BBB")):
+        _insert_signal(
+            conn, alert_id=alert_id, agent="discovery_agent",
+            severity="INFORMATIONAL", routing_status="DELIVERED", ticker=ticker,
+            timestamp=datetime(2026, 1, 5, 9, 0, tzinfo=timezone.utc),
+            score=80.0, snapshot=100.0, outcome_30d=120.0,
+        )
+    conn.execute(
+        "UPDATE signals SET user_note=? WHERE alert_id='bulk'",
+        (f"{repository.BULK_CLOSE_NOTE_PREFIX} unreviewed backlog",),
+    )
+    conn.commit()
+    conn.close()
+
+    result = report.compute_report()
+    assert result.per_agent["discovery_agent"].unacted_count == 1
+
+
 def test_weight_version_breakdown(db):
     conn = sqlite3.connect(db)
     _spy(conn, "2026-01-05", 100.0)

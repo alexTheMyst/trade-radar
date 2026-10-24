@@ -22,6 +22,7 @@ from signal_system.jobs.common import (
     confirm_delivered_signals,
     persist_routed_signals,
     render_digest,
+    send_alert_buttons,
     validate_digest_payload,
 )
 from signal_system.monitoring import heartbeat
@@ -197,8 +198,29 @@ def run() -> None:
                 delivered_signals=persistence_summary.delivered_signals,
                 db_monitoring_breakdown=db_monitoring_breakdown,
             )
-            telegram_sender.send_message(f"{digest.subject}\n\n{digest.body}")
+            ar_winner = next(
+                (
+                    signal
+                    for signal, status, _dmf, _reason in routed
+                    if status == "DELIVERED" and signal.severity == "ACTION_REQUIRED"
+                ),
+                None,
+            )
+            demoted_count = sum(
+                1 for _s, _rs, dmf, _reason in routed if dmf == "ACTION_REQUIRED"
+            )
+            lane_line = (
+                f"AR lane: delivered "
+                f"{ar_winner.ticker if ar_winner is not None else 'none'} "
+                f"| demoted {demoted_count}"
+            )
+            telegram_sender.send_message(
+                f"{digest.subject}\n\n{digest.body}\n\n{lane_line}"
+            )
             confirm_delivered_signals(persistence_summary.delivered_signals)
+            send_alert_buttons(
+                persistence_summary.delivered_signals, held_tickers=held_tickers
+            )
             repository.update_run(run_id, "success")
     except Exception:
         repository.update_run(run_id, "failed")

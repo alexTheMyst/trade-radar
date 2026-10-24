@@ -1,11 +1,22 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import logging
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 
+from signal_system import config
 from signal_system.classifier.news_classifier import NEWS_CLASSIFIER_AGENT
-from signal_system.models import Signal, competition_score
+from signal_system.delivery import telegram_sender
+from signal_system.models import (
+    DISCOVERY_AGENT,
+    EXIT_SENTINEL_AGENT,
+    Signal,
+    competition_score,
+)
 from signal_system.router import BUDGET_AR, BUDGET_INFO, ROUTING_REGIME
 from signal_system.state import repository
+
+logger = logging.getLogger(__name__)
 
 RoutedSignal = tuple[Signal, str, str | None, str | None]
 
@@ -115,6 +126,164 @@ def confirm_delivered_signals(signals: list[Signal]) -> None:
     """Flip PENDING → DELIVERED for successfully sent signals."""
     for sig in signals:
         repository.update_routing_status(sig.alert_id, "DELIVERED")
+
+
+def send_alert_buttons(
+    signals: list[Signal], *, held_tickers: set[str] | None = None
+) -> None:
+    """Send per-alert Telegram action buttons after a successful digest send.
+
+    A button failure must never fail the job: the alert itself was already
+    delivered in the digest. It is recorded as ``send_failed`` so the watchdog
+    can surface it (Plan 12e1).
+    """
+    held = held_tickers or set()
+    for signal in signals:
+        try:
+            message_id = telegram_sender.send_alert_with_buttons(
+                signal, held=(signal.ticker in held) if signal.ticker else False
+            )
+        except Exception:
+            logger.warning(
+                "Telegram button message failed for %s", signal.alert_id[:12],
+                exc_info=True,
+            )
+            repository.insert_telegram_message(
+                chat_id=config.TELEGRAM_CHAT_ID,
+                message_id=None,
+                alert_id=signal.alert_id,
+                kind="alert",
+                status="send_failed",
+            )
+        else:
+            repository.insert_telegram_message(
+                chat_id=config.TELEGRAM_CHAT_ID,
+                message_id=message_id,
+                alert_id=signal.alert_id,
+                kind="alert",
+                status="sent" if message_id is not None else "send_failed",
+            )
+
+
+# --- Unconfirmed-send sweep -------------------------------------------------
+# A PENDING row is a delivered alert whose Telegram send was never confirmed.
+# No job's rerun re-sends its own PENDING rows, so telegram-poll (every 15 min,
+# 07:00-23:00 ET) is the single owner of re-sending them. One owner means two
+# sweepers can never race the same row.
+
+# Rows younger than this are re-sent; older ones are closed out as
+# send_failed — a days-old alert re-sent as if fresh would mislead.
+RESEND_WINDOW = timedelta(days=3)
+
+# A 'running' row older than this is a crashed job, not one still sending
+# (every producing job finishes in minutes).
+IN_FLIGHT_MAX_AGE = timedelta(hours=2)
+
+# Job that persists each agent's ACTION_REQUIRED lane winners as PENDING.
+# INFORMATIONAL PENDING rows only ever come from dispatch.
+_AR_PRODUCING_JOB: dict[str, str] = {
+    NEWS_CLASSIFIER_AGENT: "news-morning",
+    EXIT_SENTINEL_AGENT: "sentinel",
+    DISCOVERY_AGENT: "discovery",
+}
+
+
+@dataclass
+class ResendResult:
+    resent: list[Signal] = field(default_factory=list)
+    skipped_in_flight: list[Signal] = field(default_factory=list)
+    closed_out: list[Signal] = field(default_factory=list)
+
+
+def _producing_job(signal: Signal) -> str | None:
+    if signal.severity == "INFORMATIONAL":
+        return "dispatch"
+    return _AR_PRODUCING_JOB.get(signal.agent)
+
+
+def _job_in_flight(job: str, now_et: datetime) -> bool:
+    latest = repository.get_latest_run(job)
+    return (
+        latest is not None
+        and latest["status"] == "running"
+        and now_et - latest["started_at"] < IN_FLIGHT_MAX_AGE
+    )
+
+
+def _closed_out_notice(signals: list[Signal]) -> str:
+    lines = [
+        f"⚠️ {len(signals)} alert(s) could not be delivered for "
+        f"{RESEND_WINDOW.days}+ days and were closed out as send_failed:"
+    ]
+    for signal in signals:
+        lines.append(
+            f"{signal.ticker or 'MACRO'} · {signal.agent} · {signal.severity} · "
+            f"raised {signal.timestamp:%Y-%m-%d %H:%M} ET — {signal.title}"
+        )
+    return "\n".join(lines)
+
+
+def resend_unconfirmed(
+    now_et: datetime, *, held_tickers: set[str] | None = None
+) -> ResendResult:
+    """Re-send stuck PENDING alerts and close out the ones past the window.
+
+    Rows inside RESEND_WINDOW are re-sent as button messages labelled with when
+    they were raised, then flipped to DELIVERED. A row is skipped while its
+    producing job has a run in flight — that run may be between persist and
+    confirm, and re-sending would duplicate the alert; the next sweep gets it.
+
+    Rows past the window are announced in one notice and then closed out as
+    SUPPRESSED/'send_failed'. The notice goes first: if Telegram is still down,
+    the rows stay PENDING and the next sweep tries again.
+
+    A send failure propagates (after the sender's own transient retries): an
+    unreachable Telegram must fail the run so the heartbeat pages through an
+    independent channel. Rows confirmed before the failure stay confirmed.
+    """
+    held = held_tickers or set()
+    result = ResendResult()
+    cutoff = now_et - RESEND_WINDOW
+
+    expired = [s for s, _dmf in repository.list_unconfirmed_before(cutoff)]
+    if expired:
+        telegram_sender.send_message(_closed_out_notice(expired))
+        repository.mark_unconfirmed_send_failed([s.alert_id for s in expired])
+        result.closed_out = expired
+        logger.warning("closed out %d unconfirmed alert(s) as send_failed", len(expired))
+
+    in_flight: dict[str, bool] = {}
+    for signal, _dmf in repository.list_unconfirmed_since(cutoff):
+        job = _producing_job(signal)
+        if job is not None:
+            if job not in in_flight:
+                in_flight[job] = _job_in_flight(job, now_et)
+            if in_flight[job]:
+                logger.info(
+                    "not re-sending PENDING %s %s yet: %s is running",
+                    signal.agent,
+                    signal.alert_id[:12],
+                    job,
+                )
+                result.skipped_in_flight.append(signal)
+                continue
+        message_id = telegram_sender.send_alert_with_buttons(
+            signal,
+            held=(signal.ticker in held) if signal.ticker else False,
+            prefix=f"Re-sent (raised {signal.timestamp:%a %m-%d %H:%M} ET) · ",
+        )
+        if repository.confirm_unconfirmed_delivered(signal.alert_id):
+            repository.insert_telegram_message(
+                chat_id=config.TELEGRAM_CHAT_ID,
+                message_id=message_id,
+                alert_id=signal.alert_id,
+                kind="alert",
+                status="sent" if message_id is not None else "send_failed",
+            )
+            result.resent.append(signal)
+    if result.resent:
+        logger.warning("re-sent %d unconfirmed alert(s)", len(result.resent))
+    return result
 
 
 def render_digest(
@@ -239,6 +408,7 @@ _MONITORING_CATEGORY_LABELS: tuple[tuple[str, str], ...] = (
     ("parse_failure", "parse-fail"),
     ("reconciled", "reconciled"),
     ("cooldown", "cooldown"),
+    ("repeat", "repeat"),
 )
 
 

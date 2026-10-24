@@ -218,21 +218,56 @@ def test_is_cooldown_false_with_no_prior():
 
 
 def test_is_cooldown_true_on_prior_info():
-    prior = [{"severity": "INFORMATIONAL", "demoted_from": None}]
+    prior = [
+        {"severity": "INFORMATIONAL", "demoted_from": None, "routing_status": "DELIVERED"}
+    ]
     assert is_cooldown(prior, "INFORMATIONAL") is True
+
+
+def test_is_cooldown_ignores_suppressed_prior():
+    """Plan 12a3: an undelivered prior row never starts a cooldown."""
+    prior = [
+        {"severity": "INFORMATIONAL", "demoted_from": None, "routing_status": "SUPPRESSED"}
+    ]
+    assert is_cooldown(prior, "INFORMATIONAL") is False
+
+
+def test_is_cooldown_ignores_candidate_prior():
+    prior = [
+        {"severity": "ACTION_REQUIRED", "demoted_from": None, "routing_status": "CANDIDATE"}
+    ]
+    assert is_cooldown(prior, "INFORMATIONAL") is False
+
+
+def test_is_cooldown_ignores_pending_prior():
+    """Plan 12a3: a stuck PENDING row (failed send, never seen) must not suppress."""
+    prior = [
+        {"severity": "ACTION_REQUIRED", "demoted_from": None, "routing_status": "PENDING"}
+    ]
+    assert is_cooldown(prior, "INFORMATIONAL") is False
 
 
 def test_is_cooldown_escalation_bypasses():
     """New AR with only prior INFO rows must get through."""
-    prior = [{"severity": "INFORMATIONAL", "demoted_from": None}]
+    prior = [
+        {"severity": "INFORMATIONAL", "demoted_from": None, "routing_status": "DELIVERED"}
+    ]
     assert is_cooldown(prior, "ACTION_REQUIRED") is False
 
 
 def test_is_cooldown_true_when_prior_was_severe():
-    prior = [{"severity": "ACTION_REQUIRED", "demoted_from": None}]
+    prior = [
+        {"severity": "ACTION_REQUIRED", "demoted_from": None, "routing_status": "DELIVERED"}
+    ]
     assert is_cooldown(prior, "INFORMATIONAL") is True
 
 
 def test_is_cooldown_true_when_prior_was_demoted_severe():
-    prior = [{"severity": "INFORMATIONAL", "demoted_from": "ACTION_REQUIRED"}]
+    prior = [
+        {
+            "severity": "INFORMATIONAL",
+            "demoted_from": "ACTION_REQUIRED",
+            "routing_status": "DELIVERED",
+        }
+    ]
     assert is_cooldown(prior, "ACTION_REQUIRED") is True

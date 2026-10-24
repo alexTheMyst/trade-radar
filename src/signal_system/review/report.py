@@ -277,7 +277,11 @@ def _compute_agent_metrics(rows: list[dict], agent: str) -> AgentMetrics:
             acted_excess.append(signed)
         elif row.get("acted") == 0:
             ignored_excess.append(signed)
-        else:
+        elif not str(row.get("user_note") or "").startswith(
+            repository.BULK_CLOSE_NOTE_PREFIX
+        ):
+            # Bulk-closed backlog rows are documented as "never reviewed", not
+            # a forward-looking unreviewed sample (Plan 10 §10d.1).
             unacted += 1
 
     metrics.delivered_mean_excess_30d = _mean(delivered_excess)

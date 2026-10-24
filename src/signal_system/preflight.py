@@ -64,13 +64,14 @@ SCHEDULED_JOBS = (
     "daily-close",
     "news-morning",
     "discovery",
-    "advisor",
     "outcome-backfill",
     "review-report",
     "weekly-synthesis",
     "sentinel",
     "backup",
     "watchdog",
+    "dispatch",
+    "telegram-poll",
 )
 
 SKIP_MSG = "skipped — config unavailable (see [A])"
@@ -268,6 +269,28 @@ def check_general_news() -> Check:
     return Check(PASS, f"general_news={len(news)} items")
 
 
+def check_telegram_webhook() -> Check:
+    """getWebhookInfo must report an empty url — a webhook makes getUpdates 409."""
+    cfg = _config_or_none()
+    if cfg is None:
+        return Check(WARN, SKIP_MSG)
+    try:
+        from signal_system.delivery.telegram_sender import get_webhook_info
+
+        info = get_webhook_info()
+    except Exception as exc:
+        return Check(FAIL, f"getWebhookInfo failed: {_safe_err(exc)}")
+    url = str(info.get("url") or "")
+    if url:
+        return Check(
+            FAIL,
+            f"webhook configured ({url}) — telegram-poll getUpdates will return 409",
+        )
+    pending = info.get("pending_update_count")
+    suffix = f", pending {pending}" if pending is not None else ""
+    return Check(PASS, f"getUpdates available (no webhook{suffix})")
+
+
 PAID_PROBE_CALLS = (
     ("^GSPC", "quote"),
     ("^VIX", "quote"),
@@ -450,7 +473,12 @@ SECTIONS: tuple[tuple[str, str, list[CheckFn]], ...] = (
     (
         "A",
         "Secrets & config",
-        [check_required_secrets, check_per_job_healthchecks, check_model_pin],
+        [
+            check_required_secrets,
+            check_per_job_healthchecks,
+            check_model_pin,
+            check_telegram_webhook,
+        ],
     ),
     ("B", "Anthropic", [check_anthropic]),
     (

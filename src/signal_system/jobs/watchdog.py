@@ -38,22 +38,35 @@ EXPECTED_MAX_AGE_HOURS: dict[str, int | None] = {
     "discovery": 30,  # weekdays 10:30 ET
     "sentinel": 30,  # weekdays 17:00 ET
     "dispatch": 30,  # weekdays 17:40 ET — pooled INFO arbitration (Plan 06)
+    "outcome-backfill": 30,  # weekdays 17:30 ET
+    "telegram-poll": 26,  # every 15 min, 07:00-23:00 ET
     "review-report": None,  # cadence TBD — skip until scheduled
     "weekly-synthesis": 200,  # Mondays 08:00 ET -> ~8 days tolerance
     "backup": 200,  # Sundays 08:00 ET
-    "outcome-backfill": None,  # skip until scheduled
 }
 
 # Weekday-only jobs: weekend hours don't count against their SLA, so a Friday
 # success keeps Monday green without a false alarm (the 30h SLA means "30 hours
 # of weekday runtime" for these jobs).
 WEEKDAY_JOBS = frozenset(
-    {"daily-close", "news-morning", "discovery", "sentinel", "dispatch"}
+    {
+        "daily-close",
+        "news-morning",
+        "discovery",
+        "sentinel",
+        "dispatch",
+        "outcome-backfill",
+    }
 )
 
 # A CANDIDATE row older than this was never dispatched: the evening dispatch
 # died or never ran, so staged INFO signals are silently going nowhere.
 STALE_CANDIDATE_MAX_AGE = timedelta(hours=36)
+
+# A PENDING row older than this is a delivered signal whose Telegram send was
+# never confirmed (the job died between persist and confirm_delivered_signals).
+# 3h is far beyond any legitimately in-flight send.
+STALE_PENDING_MAX_AGE = timedelta(hours=3)
 
 # A most-recent run still 'running' older than this is a hard crash (power
 # loss, OOM, kill): insert_run() wrote 'running' but update_run() never ran.
@@ -157,6 +170,32 @@ def check_jobs(now: datetime | None = None) -> tuple[list[tuple[str, str]], list
             (
                 "dispatch",
                 f"{stale_candidates} staged candidate(s) never dispatched{since}",
+            )
+        )
+
+    # Delivered signals whose send was never confirmed: the alert itself never
+    # reached the operator, so it must be surfaced as loudly as a dead job.
+    pending_cutoff = effective_now - STALE_PENDING_MAX_AGE
+    stale_pending = repository.count_pending_older_than(pending_cutoff)
+    if stale_pending:
+        oldest = repository.get_oldest_pending_timestamp()
+        since = f" since {_format_et(oldest)}" if oldest else ""
+        failing.append(
+            (
+                "dispatch",
+                f"{stale_pending} delivered signal(s) stuck PENDING (send never confirmed){since}",
+            )
+        )
+
+    # Telegram button messages that never reached the operator (Plan 12e1).
+    failed_buttons = repository.list_telegram_messages_since(
+        effective_now - timedelta(hours=24), status="send_failed"
+    )
+    if failed_buttons:
+        failing.append(
+            (
+                "telegram-poll",
+                f"{len(failed_buttons)} action-button message(s) failed to send in the last 24h",
             )
         )
 

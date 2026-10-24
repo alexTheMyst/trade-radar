@@ -54,5 +54,12 @@ THESIS_PATH: str = _optional("THESIS_PATH", "thesis.yaml")
 # Backup destination (relative paths are anchored at repo root by jobs/backup.py)
 BACKUP_DIR: str = _optional("BACKUP_DIR", "state/backups")
 
-# Advisor phase -- set ADVISOR_SHADOW_MODE=false after IC review validates the matrix
-ADVISOR_SHADOW_MODE: bool = _optional("ADVISOR_SHADOW_MODE", "true").lower() != "false"
+# Discovery mode (Plan 12d): "shadow" logs and measures signals but never
+# delivers them; "compete" lets Discovery compete for INFORMATIONAL slots at
+# last priority. Discovery's ACTION_REQUIRED lane stays 0 in both modes.
+# Re-enabling INFO delivery is an operator decision at quarterly review.
+DISCOVERY_MODE: str = _optional("DISCOVERY_MODE", "shadow").lower()
+if DISCOVERY_MODE not in ("shadow", "compete"):
+    raise RuntimeError(
+        f"DISCOVERY_MODE must be 'shadow' or 'compete', got {DISCOVERY_MODE!r}"
+    )

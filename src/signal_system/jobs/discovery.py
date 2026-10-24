@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from signal_system import config
 from signal_system.data.universe import (
     get_core_holdings,
     get_industries,
@@ -20,6 +21,7 @@ from signal_system.jobs.common import (
     confirm_delivered_signals,
     persist_routed_signals,
     render_digest,
+    send_alert_buttons,
     validate_digest_payload,
 )
 from signal_system.models import DISCOVERY_AGENT
@@ -60,8 +62,17 @@ def run() -> None:
             tickers = require_non_empty_universe(get_todays_universe(), job="discovery")
             score_result = score_universe(tickers, run_id, now_et.date().isoformat())
 
-            # Option D: AR routes now; INFO is staged for the evening dispatch job.
-            routed = stage_signals(score_result.signals)
+            # Plan 12d: shadow mode logs every signal as SUPPRESSED/'shadow' and
+            # never stages a CANDIDATE. Compete mode keeps the pre-12 routing.
+            shadow_mode = config.DISCOVERY_MODE == "shadow"
+            if shadow_mode:
+                routed = [
+                    (signal, "SUPPRESSED", None, "shadow")
+                    for signal in score_result.signals
+                ]
+            else:
+                # Option D: AR routes now; INFO is staged for the evening dispatch.
+                routed = stage_signals(score_result.signals)
             # Deltas MUST be computed before persistence — persisting first lets
             # get_previous_score() find this run's own rows instead of a prior scan.
             score_deltas = compute_score_deltas(routed)
@@ -79,6 +90,18 @@ def run() -> None:
             )
             industry_section = _render_industry_rollup_section(score_result.composite_by_ticker)
             body = f"{digest.body}\n\n{industry_section}" if industry_section else digest.body
+            if shadow_mode:
+                top = sorted(
+                    score_result.signals, key=lambda s: -(s.score or 0.0)
+                )[:3]
+                top_text = ", ".join(
+                    f"{s.ticker or 'MACRO'} {(s.score or 0.0):.0f}" for s in top
+                )
+                body += (
+                    f"\n\nShadow mode: scanned {len(tickers)}, "
+                    f"signaled {len(score_result.signals)}, "
+                    f"0 eligible for delivery. Top 3: {top_text or 'none'}"
+                )
             db_counts = repository.count_signals_by_routing_status(
                 now_et, DISCOVERY_AGENT
             )
@@ -98,6 +121,9 @@ def run() -> None:
             )
             _send_digest_once(subject=digest.subject, body=body)
             confirm_delivered_signals(persistence_summary.delivered_signals)
+            send_alert_buttons(
+                persistence_summary.delivered_signals, held_tickers=held_tickers
+            )
             repository.update_run(run_id, "success")
     except Exception:
         repository.update_run(run_id, "failed")

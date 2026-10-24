@@ -21,6 +21,16 @@ NEWS_CLASSIFIER_AGENT: str = "news_classifier"
 DISCOVERY_AGENT: str = "discovery_agent"
 EXIT_SENTINEL_AGENT: str = "exit_sentinel"
 
+# Routing-regime stamp written to signals.routing_regime. Defined here (stdlib
+# only) so repository.py can stamp every insert without importing the router.
+# NULL = legacy first-come routing; never backfilled, so pre- and post-change
+# rows are never aggregated together (same convention as weight_version).
+#
+# v2 (Plan 12): per-agent ACTION_REQUIRED lanes, a reserved sentinel INFO slot,
+# a macro-news cap, explicit shadow-mode Discovery, and the repeat-story
+# monitoring reason.
+ROUTING_REGIME: str = "deferred-info-priority-v2"
+
 # The sentinel emits native 0-100 scores (raw passthrough), so it sits on the
 # same competition scale as Discovery. An agent NOT on 0-100 loses every slot
 # competition — competition_score() only rescales news_classifier confidences.
@@ -66,7 +76,8 @@ class Signal:
     direction: str | None = None  # "positive" | "negative" | "neutral" from ClassificationResult
     pillar: str | None = None  # thesis pillar name from ClassificationResult; None for non-news signals
     weight_version: str | None = None  # scoring-regime stamp (Discovery); NULL = legacy-mixed regime
-    monitoring_reason: str | None = None  # off_thesis | volume_cap | parse_failure | below_threshold | reconciled | cooldown
+    monitoring_reason: str | None = None  # off_thesis | volume_cap | parse_failure | below_threshold | reconciled | cooldown | repeat
+    trigger_json: str | None = None  # JSON of breached sentinel triggers; NULL for other agents
 
 
 def compute_alert_id(ticker: str | None, date_iso: str, rule: str, agent: str) -> str:

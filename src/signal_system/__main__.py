@@ -1,10 +1,9 @@
 import logging
 import sys
-from datetime import datetime, timedelta
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from signal_system import redaction
-from signal_system.advisor.verdict_engine import WASH_SALE_WINDOW_DAYS
 from signal_system.state import repository
 from signal_system.data.universe_builder import apply_merged_universe, diff_universe
 
@@ -32,7 +31,6 @@ JOB_NAMES = (
     "daily-close",
     "discovery",
     "news-morning",
-    "advisor",
     "outcome-backfill",
     "review-report",
     "weekly-synthesis",
@@ -40,6 +38,7 @@ JOB_NAMES = (
     "sentinel",
     "watchdog",
     "dispatch",
+    "telegram-poll",
 )
 
 
@@ -53,19 +52,18 @@ def _load_jobs() -> dict:
     from signal_system.jobs.daily_close import run as run_daily_close
     from signal_system.jobs.discovery import run as run_discovery
     from signal_system.jobs.news_morning import run as run_news_morning
-    from signal_system.jobs.advisor import run as run_advisor
     from signal_system.jobs.outcome_backfill import run as run_outcome_backfill
     from signal_system.jobs.review_report import run as run_review_report
     from signal_system.jobs.sentinel import run as run_sentinel
     from signal_system.jobs.watchdog import run as run_watchdog
     from signal_system.jobs.dispatch import run as run_dispatch
+    from signal_system.jobs.telegram_poll import run as run_telegram_poll
     from signal_system.jobs.weekly_synthesis import run as run_weekly_synthesis
 
     jobs = {
         "daily-close": run_daily_close,
         "discovery": run_discovery,
         "news-morning": run_news_morning,
-        "advisor": run_advisor,
         "outcome-backfill": run_outcome_backfill,
         "review-report": run_review_report,
         "weekly-synthesis": run_weekly_synthesis,
@@ -73,6 +71,7 @@ def _load_jobs() -> dict:
         "sentinel": run_sentinel,
         "watchdog": run_watchdog,
         "dispatch": run_dispatch,
+        "telegram-poll": run_telegram_poll,
     }
     # JOB_NAMES is the import-safe registry used for dispatch and usage text;
     # drift between the two would let a job be advertised but not runnable.
@@ -86,7 +85,6 @@ def _load_jobs() -> dict:
 # module's public surface — resolved on access rather than at import — so
 # deferring the imports does not change what callers can reach.
 _LAZY_ATTRS: dict[str, tuple[str, str]] = {
-    "advise_ticker": ("signal_system.jobs.advisor", "advise_ticker"),
     "backfill_benchmark": ("signal_system.jobs.outcome_backfill", "backfill_benchmark"),
     "run_classifier_eval": ("signal_system.evals.classifier_eval", "run_eval"),
 }
@@ -195,30 +193,73 @@ def _cmd_build_universe(argv: list[str]) -> int:
     return 0
 
 
+def _cmd_bulk_close(before: date, note: str) -> None:
+    """Bulk-close unreviewed DELIVERED rows older than *before* (Plan 10 §10d.1)."""
+    updated = repository.bulk_close_delivered_before(before.isoformat(), note)
+    print(
+        f"Bulk-closed {updated} unreviewed delivered signal(s) older than "
+        f"{before.isoformat()} with note {note!r} (acted stays NULL)."
+    )
+
+
+_LOG_ACTION_USAGE = (
+    "Usage: python -m signal_system log-action <prefix> --acted|--passed "
+    "[--note \"...\"]  |  log-action --bulk-close-before YYYY-MM-DD --note \"...\""
+)
+
+
 def _parse_log_action(argv: list[str]) -> int:
     if not argv:
-        print("Usage: python -m signal_system log-action <prefix> --acted|--passed [--note \"...\"]")
+        print(_LOG_ACTION_USAGE)
         sys.exit(2)
-    prefix = argv[0]
-    acted: bool | None = None
+
+    bulk_before: date | None = None
     user_note: str | None = None
-    i = 1
+    acted: bool | None = None
+    prefix: str | None = None
+    i = 0
     while i < len(argv):
-        if argv[i] == "--acted":
+        arg = argv[i]
+        if arg == "--acted":
             acted = True
-        elif argv[i] == "--passed":
+        elif arg == "--passed":
             acted = False
-        elif argv[i] == "--note":
+        elif arg == "--note":
             if i + 1 >= len(argv):
                 print("--note requires a value")
                 sys.exit(2)
             user_note = argv[i + 1]
             i += 1
+        elif arg == "--bulk-close-before":
+            if i + 1 >= len(argv):
+                print("--bulk-close-before requires a value (YYYY-MM-DD)")
+                sys.exit(2)
+            try:
+                bulk_before = datetime.strptime(argv[i + 1], "%Y-%m-%d").date()
+            except ValueError:
+                print(f"Invalid --bulk-close-before value: {argv[i + 1]!r}")
+                sys.exit(2)
+            i += 1
+        elif arg.startswith("-"):
+            print(f"Unknown log-action argument: {arg!r}")
+            sys.exit(2)
+        elif prefix is None:
+            prefix = arg
         else:
-            print(f"Unknown log-action argument: {argv[i]!r}")
+            print(f"Unexpected log-action argument: {arg!r}")
             sys.exit(2)
         i += 1
 
+    if bulk_before is not None:
+        if not user_note:
+            print("--bulk-close-before requires a distinguishing --note")
+            sys.exit(2)
+        _cmd_bulk_close(bulk_before, user_note)
+        return 0
+
+    if prefix is None:
+        print(_LOG_ACTION_USAGE)
+        sys.exit(2)
     if acted is None:
         print("Must specify either --acted or --passed")
         sys.exit(2)
@@ -299,115 +340,6 @@ def _parse_replay_weights(argv: list[str]) -> int:
     return 0
 
 
-def _parse_log_trade(argv: list[str]) -> int:
-    """Parse and execute the log-trade operator command.
-
-    `log-trade <TICKER> --buy|--sell --account <literal> --qty N --price P
-    [--date YYYY-MM-DD] [--note "..."]`. Default date is ET today. Exits 2 on
-    any validation failure with the account literal list. On --sell, warns if
-    a buy in any account occurred within the prior 30 days (potential wash
-    sale if sold at a loss).
-    """
-    if not argv:
-        print("Usage: python -m signal_system log-trade <TICKER> --buy|--sell "
-              "--account <literal> --qty N --price P [--date YYYY-MM-DD] [--note \"...\"]")
-        sys.exit(2)
-
-    ticker = argv[0].upper()
-    side: str | None = None
-    account: str | None = None
-    qty: float | None = None
-    price: float | None = None
-    trade_date = datetime.now(_ET).date()
-    notes: str | None = None
-
-    i = 1
-    while i < len(argv):
-        arg = argv[i]
-        if arg == "--buy":
-            side = "buy"
-        elif arg == "--sell":
-            side = "sell"
-        elif arg == "--account":
-            if i + 1 >= len(argv):
-                print("--account requires a value")
-                sys.exit(2)
-            account = argv[i + 1]
-            i += 1
-        elif arg == "--qty":
-            if i + 1 >= len(argv):
-                print("--qty requires a value")
-                sys.exit(2)
-            try:
-                qty = float(argv[i + 1])
-            except ValueError:
-                print(f"Invalid --qty value: {argv[i + 1]!r}")
-                sys.exit(2)
-            i += 1
-        elif arg == "--price":
-            if i + 1 >= len(argv):
-                print("--price requires a value")
-                sys.exit(2)
-            try:
-                price = float(argv[i + 1])
-            except ValueError:
-                print(f"Invalid --price value: {argv[i + 1]!r}")
-                sys.exit(2)
-            i += 1
-        elif arg == "--date":
-            if i + 1 >= len(argv):
-                print("--date requires a value (YYYY-MM-DD)")
-                sys.exit(2)
-            try:
-                trade_date = datetime.strptime(argv[i + 1], "%Y-%m-%d").date()
-            except ValueError:
-                print(f"Invalid --date value: {argv[i + 1]!r} (expected YYYY-MM-DD)")
-                sys.exit(2)
-            i += 1
-        elif arg == "--note":
-            if i + 1 >= len(argv):
-                print("--note requires a value")
-                sys.exit(2)
-            notes = argv[i + 1]
-            i += 1
-        else:
-            print(f"Unknown log-trade argument: {arg!r}")
-            sys.exit(2)
-        i += 1
-
-    if side is None:
-        print("Must specify either --buy or --sell")
-        sys.exit(2)
-    if account is None or account not in repository.WASH_SALE_ACCOUNTS:
-        print(f"--account must be one of: {', '.join(repository.WASH_SALE_ACCOUNTS)}")
-        sys.exit(2)
-    if qty is None or price is None:
-        print("--qty and --price are required")
-        sys.exit(2)
-
-    repository.insert_wash_sale_trade(
-        ticker=ticker,
-        account=account,
-        trade_date=trade_date,
-        side=side,
-        quantity=qty,
-        price=price,
-        notes=notes,
-    )
-
-    print(f"Logged {side.upper()} {ticker} {qty:g} @ {price:g} ({account}) on {trade_date.isoformat()}")
-    if side == "sell":
-        since = trade_date - timedelta(days=WASH_SALE_WINDOW_DAYS)
-        recent_buys = repository.get_recent_trades(ticker, since=since, side="buy")
-        if recent_buys:
-            print(
-                f"WARNING: {len(recent_buys)} buy(s) for {ticker} in the prior 30 days "
-                f"(any account) — potential wash sale if sold at a loss. "
-                "Review IRS rule 26 USC 1091 before acting."
-            )
-    return 0
-
-
 if __name__ == "__main__":
     # Task Scheduler gives a cp1252 stdout; emoji in alert text would raise
     # UnicodeEncodeError from print() and fail the job.
@@ -423,9 +355,9 @@ if __name__ == "__main__":
 
     repository.init_db()
     if len(sys.argv) < 2:
-        print("Usage: python -m signal_system <job>  |  advise <TICKER>  |  "
+        print("Usage: python -m signal_system <job>  |  "
               "list-signals [--days N]  |  log-action <prefix> --acted|--passed  |  "
-              "log-trade <TICKER> --buy|--sell --account <lit> --qty N --price P  |  "
+              "log-action --bulk-close-before YYYY-MM-DD --note \"...\"  |  "
               "backfill-benchmark  |  replay-weights [--days N] [--weights A/B/C] [--horizons H1,H2] [--gates on|off]  |  "
               "eval-classifier  |  preflight")
         print(f"Available jobs: {list(JOB_NAMES)}")
@@ -433,21 +365,12 @@ if __name__ == "__main__":
 
     cmd = sys.argv[1]
 
-    if cmd == "advise":
-        if len(sys.argv) < 3:
-            print("Usage: python -m signal_system advise <TICKER>")
-            sys.exit(2)
-        from signal_system.jobs.advisor import advise_ticker
-
-        advise_ticker(sys.argv[2])
-    elif cmd == "list-signals":
+    if cmd == "list-signals":
         _parse_list_signals(sys.argv[2:])
     elif cmd == "build-universe":
         _cmd_build_universe(sys.argv[2:])
     elif cmd == "log-action":
         _parse_log_action(sys.argv[2:])
-    elif cmd == "log-trade":
-        _parse_log_trade(sys.argv[2:])
     elif cmd == "backfill-benchmark":
         from signal_system.jobs.outcome_backfill import backfill_benchmark
 
@@ -463,5 +386,5 @@ if __name__ == "__main__":
         _load_jobs()[cmd]()
     else:
         print(f"Unknown command: {cmd!r}")
-        print(f"Available jobs: {list(JOB_NAMES)}  |  advise <TICKER>  |  list-signals  |  log-action  |  log-trade  |  build-universe  |  backfill-benchmark  |  replay-weights  |  eval-classifier  |  preflight")
+        print(f"Available jobs: {list(JOB_NAMES)}  |  list-signals  |  log-action  |  build-universe  |  backfill-benchmark  |  replay-weights  |  eval-classifier  |  preflight")
         sys.exit(2)

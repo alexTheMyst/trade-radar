@@ -12,6 +12,8 @@ strings, so we overwrite any unset OR empty var with a test value.
 
 import os
 
+import pytest
+
 # Must run before any signal_system import (fixture timing is too late)
 _TEST_ENV = {
     "FINNHUB_API_KEY": "test_key",
@@ -24,4 +26,18 @@ _TEST_ENV = {
 for _key, _value in _TEST_ENV.items():
     if not os.environ.get(_key):  # unset or empty string
         os.environ[_key] = _value
+
+
+@pytest.fixture(autouse=True)
+def _stub_telegram_action_buttons(monkeypatch):
+    """Never let a job test reach the real Telegram API for button messages.
+
+    Button-send behaviour is exercised directly in test_telegram_actions.py,
+    where the module-level REAL function is restored before the test.
+    """
+    from signal_system.delivery import telegram_sender
+
+    monkeypatch.setattr(
+        telegram_sender, "send_alert_with_buttons", lambda signal, **kwargs: 1
+    )
 

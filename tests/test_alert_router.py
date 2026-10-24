@@ -41,8 +41,14 @@ def db(tmp_path, monkeypatch):
 
 
 def test_budget_constants_are_public():
-    """BUDGET_AR/BUDGET_INFO are public so jobs/common.py can render cap fractions."""
-    assert BUDGET_AR == 1
+    """BUDGET_AR/BUDGET_INFO are public so jobs/common.py can render cap fractions.
+
+    Plan 12a: BUDGET_AR is the derived total of the per-agent lanes (news 1 +
+    sentinel 1 + discovery 0), not a single shared slot.
+    """
+    from signal_system.router.alert_router import BUDGET_AR_BY_AGENT
+
+    assert BUDGET_AR == 2 == sum(BUDGET_AR_BY_AGENT.values())
     assert BUDGET_INFO == 3
 
 
