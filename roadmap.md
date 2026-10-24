@@ -64,7 +64,7 @@ The harder agent. Build incrementally.
 These are improvements, not features. Add only when the underlying system has been stable for 30+ days.
 
 - [ ] **Push notifications** — replace email for `ACTION_REQUIRED` only. Pushover ($5 one-time) or ntfy.sh (free). Keep email for INFORMATIONAL.
-- [ ] **Multi-account state** — extend `wash_sale` table with `account` column. Track wash sale windows across main Schwab, secondary Schwab, Roth IRA, HSA. This is a real tax risk — don't defer indefinitely.
+- [x] **Multi-account state** - retired: wash-sale tracking is delegated to Schwab; the in-system ledger was never populated and was removed in Plan 12e.
 - [ ] **Backtest harness** — feed historical signals into a script that computes hypothetical P&L. Lets you tune scoring weights without waiting another quarter. Trivial in pandas: load signals + price history, compute forward returns, group by signal characteristics. One-day project once Phase A is logging cleanly.
 - [ ] **Weekly digest formatting** — pretty Monday-morning summary instead of plain text
 - [ ] **`acted` field auto-prompt** — script that scans recent unresolved signals and asks "did you act on these?" via email reply or simple web form

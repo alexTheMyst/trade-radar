@@ -10,10 +10,11 @@
 |---|---|---|---|
 | `news-morning` | Weekdays | 9:00 AM | News classifier — pre-open scan (company + general/macro feeds) |
 | `daily-close` | Weekdays | 4:15 PM | SPY benchmark close |
-| `discovery` | Weekdays | 4:15 PM | Discovery Agent — cross-sectional momentum scan |
-| `advisor` | Weekdays | after close | Advisor Agent — held-position verdicts (shadow mode) |
+| `discovery` | Weekdays | 4:15 PM | Discovery Agent — cross-sectional momentum scan (shadow mode) |
 | `sentinel` | Weekdays | 5:00 PM | Exit Sentinel — mechanical exit triggers on held positions |
 | `outcome-backfill` | Weekdays | 5:30 PM | Fill 30d/90d outcome prices for measurement |
+| `dispatch` | Weekdays | 5:40 PM | Pooled INFO arbitration + digest |
+| `telegram-poll` | Daily | 07:00-23:00, every 15 min | Ingest Acted/Passed taps and reply notes |
 | `review-report` | 1st Saturday monthly | 9:00 AM | Per-agent quality readout (excess/IC/hit-rate/calibration) |
 | `weekly-synthesis` | Mondays | 8:00 AM | Distill the MONITORING corpus into pillar candidates |
 | `backup` | Sundays | 8:00 AM | WAL-safe snapshot of state/signals.db (keep newest 8) |
@@ -43,9 +44,10 @@ Single file at `./state/signals.db`. Tables:
 
 - `signals` — every alert ever emitted (see `signal-log-schema.md`)
 - `runs` — every scheduled job invocation, with start/end timestamps and outcome
-- `wash_sale` — trade ledger with a `side` column (buy/sell); the legacy
-  `cost_basis` column holds the per-share trade price. Lookups are deliberately
-  cross-account (the IRS wash-sale rule spans all 4 Schwab accounts).
+- `telegram_messages` — one row per alert button/review message and its send status
+- `app_state` — small key/value store (Telegram getUpdates offset)
+- `wash_sale` — DEPRECATED empty table retained for schema stability; wash-sale
+  tracking is delegated to Schwab (Plan 05, executed via Plan 12e)
 - `benchmark_prices` — SPY daily closes for excess-return measurement
 - `llm_calls` — per-call token telemetry
 - `ticker_meta` — sector/industry cache

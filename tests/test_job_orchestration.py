@@ -293,7 +293,7 @@ def test_render_digest_suppressed_section_ar_cap_exhausted_fraction():
         status_counts={"DELIVERED": 0, "SUPPRESSED": 1, "MONITORING": 0},
     )
 
-    assert "XOM — 91 (NEW) — ACTION_REQUIRED — cap_exhausted (AR 1/1)" in payload.body
+    assert "XOM — 91 (NEW) — ACTION_REQUIRED — cap_exhausted (AR 2/2)" in payload.body
 
 
 def test_render_digest_suppressed_section_outscored_no_cap_suffix():
@@ -554,7 +554,7 @@ def test_news_morning_headline_cap_dedups_before_cap_and_persists_overflow(db):
     previous_close = datetime(2026, 5, 16, 20, 0, tzinfo=timezone.utc)
     captured_headlines: list[dict] = []
     items = []
-    for index in range(53):
+    for index in range(30):
         items.append(_news_item(f"Headline {index:02d}", previous_close.replace(hour=20 + (index // 60), minute=index % 60)))
     items.extend(
         [
@@ -579,9 +579,8 @@ def test_news_morning_headline_cap_dedups_before_cap_and_persists_overflow(db):
          patch("signal_system.jobs.news_morning.telegram_sender.send_message"):
         news_morning.run()
 
-    assert len(captured_headlines) == 50
-    assert captured_headlines[0]["headline"] == "Headline 00"
-    assert captured_headlines[-1]["headline"] == "Headline 05"
+    # 30 unique headlines, window 65h -> per-ticker cap 8 * 3 = 24.
+    assert len(captured_headlines) == 24
 
     conn = sqlite3.connect(db)
     overflow_rows = conn.execute(
@@ -597,7 +596,7 @@ def test_news_morning_headline_cap_dedups_before_cap_and_persists_overflow(db):
         "SELECT COUNT(*) FROM signals WHERE agent = 'news_morning'"
     ).fetchone()[0]
     conn.close()
-    assert len(overflow_rows) == 3
+    assert len(overflow_rows) == 6
     assert all("[volume_cap]" in row[0] for row in overflow_rows)
     # timestamp is signal-generation time (the run), NOT article publication time
     assert all(row[2] == fixed_now.isoformat() for row in overflow_rows)
@@ -777,7 +776,7 @@ def test_news_morning_digest_monitoring_breakdown_composed_end_to_end(db):
     )
 
     items = []
-    for index in range(51):
+    for index in range(25):
         items.append(
             _news_item(
                 f"Headline {index:02d}",
@@ -806,7 +805,8 @@ def test_news_morning_digest_monitoring_breakdown_composed_end_to_end(db):
     assert "Monitoring: 3 (off-thesis 1, volume-cap 1, reconciled 1)" in body
 
 
-def test_news_morning_appends_unacted_nag_when_overdue(db):
+def test_news_morning_unacted_footer_replaced_by_friday_reprompt(db):
+    """Plan 12e4: the daily log-action footer is gone; dispatch re-prompts Fridays."""
     from signal_system.jobs import news_morning
 
     fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
@@ -825,7 +825,8 @@ def test_news_morning_appends_unacted_nag_when_overdue(db):
         news_morning.run()
 
     body = mock_send.call_args.args[0]
-    assert "3 delivered signal(s) from 7+ days ago are unreviewed" in body
+    assert "REMINDER" not in body
+    assert "log-action" not in body
 
 
 def test_news_morning_no_nag_when_none_unacted(db):
@@ -987,7 +988,8 @@ def test_discovery_routes_persists_and_sends_digest(db):
         score=71.0,
     )
 
-    with patch("signal_system.jobs.discovery._now_et", return_value=fixed_now), \
+    with patch("signal_system.jobs.discovery.config.DISCOVERY_MODE", "compete"), \
+         patch("signal_system.jobs.discovery._now_et", return_value=fixed_now), \
          patch("signal_system.jobs.discovery.heartbeat.heartbeat", _noop_heartbeat), \
          patch("signal_system.jobs.discovery.get_todays_universe", return_value=["AAPL", "MSFT"]), \
          patch("signal_system.jobs.discovery.get_core_holdings", return_value=["MSFT"]), \
@@ -1060,7 +1062,8 @@ def test_discovery_zero_alert_digest_even_when_score_returns_empty(db):
 
     fixed_now = datetime(2026, 5, 19, 8, 30, tzinfo=ZoneInfo("America/New_York"))
 
-    with patch("signal_system.jobs.discovery._now_et", return_value=fixed_now), \
+    with patch("signal_system.jobs.discovery.config.DISCOVERY_MODE", "compete"), \
+         patch("signal_system.jobs.discovery._now_et", return_value=fixed_now), \
          patch("signal_system.jobs.discovery.heartbeat.heartbeat", _noop_heartbeat), \
          patch("signal_system.jobs.discovery.get_todays_universe", return_value=["AAPL"]), \
          patch("signal_system.jobs.discovery.get_core_holdings", return_value=[]), \

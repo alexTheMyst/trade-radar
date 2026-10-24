@@ -130,12 +130,26 @@ def test_watchdog_skips_none_cadence_jobs(db):
     now = datetime(2026, 8, 12, 18, 0, tzinfo=_ET)
     _seed_healthy(now)
     _insert_run("review-report", now - timedelta(minutes=5), "failed")
-    _insert_run("outcome-backfill", now - timedelta(minutes=5), "failed")
 
     failing, stale = check_jobs(now=now)
 
     assert failing == []
     assert stale == []
+
+
+def test_watchdog_monitors_outcome_backfill_on_weekday_not_weekend(db):
+    """Plan 12f: outcome-backfill is a weekday job with a 30h SLA."""
+    wednesday = datetime(2026, 8, 12, 18, 0, tzinfo=_ET)
+    _seed_healthy(wednesday, exclude={"outcome-backfill"})
+    _insert_run("outcome-backfill", wednesday - timedelta(hours=40), "success")
+    _failing, stale = check_jobs(now=wednesday)
+    assert "outcome-backfill" in {job for job, _ in stale}
+
+    saturday = datetime(2026, 8, 15, 18, 0, tzinfo=_ET)
+    _seed_healthy(saturday, exclude={"outcome-backfill"})
+    _insert_run("outcome-backfill", saturday - timedelta(hours=40), "success")
+    _failing, stale = check_jobs(now=saturday)
+    assert "outcome-backfill" not in {job for job, _ in stale}
 
 
 def test_watchdog_never_succeeded(db):
@@ -153,7 +167,11 @@ def test_watchdog_friday_success_keeps_monday_green(db):
     monday_0930 = datetime(2026, 8, 10, 9, 30, tzinfo=_ET)
     friday_1715 = datetime(2026, 8, 7, 17, 15, tzinfo=_ET)
     for job in MONITORED_JOBS:
-        _insert_run(job, friday_1715, "success")
+        _insert_run(
+            job,
+            monday_0930 - timedelta(hours=1) if job == "telegram-poll" else friday_1715,
+            "success",
+        )
 
     failing, stale = check_jobs(now=monday_0930)
 
@@ -233,3 +251,42 @@ def test_repository_latest_run_helpers(db):
     assert last_run["started_at"].date().isoformat() == "2026-08-10"
     assert repository.get_latest_successful_run_datetime("sentinel") is None
     assert repository.get_latest_run("sentinel") is None
+
+
+def _insert_pending_signal(ts: datetime) -> None:
+    from signal_system.models import Signal, compute_alert_id
+
+    repository.insert_signal(
+        Signal(
+            ticker="MU",
+            score=100.0,
+            severity="INFORMATIONAL",
+            agent="exit_sentinel",
+            timestamp=ts,
+            alert_id=compute_alert_id("MU", ts.isoformat(), "r", "exit_sentinel"),
+            title="MU: drawdown_20d breach 20.8%",
+        ),
+        routing_status="PENDING",
+    )
+
+
+def test_watchdog_flags_signal_stuck_pending(db):
+    """A PENDING row past the threshold is an alert the operator never received."""
+    now = datetime(2026, 8, 12, 18, 0, tzinfo=_ET)
+    _seed_healthy(now)
+    _insert_pending_signal(now - timedelta(hours=4))
+
+    failing, _stale = check_jobs(now=now)
+
+    assert any(job == "dispatch" and "stuck PENDING" in detail for job, detail in failing)
+
+
+def test_watchdog_ignores_recent_pending(db):
+    """A PENDING row inside the threshold may be a send still in flight."""
+    now = datetime(2026, 8, 12, 18, 0, tzinfo=_ET)
+    _seed_healthy(now)
+    _insert_pending_signal(now - timedelta(minutes=20))
+
+    failing, _stale = check_jobs(now=now)
+
+    assert not any("stuck PENDING" in detail for _job, detail in failing)

@@ -30,11 +30,12 @@ The system's value can only be measured if every signal is logged and every acti
 | Field | Filled by | When |
 |---|---|---|
 | `alert_id` through `score` | System | At signal emission |
-| `acted`, `acted_at`, `user_note` | **Operator (manual)** | Within 7 days of alert |
+| `acted`, `acted_at` | **Operator (Telegram Acted/Passed buttons)** | Within 7 days of alert |
+| `user_note` | **Operator** (reply to the alert message, or CLI) | Any time |
 | `outcome_price_30d` | System (cron job) | 30 days after alert |
 | `outcome_price_90d` | System (cron job) | 90 days after alert |
 
-If `acted` is still `null` after 7 days, the system should email a reminder. Unresolved signals pollute the hit-rate calculation.
+Every delivered alert gets a Telegram message with Acted / Passed buttons; `telegram-poll` ingests the tap within 15 minutes. On Fridays, dispatch re-prompts up to 10 still-unreviewed signals from the past week. Unresolved signals pollute the hit-rate calculation; the `log-action --bulk-close-before` command documents a pre-rollout backlog without pretending it was reviewed.
 
 ## Per-Signal-Type Measurement
 

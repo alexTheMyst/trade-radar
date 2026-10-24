@@ -3,7 +3,7 @@
 holdings.csv is operator-maintained and gitignored (like universe.csv).
 Load-path: Path(__file__).parent / "holdings.csv"
 Raises EmptyHoldingsError — not a silent empty list — so a missing file
-fails the advisor job loudly instead of producing a confusing empty digest.
+fails the sentinel job loudly instead of producing a confusing empty digest.
 """
 from __future__ import annotations
 
@@ -77,6 +77,24 @@ def load_holdings(path: Path | None = None) -> list[Holding]:
 def require_non_empty_holdings(path: Path | None = None) -> list[Holding]:
     """Alias for load_holdings — name mirrors universe.py's require_non_empty_universe."""
     return load_holdings(path)
+
+
+def held_ticker_set(*, fallback_to_core: bool = False) -> set[str]:
+    """Return operator-held tickers (holdings.csv) as a set.
+
+    Fall back to the universe core-holding set when holdings.csv is missing,
+    empty, or malformed and *fallback_to_core* is set. The core set is the old
+    "held" approximation, so this preserves historical HELD tags when the
+    operator has no holdings.csv, while the normal path uses actual positions.
+    """
+    try:
+        return {holding.ticker for holding in load_holdings()}
+    except (EmptyHoldingsError, ValueError, KeyError, TypeError):
+        if fallback_to_core:
+            from signal_system.data.universe import get_core_holdings
+
+            return set(get_core_holdings())
+        return set()
 
 
 def holdings_universe_drift(

@@ -18,6 +18,7 @@ deliberately unused — a drawdown is a drawdown regardless of position weight.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -197,6 +198,7 @@ def build_signal(
         signal_price_snapshot=snapshot,
         direction="negative",
         weight_version=WEIGHT_VERSION,
+        trigger_json=json.dumps(breached, sort_keys=True),
     )
 
 
@@ -268,7 +270,17 @@ def is_cooldown(prior_meta: list[dict], new_severity: str) -> bool:
     cooldowns never re-suppress — a fail-open re-alert after a prior cooldown
     is accepted (documented tradeoff: we'd rather over-alert on a falling
     position than silently go quiet).
+
+    Plan 12a3: only a confirmed delivery starts the cooldown. SUPPRESSED and
+    CANDIDATE prior rows were never seen by the operator, and a PENDING row may
+    be a stuck failed send that was also never seen — treating any of them as
+    "already alerted" silently suppressed sentinel alerts for a month.
     """
+    prior_meta = [
+        meta
+        for meta in prior_meta
+        if meta.get("routing_status") == "DELIVERED"
+    ]
     if not prior_meta:
         return False
     prior_was_severe = any(

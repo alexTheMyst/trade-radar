@@ -218,6 +218,105 @@ def article_dedup_key(item: dict) -> str:
     return f"hl:{norm}"
 
 
+# --- Cross-day repeat-story filter (Plan 12c3) ------------------------------
+# Pure text heuristics, deliberately no LLM call and no new dependency. The
+# threshold was validated against all 58 delivered tickered news signals since
+# 2026-08-20: 0.5 flagged exactly two pairs, both true repeats (highest false
+# pair < 0.34).
+
+_STORY_STOPWORDS: frozenset[str] = frozenset(
+    {
+        "a", "an", "and", "are", "as", "at", "be", "by", "for", "from",
+        "has", "have", "in", "into", "is", "it", "its", "of", "on", "or",
+        "that", "the", "their", "this", "to", "was", "were", "will", "with",
+        "after", "before", "says", "said", "over", "amid", "about", "new",
+        "up", "down", "how", "why", "what", "when", "who", "stock", "stocks",
+        "shares", "market", "markets",
+    }
+)
+
+_COMPANY_ALIASES: dict[str, frozenset[str]] = {
+    "AAPL": frozenset({"apple", "aapl"}),
+    "AMD": frozenset({"amd", "advanced", "micro", "devices"}),
+    "AVGO": frozenset({"broadcom", "avgo"}),
+    "BTG": frozenset({"b2gold", "btg"}),
+    "CAN": frozenset({"canaan", "can"}),
+    "CDE": frozenset({"coeur", "cde"}),
+    "CRWV": frozenset({"coreweave", "crwv"}),
+    "FCX": frozenset({"freeport", "fcx"}),
+    "GOOGL": frozenset({"google", "alphabet", "googl"}),
+    "JNUG": frozenset({"jnug"}),
+    "LMT": frozenset({"lockheed", "martin", "lmt"}),
+    "MARA": frozenset({"marathon", "digital", "mara"}),
+    "MSFT": frozenset({"microsoft", "msft"}),
+    "MU": frozenset({"micron", "mu"}),
+    "NVDA": frozenset({"nvidia", "nvda"}),
+    "ORCL": frozenset({"oracle", "orcl"}),
+    "PANW": frozenset({"palo", "alto", "networks", "panw"}),
+    "PLTR": frozenset({"palantir", "pltr"}),
+    "T": frozenset({"at&t", "att", "t"}),
+    "TSM": frozenset({"tsmc", "taiwan", "semiconductor", "tsm"}),
+    "WMT": frozenset({"walmart", "wmt"}),
+}
+
+_STORY_TOKEN_RE = re.compile(r"[a-z0-9$.']+")
+_TITLE_TRUNCATION_LIMIT = 120
+
+
+def story_tokens(title: str, ticker: str) -> set[str]:
+    """Return the comparable token set for a news title.
+
+    Strips the ``pillar: `` prefix, lowercases, drops stopwords, one-character
+    tokens, and the ticker's own company aliases (so "Nvidia" and "NVDA" do not
+    make every NVDA story look alike). Drops the final token when the stored
+    headline was truncated at the classifier's 120-char limit — that token is
+    often a cut-off word.
+    """
+    headline = title.split(": ", 1)[1] if ": " in title else title
+    truncated = len(headline) >= _TITLE_TRUNCATION_LIMIT
+    tokens = _STORY_TOKEN_RE.findall(headline.lower())
+    aliases = _COMPANY_ALIASES.get((ticker or "").upper(), frozenset())
+    cleaned = [
+        token
+        for token in tokens
+        if len(token) > 1
+        and token not in _STORY_STOPWORDS
+        and token not in aliases
+    ]
+    if truncated and cleaned:
+        cleaned = cleaned[:-1]
+    return set(cleaned)
+
+
+def is_repeat_story(
+    candidate: Signal,
+    recent_titles: list[str],
+    *,
+    threshold: float = 0.5,
+) -> bool:
+    """True when *candidate* repeats a recent story for the same ticker.
+
+    Similarity is the overlap coefficient |A ∩ B| / min(|A|, |B|); pairs with
+    fewer than four tokens on either side are never compared. Macro (tickerless)
+    candidates are out of scope — they have no ticker-scoped history.
+    """
+    if candidate.ticker is None:
+        return False
+    candidate_tokens = story_tokens(candidate.title, candidate.ticker)
+    if len(candidate_tokens) < 4:
+        return False
+    for title in recent_titles:
+        other = story_tokens(title, candidate.ticker)
+        if len(other) < 4:
+            continue
+        overlap = len(candidate_tokens & other) / min(
+            len(candidate_tokens), len(other)
+        )
+        if overlap >= threshold:
+            return True
+    return False
+
+
 def _severity_from_confidence(conf: float) -> str:
     """Map confidence score to severity band.
 
