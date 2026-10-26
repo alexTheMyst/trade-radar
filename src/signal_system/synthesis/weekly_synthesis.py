@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 import yaml
 from anthropic import Anthropic
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from signal_system import config
 from signal_system.classifier.news_classifier import _sanitize_headline
@@ -28,6 +28,9 @@ logger = logging.getLogger(__name__)
 _ET = ZoneInfo("America/New_York")
 _CORPUS_CAP: int = 200
 _MAX_CANDIDATES: int = 3
+# A full 200-item corpus yields ~2.6k output tokens (2026-10-26); 2000 truncated
+# the JSON mid-string. Keep generous headroom — an over-cap reply cannot parse.
+_MAX_OUTPUT_TOKENS: int = 8000
 _PREFIXES_TO_STRIP: tuple[str, ...] = ("[off_thesis] ", "[volume_cap] ")
 _CORPUS_REASONS: tuple[str, ...] = ("off_thesis", "volume_cap")
 
@@ -200,13 +203,25 @@ def run_synthesis(
     )
     items_text = "\n".join(render_corpus_item(item) for item in corpus)
 
-    response = client.messages.parse(
-        model=model_version,
-        max_tokens=2000,
-        system=[{"type": "text", "text": system_prompt}],
-        messages=[{"role": "user", "content": items_text}],
-        output_format=SynthesisResult,
-    )
+    try:
+        response = client.messages.parse(
+            model=model_version,
+            max_tokens=_MAX_OUTPUT_TOKENS,
+            system=[{"type": "text", "text": system_prompt}],
+            messages=[{"role": "user", "content": items_text}],
+            output_format=SynthesisResult,
+        )
+    except ValidationError as exc:
+        # The SDK parses eagerly, so a reply cut off at max_tokens surfaces as
+        # invalid JSON here, never as stop_reason='max_tokens'.
+        raise RuntimeError(
+            f"weekly_synthesis: model output failed to parse ({len(corpus)} corpus items) "
+            f"— likely truncated at max_tokens={_MAX_OUTPUT_TOKENS}"
+        ) from exc
+    if response.stop_reason == "max_tokens":
+        raise RuntimeError(
+            f"weekly_synthesis: output truncated at max_tokens={_MAX_OUTPUT_TOKENS}"
+        )
     parsed = response.parsed_output
     if parsed is None:
         raise RuntimeError("weekly_synthesis: parsed_output is None — synthesis failed")

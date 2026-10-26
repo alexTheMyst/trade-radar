@@ -207,6 +207,68 @@ def test_run_synthesis_parsed_none_raises(db, monkeypatch):
         )
 
 
+def test_run_synthesis_requests_headroom_for_full_corpus(db, monkeypatch):
+    from signal_system.synthesis import weekly_synthesis as ws
+
+    mock_response = MagicMock()
+    mock_response.parsed_output = ws.SynthesisResult()
+    mock_client = MagicMock()
+    mock_client.messages.parse.return_value = mock_response
+    monkeypatch.setattr(ws.repository, "insert_llm_call", lambda **kw: None)
+
+    ws.run_synthesis(
+        client=mock_client,
+        week_start="2026-07-20",
+        corpus=[{"title": "headline", "body": "r"}],
+        pillar_counts={},
+        industry_lines=[],
+        model_version="m",
+    )
+    # A 200-item corpus needed ~2.6k output tokens; the old 2000 cap truncated it.
+    assert mock_client.messages.parse.call_args.kwargs["max_tokens"] >= 8000
+
+
+def test_run_synthesis_truncated_json_raises_clear_error(db, monkeypatch):
+    from signal_system.synthesis import weekly_synthesis as ws
+
+    try:
+        ws.SynthesisResult.model_validate_json('{"themes":[{"name":"cut off')
+    except ws.ValidationError as exc:
+        truncation_error = exc
+    mock_client = MagicMock()
+    mock_client.messages.parse.side_effect = truncation_error
+
+    with pytest.raises(RuntimeError, match="likely truncated at max_tokens"):
+        ws.run_synthesis(
+            client=mock_client,
+            week_start="2026-07-20",
+            corpus=[{"title": "headline", "body": "r"}],
+            pillar_counts={},
+            industry_lines=[],
+            model_version="m",
+        )
+
+
+def test_run_synthesis_max_tokens_stop_reason_raises(db, monkeypatch):
+    from signal_system.synthesis import weekly_synthesis as ws
+
+    mock_response = MagicMock()
+    mock_response.stop_reason = "max_tokens"
+    mock_response.parsed_output = ws.SynthesisResult()
+    mock_client = MagicMock()
+    mock_client.messages.parse.return_value = mock_response
+
+    with pytest.raises(RuntimeError, match="truncated at max_tokens"):
+        ws.run_synthesis(
+            client=mock_client,
+            week_start="2026-07-20",
+            corpus=[{"title": "headline", "body": "r"}],
+            pillar_counts={},
+            industry_lines=[],
+            model_version="m",
+        )
+
+
 def test_holdings_drift_warning_in_report(db, monkeypatch):
     from signal_system.synthesis import weekly_synthesis as ws
 
